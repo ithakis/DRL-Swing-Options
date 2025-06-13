@@ -75,7 +75,6 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
         # distributional Values
         self.N = 32
@@ -155,12 +154,30 @@ class Agent():
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
+        # Learn, if enough samples are available in memory
+        if len(self.memory) > self.BATCH_SIZE and timestamp % self.LEARN_EVERY == 0:
+            for _ in range(self.LEARN_NUMBER):
+                experiences = self.memory.sample()
+                
+                losses = self.learn(experiences, self.GAMMA)
+            writer.add_scalar("Critic_loss", losses[0], timestamp)
+            writer.add_scalar("Actor_loss", losses[1], timestamp)
+            if self.curiosity:
+                writer.add_scalar("ICM_loss", losses[2], timestamp)
+
+    def step_batch(self, experience_batch, timestamp, writer):
+        """Save batch of experiences and learn with adjusted frequency for parallel environments."""
+        # Add all experiences to memory
+        for state, action, reward, next_state, done in experience_batch:
+            self.memory.add(state, action, reward, next_state, done)
+        
+        # Adjust learning frequency based on number of experiences added
+        # Learn less frequently when adding multiple experiences per timestep
+        num_experiences = len(experience_batch)
+        adjusted_learn_every = self.LEARN_EVERY * num_experiences
         
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        if len(self.memory) > self.BATCH_SIZE and timestamp % adjusted_learn_every == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 

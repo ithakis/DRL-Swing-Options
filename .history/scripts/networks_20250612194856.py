@@ -20,7 +20,7 @@ def weight_init_xavier(layers):
 class Actor(nn.Module):
     """Actor (Policy) Model."""
 
-    def __init__(self, state_size, action_size, seed, hidden_size=256):
+    def __init__(self, state_size, action_size, seed, hidden_size=256, jit_compile=False):
         """Initialize parameters and build model.
         Params
         ======
@@ -29,11 +29,15 @@ class Actor(nn.Module):
             seed (int): Random seed
             fc1_units (int): Number of nodes in first hidden layer
             fc2_units (int): Number of nodes in second hidden layer
+            jit_compile (bool): Enable JIT compilation support
         """
         super(Actor, self).__init__()
         self.seed = torch.manual_seed(seed)
+        self.jit_compile = jit_compile
         self.fc1 = nn.Linear(state_size, hidden_size)
-        self.batch_norm = nn.BatchNorm1d(hidden_size) ## seems to improve the final performance a lot
+        # Only add BatchNorm if not using JIT compilation
+        if not jit_compile:
+            self.batch_norm = nn.BatchNorm1d(hidden_size) ## seems to improve the final performance a lot
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, action_size)
         self.reset_parameters()
@@ -46,9 +50,29 @@ class Actor(nn.Module):
     def forward(self, state):
         """Build an actor (policy) network that maps states -> actions."""
         x = torch.relu(self.fc1(state))
-        x = self.batch_norm(x)
+        if not self.jit_compile and hasattr(self, 'batch_norm'):
+            x = self.batch_norm(x)
         x = torch.relu(self.fc2(x))
         return torch.tanh(self.fc3(x))
+    
+    def forward_jit(self, state):
+        """JIT-compatible forward method without BatchNorm."""
+        x = torch.relu(self.fc1(state))
+        x = torch.relu(self.fc2(x))
+        return torch.tanh(self.fc3(x))
+    
+    def compile_for_inference(self, device, state_size):
+        """Create a JIT-compiled version for faster inference."""
+        try:
+            self.eval()
+            sample_state = torch.randn(1, state_size).to(device)
+            # Use the JIT-compatible forward method
+            jit_model = torch.jit.trace(self.forward_jit, sample_state)
+            print("Actor JIT compilation successful")
+            return jit_model
+        except Exception as e:
+            print(f"Actor JIT compilation failed: {e}")
+            return None
 
 
 class Critic(nn.Module):

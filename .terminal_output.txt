@@ -1,0 +1,190 @@
+Using device: cpu
+Using:  cpu
+Actor: 
+ Actor(
+  (fc1): Linear(in_features=3, out_features=128, bias=True)
+  (batch_norm): BatchNorm1d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (fc2): Linear(in_features=128, out_features=128, bias=True)
+  (fc3): Linear(in_features=128, out_features=1, bias=True)
+)
+
+Critic: 
+ Critic(
+  (fcs1): Linear(in_features=3, out_features=256, bias=True)
+  (batch_norm): BatchNorm1d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (fc2): Linear(in_features=257, out_features=256, bias=True)
+  (fc3): Linear(in_features=256, out_features=1, bias=True)
+)
+Use Noise:  OU
+Using PER:  0
+Using Munchausen RL:  0
+Episode 4	Frame 800 	Average100 Score: -1465.54Episode 8	Frame 1600 	Average100 Score: -1308.39Episode 12	Frame 2400 	Average100 Score: -1266.47Episode 16	Frame 3200 	Average100 Score: -1362.48Episode 20	Frame 4000 	Average100 Score: -1418.23Episode 24	Frame 4800 	Average100 Score: -1439.65Episode 28	Frame 5600 	Average100 Score: -1417.62Episode 32	Frame 6400 	Average100 Score: -1386.69Episode 36	Frame 7200 	Average100 Score: -1412.57Episode 40	Frame 8000 	Average100 Score: -1427.32Episode 44	Frame 8800 	Average100 Score: -1443.33Episode 48	Frame 9600 	Average100 Score: -1420.33Episode 52	Frame 10400 	Average100 Score: -1427.61Episode 56	Frame 11200 	Average100 Score: -1439.07Episode 60	Frame 12000 	Average100 Score: -1440.96Episode 64	Frame 12800 	Average100 Score: -1433.69Episode 68	Frame 13600 	Average100 Score: -1440.46Episode 72	Frame 14400 	Average100 Score: -1414.78Episode 76	Frame 15200 	Average100 Score: -1400.38Episode 80	Frame 16000 	Average100 Score: -1366.79Episode 84	Frame 16800 	Average100 Score: -1331.15Episode 88	Frame 17600 	Average100 Score: -1304.72Episode 92	Frame 18400 	Average100 Score: -1293.53Episode 96	Frame 19200 	Average100 Score: -1247.47Episode 100	Frame 20000 	Average100 Score: -1227.52Episode 104	Frame 20800 	Average100 Score: -1195.94Episode 108	Frame 21600 	Average100 Score: -1172.35Episode 112	Frame 22400 	Average100 Score: -1160.77Episode 116	Frame 23200 	Average100 Score: -1137.24Episode 120	Frame 24000 	Average100 Score: -1117.03Episode 124	Frame 24800 	Average100 Score: -1094.16Episode 128	Frame 25600 	Average100 Score: -1069.06Episode 132	Frame 26400 	Average100 Score: -1055.40Episode 136	Frame 27200 	Average100 Score: -1031.67Episode 140	Frame 28000 	Average100 Score: -1010.75Episode 144	Frame 28800 	Average100 Score: -991.54Episode 148	Frame 29600 	Average100 Score: -969.73
+Training Time:  00:14:04.47
+Using device: cpu
+Using:  cpu
+Actor: 
+ Actor(
+  (fc1): Linear(in_features=3, out_features=128, bias=True)
+  (batch_norm): BatchNorm1d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (fc2): Linear(in_features=128, out_features=128, bias=True)
+  (fc3): Linear(in_features=128, out_features=1, bias=True)
+)
+
+Critic: 
+ Critic(
+  (fcs1): Linear(in_features=3, out_features=256, bias=True)
+  (batch_norm): BatchNorm1d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (fc2): Linear(in_features=257, out_features=256, bias=True)
+  (fc3): Linear(in_features=256, out_features=1, bias=True)
+)
+Use Noise:  OU
+Using PER:  0
+Using Munchausen RL:  0
+Episode 4	Frame 800 	Average100 Score: -1312.71Episode 8	Frame 1600 	Average100 Score: -1177.32Episode 12	Frame 2400 	Average100 Score: -1159.34Episode 16	Frame 3200 	Average100 Score: -1281.84Episode 20	Frame 4000 	Average100 Score: -1347.24Episode 24	Frame 4800 	Average100 Score: -1400.36Episode 28	Frame 5600 	Average100 Score: -1409.28Episode 32	Frame 6400 	Average100 Score: -1427.04Episode 36	Frame 7200 	Average100 Score: -1450.74Episode 40	Frame 8000 	Average100 Score: -1469.59Episode 44	Frame 8800 	Average100 Score: -1486.65Episode 48	Frame 9600 	Average100 Score: -1432.64Episode 52	Frame 10400 	Average100 Score: -1443.23Episode 56	Frame 11200 	Average100 Score: -1451.91Episode 60	Frame 12000 	Average100 Score: -1457.51Episode 64	Frame 12800 	Average100 Score: -1462.70Episode 68	Frame 13600 	Average100 Score: -1468.70Episode 72	Frame 14400 	Average100 Score: -1446.72Episode 76	Frame 15200 	Average100 Score: -1431.10Episode 80	Frame 16000 	Average100 Score: -1413.47Episode 84	Frame 16800 	Average100 Score: -1397.14Episode 88	Frame 17600 	Average100 Score: -1379.02Episode 92	Frame 18400 	Average100 Score: -1369.75Episode 96	Frame 19200 	Average100 Score: -1345.77Episode 100	Frame 20000 	Average100 Score: -1318.35Episode 104	Frame 20800 	Average100 Score: -1277.38Episode 108	Frame 21600 	Average100 Score: -1243.50Episode 112	Frame 22400 	Average100 Score: -1217.44Episode 116	Frame 23200 	Average100 Score: -1187.63Episode 120	Frame 24000 	Average100 Score: -1164.33Episode 124	Frame 24800 	Average100 Score: -1135.78Episode 128	Frame 25600 	Average100 Score: -1104.17Episode 132	Frame 26400 	Average100 Score: -1094.43Episode 136	Frame 27200 	Average100 Score: -1072.41Episode 140	Frame 28000 	Average100 Score: -1049.86Episode 144	Frame 28800 	Average100 Score: -1031.77Episode 148	Frame 29600 	Average100 Score: -1008.85
+Training Time:  00:14:26.05
+/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/run.sh: line 24:  1794 Killed: 9               python run.py "${args[@]}" -info "Baseline3" -seed 3
+Process Process-3:
+Process Process-4:
+Process Process-1:
+Process Process-2:
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+EOFError
+/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/run.sh: line 25:  5639 Killed: 9               python run.py "${args[@]}" -info "Baseline4" -seed 4
+Process Process-3:
+Process Process-4:
+Process Process-2:
+Process Process-1:
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/Documents/GitHub/D4PG-QR-FRM/scripts/MultiPro.py", line 16, in worker
+    cmd, data = remote.recv()
+                ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+EOFError
+  File "/Users/alexanderithakis/miniforge3/envs/EP11/lib/python3.11/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+EOFError

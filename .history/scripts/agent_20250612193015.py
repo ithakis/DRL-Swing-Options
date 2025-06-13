@@ -36,7 +36,7 @@ class Agent():
                       random_seed,
                       hidden_size,
                       BUFFER_SIZE = int(1e6),  # replay buffer size
-                      BATCH_SIZE = 128,        # minibatch size
+                      BATCH_SIZE = 12i t,        # minibatch size
                       GAMMA = 0.99,            # discount factor
                       TAU = 1e-3,              # for soft update of target parameters
                       LR_ACTOR = 1e-4,         # learning rate of the actor 
@@ -48,7 +48,8 @@ class Agent():
                       EPSILON_DECAY = 1,
                       device = "cuda",
                       frames = 100000,
-                      worker=1
+                      worker=1,
+                      jit_compile=False
                       ):
         """Initialize an Agent object.
         
@@ -75,8 +76,8 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
+        self.jit_compile = jit_compile
         # distributional Values
         self.N = 32
         self.entropy_coeff = 0.001
@@ -121,6 +122,11 @@ class Agent():
         print("Actor: \n", self.actor_local)
         print("\nCritic: \n", self.critic_local)
 
+        # Apply JIT compilation if enabled
+        if self.jit_compile:
+            self._apply_jit_compilation()
+            print("JIT compilation enabled for actor and critic networks")
+
         if self.curiosity != 0:
             inverse_m = Inverse(self.state_size, self.action_size)
             forward_m = Forward(self.state_size, self.action_size, inverse_m.calc_input_layer(), device=device)
@@ -148,19 +154,57 @@ class Agent():
             self.learn = self.learn_
 
         print("Using PER: ", per)    
+        print("Using N-Step: ", n_step)
         print("Using Munchausen RL: ", munchausen)
-        
+        print("Using Distributional RL: ", distributional)
+        if distributional:
+            print("Number of quantiles N:", self.N)
+
+    def _apply_jit_compilation(self):
+        """Apply JIT compilation to actor network for faster inference"""
+        try:
+            # Create sample inputs for tracing
+            sample_state = torch.randn(1, self.state_size).to(self.device)
+            
+            print("Applying JIT compilation to actor network...")
+            
+            # Only JIT compile the actor for inference
+            self.actor_local.eval()
+            with torch.no_grad():
+                # Test the forward pass first
+                test_output = self.actor_local(sample_state)
+                # Create traced version
+                self._actor_jit = torch.jit.trace(self.actor_local, sample_state)
+                print("Actor network JIT compilation successful")
+                
+                # Verify the JIT version works
+                jit_output = self._actor_jit(sample_state)
+                if torch.allclose(test_output, jit_output, atol=1e-6):
+                    print("JIT compilation verified - outputs match")
+                else:
+                    print("Warning: JIT outputs don't match original")
+                    
+            # Set network back to training mode
+            self.actor_local.train()
+            
+            # Skip critic JIT compilation for now due to complexity with distributional RL
+            self._critic_jit = None
+            print("Critic JIT compilation skipped (training performance preserved)")
+            
+        except Exception as e:
+            print(f"Warning: JIT compilation failed: {e}")
+            print("Continuing without JIT optimization...")
+            self.jit_compile = False
+            self._actor_jit = None
+            self._critic_jit = None
+
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         """Save experience in replay memory, and use random sample from buffer to learn."""
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
-        
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        if len(self.memory) > self.BATCH_SIZE and timestamp % self.LEARN_EVERY == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 
@@ -175,10 +219,17 @@ class Agent():
         state = torch.from_numpy(state).float().to(self.device)
 
         assert state.shape == (state.shape[0],self.state_size), "shape: {}".format(state.shape)
-        self.actor_local.eval()
-        with torch.no_grad():
+        
+        # Use JIT-compiled version for inference if available
+        if self.jit_compile and hasattr(self, '_actor_jit') and self._actor_jit is not None:
+            with torch.no_grad():
+                action = self._actor_jit(state).cpu().data.numpy()
+        else:
+            self.actor_local.eval()
+            with torch.no_grad():
                 action = self.actor_local(state).cpu().data.numpy()
-        self.actor_local.train()
+            self.actor_local.train()
+            
         if add_noise:
             if self.noise_type == "ou":
                 action += self.noise.sample() * self.epsilon

@@ -53,10 +53,11 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
     
     Params
     ======
-        frames (int): total number of environment steps to run
-        eval_every (int): evaluate every N environment steps  
-        eval_runs (int): number of evaluation runs
-        worker (int): number of parallel environments
+        n_episodes (int): maximum number of training episodes
+        max_t (int): maximum number of timesteps per episode
+        eps_start (float): starting value of epsilon, for epsilon-greedy action selection
+        eps_end (float): minimum value of epsilon
+        eps_decay (float): multiplicative factor (per episode) for decreasing epsilon
     """
     scores = []                        # list containing scores from each episode
     scores_window = deque(maxlen=100)  # last 100 scores
@@ -64,18 +65,10 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
     state = envs.reset()
     score = 0
     curiosity_logs = []
-    
-    # Calculate iterations needed: total frames divided by number of workers
-    # Each iteration collects 'worker' number of environment steps
-    total_iterations = frames // worker
-    
-    for iteration in range(1, total_iterations + 1):
-        # Current total environment steps
-        current_frame = iteration * worker
-        
+    for frame in range(1, frames+1):
         # evaluation runs
-        if current_frame % eval_every == 0 or iteration == 1:
-            evaluate(current_frame, eval_runs)
+        if frame % eval_every == 0 or frame == 1:
+            evaluate(frame*worker, eval_runs)
 
         action = agent.act(state)
         action_v = np.clip(action, action_low, action_high)
@@ -83,22 +76,24 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
         # done is already the combination of terminated and truncated from the vectorized env
 
         for s, a, r, ns, d in zip(state, action, reward, next_state, done):
-            agent.step(s, a, r, ns, d, current_frame, writer)
+            agent.step(s, a, r, ns, d, frame, writer)
             
         if args.icm:
             reward_i = agent.icm.get_intrinsic_reward(state[0], next_state[0], action[0])
-            curiosity_logs.append((current_frame, reward_i))
+            curiosity_logs.append((frame, reward_i))
         state = next_state
         score += reward
         
         if done.any():
             scores_window.append(score)       # save most recent score
             scores.append(score)              # save most recent score
-            writer.add_scalar("Average100", np.mean(scores_window), current_frame)
+            writer.add_scalar("Average100", np.mean(scores_window), frame*worker)
             for v in curiosity_logs:
                 i, r = v[0], v[1]
                 writer.add_scalar("Intrinsic Reward", r, i)
-            print('\rEpisode {}\tFrame {} \tAverage100 Score: {:.2f}'.format(i_episode, current_frame, np.mean(scores_window)), end="")
+            print('\rEpisode {}\tFrame {} \tAverage100 Score: {:.2f}'.format(i_episode*worker, frame*worker, np.mean(scores_window)), end="")
+            #if i_episode % 100 == 0:
+            #    print('\rEpisode {}\tFrame \tReward: {}\tAverage100 Score: {:.2f}'.format(i_episode*worker, frame*worker, round(eval_reward,2), np.mean(scores_window)), end="", flush=True)
             i_episode +=1 
             state = envs.reset()
             score = 0
@@ -135,7 +130,7 @@ parser.add_argument("-w", "--worker", type=int, default=1, help="Number of paral
 parser.add_argument("--saved_model", type=str, default=None, help="Load a saved model to perform a test run!")
 parser.add_argument("--icm", type=int, default=0, choices=[0,1], help="Using Intrinsic Curiosity Module, default=0 (NO!)")
 parser.add_argument("--add_ir", type=int, default=0, choices=[0,1], help="Add intrisic reward to the extrinsic reward, default = 0 (NO!) ")
-
+b
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -147,7 +142,7 @@ if __name__ == "__main__":
     TAU = args.tau
     HIDDEN_SIZE = args.layer_size
     BUFFER_SIZE = int(args.replay_memory)
-    BATCH_SIZE = args.batch_size  # Keep batch size constant regardless of worker count
+    BATCH_SIZE = args.batch_size * args.worker
     LR_ACTOR = args.lr_a         # learning rate of the actor 
     LR_CRITIC = args.lr_c        # learning rate of the critic
     saved_model = args.saved_model
@@ -197,8 +192,8 @@ if __name__ == "__main__":
         agent.actor_local.load_state_dict(torch.load(saved_model))
         evaluate(frame=None, capture=False)
     else:    
-        run(frames = args.frames,  # Keep total frames constant, not divided by workers
-            eval_every=args.eval_every,
+        run(frames = args.frames//args.worker,
+            eval_every=args.eval_every//args.worker,
             eval_runs=args.eval_runs,
             worker=args.worker)
 

@@ -170,6 +170,28 @@ class Agent():
             if self.curiosity:
                 writer.add_scalar("ICM_loss", losses[2], timestamp)
 
+    def step_batch(self, experience_batch, timestamp, writer):
+        """Save batch of experiences and learn with adjusted frequency for parallel environments."""
+        # Add all experiences to memory
+        for state, action, reward, next_state, done in experience_batch:
+            self.memory.add(state, action, reward, next_state, done)
+        
+        # Adjust learning frequency based on number of experiences added
+        # Learn less frequently when adding multiple experiences per timestep
+        num_experiences = len(experience_batch)
+        adjusted_learn_every = self.LEARN_EVERY * num_experiences
+        
+        # Learn, if enough samples are available in memory
+        if len(self.memory) > self.BATCH_SIZE and timestamp % adjusted_learn_every == 0:
+            for _ in range(self.LEARN_NUMBER):
+                experiences = self.memory.sample()
+                
+                losses = self.learn(experiences, self.GAMMA)
+            writer.add_scalar("Critic_loss", losses[0], timestamp)
+            writer.add_scalar("Actor_loss", losses[1], timestamp)
+            if self.curiosity:
+                writer.add_scalar("ICM_loss", losses[2], timestamp)
+
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""
         state = torch.from_numpy(state).float().to(self.device)

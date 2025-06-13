@@ -1,7 +1,8 @@
-import random 
-import torch
+import random
+from collections import deque, namedtuple
+
 import numpy as np
-from collections import namedtuple, deque
+import torch
 
 
 class ReplayBuffer:
@@ -119,7 +120,7 @@ class PrioritizedReplay(object):
         if len(self.n_step_buffer[self.iter_]) == self.n_step:
             state, action, reward, next_state, done = self.calc_multistep_return(self.n_step_buffer[self.iter_])
 
-        max_prio = np.array(self.priorities, dtype=float).max() if self.buffer else 1.0 # gives max priority if buffer is not empty else 1
+        max_prio = max(self.priorities) if self.buffer else 1.0  # Use Python max instead of numpy
         
 
         self.buffer.append((state, action, reward, next_state, done))
@@ -170,7 +171,12 @@ class PrioritizedReplay(object):
 
     def update_priorities(self, batch_indices, batch_priorities):
         for idx, prio in zip(batch_indices, batch_priorities):
-            self.priorities[idx] = prio 
+            # Ensure priority is a scalar value
+            if hasattr(prio, 'item'):
+                prio = prio.item()
+            elif isinstance(prio, np.ndarray):
+                prio = float(prio.flatten()[0])
+            self.priorities[idx] = float(prio) 
 
     def __len__(self):
         return len(self.buffer)

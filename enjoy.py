@@ -1,16 +1,12 @@
-import numpy as np
-import random
-import gym
-import pybullet_envs # to run e.g. HalfCheetahBullet-v0 different reward function bullet-v0 starts ~ -1500. pybullet-v0 starts at 0
-from collections import deque
-import torch
-import time
-from torch.utils.tensorboard import SummaryWriter
+# import pybullet_envs # to run e.g. HalfCheetahBullet-v0 different reward function bullet-v0 starts ~ -1500. pybullet-v0 starts at 0
 import argparse
+import json
+
+import gymnasium as gym
+import numpy as np
+
 #from  files import MultiPro
 from scripts.agent import Agent
-from  scripts import MultiPro
-import json
 
 
 def evaluate(eval_runs=5):
@@ -19,7 +15,7 @@ def evaluate(eval_runs=5):
     """
 
     for _ in range(eval_runs):
-        state = eval_env.reset()
+        state, _ = eval_env.reset()
 
         rewards = 0
         while True:
@@ -27,7 +23,8 @@ def evaluate(eval_runs=5):
             action = agent.act(np.expand_dims(state, axis=0))
             action_v = np.clip(action, action_low, action_high)
 
-            state, reward, done, _ = eval_env.step(action_v[0])
+            state, reward, terminated, truncated, _ = eval_env.step(action_v[0])
+            done = terminated or truncated
             rewards += reward
             if done:
                 print("Episode Rewards: {}".format(rewards))
@@ -53,7 +50,7 @@ if __name__ == "__main__":
     parameters = dotdict(parameters)
     # create eval environement
     eval_env = gym.make(parameters.env)
-    eval_env.seed(parameters.seed)
+    eval_env.reset(seed=parameters.seed)
     action_high = eval_env.action_space.high[0]
     action_low = eval_env.action_space.low[0]
     state_size = eval_env.observation_space.shape[0]

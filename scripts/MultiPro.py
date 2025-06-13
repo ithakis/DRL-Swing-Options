@@ -4,8 +4,10 @@ Created on Wed Dec  4 10:31:28 2019
 @author: Z0014354
 """
 
-from multiprocessing import Process, Pipe
+from multiprocessing import Pipe, Process
+
 import numpy as np
+
 
 def worker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
@@ -13,12 +15,13 @@ def worker(remote, parent_remote, env_fn_wrapper):
     while True:
         cmd, data = remote.recv()
         if cmd == 'step':
-            ob, reward, done, info = env.step(data)
-            if done:
-                ob = env.reset()
-            remote.send((ob, reward, done, info))
+            ob, reward, terminated, truncated, info = env.step(data)
+            if terminated or truncated:
+                ob, _ = env.reset()
+            # Send gymnasium format: obs, reward, terminated, truncated, info
+            remote.send((ob, reward, terminated, truncated, info))
         elif cmd == 'reset':
-            ob = env.reset()
+            ob, _ = env.reset()
             remote.send(ob)
         elif cmd == 'reset_task':
             ob = env.reset_task()
@@ -27,7 +30,8 @@ def worker(remote, parent_remote, env_fn_wrapper):
             remote.close()
             break
         elif cmd == "seed":
-            env.seed(data)
+            # Gymnasium seeding is done through reset
+            env.reset(seed=data)
         elif cmd == 'get_spaces':
             remote.send((env.observation_space, env.action_space))
         else:
@@ -64,7 +68,7 @@ class VecEnv(object):
         be cancelled and step_wait() should not be called
         until step_async() is invoked again.
         """
-        pass
+        raise NotImplementedError
 
     def step_async(self, actions):
         """
@@ -86,7 +90,7 @@ class VecEnv(object):
          - dones: an array of "episode done" booleans
          - infos: a sequence of info objects
         """
-        pass
+        raise NotImplementedError
 
     def close(self):
         """
@@ -128,8 +132,10 @@ class SubprocVecEnv(VecEnv):
     def step_wait(self):
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
-        obs, rews, dones, infos = zip(*results)
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos
+        obs, rews, terminated, truncated, infos = zip(*results)
+        # Convert gymnasium format (terminated, truncated) back to gym format (done)
+        dones = np.logical_or(np.stack(terminated), np.stack(truncated))
+        return np.stack(obs), np.stack(rews), dones, infos
 
     def reset(self):
         for remote in self.remotes:

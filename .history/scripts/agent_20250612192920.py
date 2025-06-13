@@ -48,7 +48,8 @@ class Agent():
                       EPSILON_DECAY = 1,
                       device = "cuda",
                       frames = 100000,
-                      worker=1
+                      worker=1,
+                      jit_compile=False
                       ):
         """Initialize an Agent object.
         
@@ -75,8 +76,8 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
+        self.jit_compile = jit_compile
         # distributional Values
         self.N = 32
         self.entropy_coeff = 0.001
@@ -121,6 +122,11 @@ class Agent():
         print("Actor: \n", self.actor_local)
         print("\nCritic: \n", self.critic_local)
 
+        # Apply JIT compilation if enabled
+        if self.jit_compile:
+            self._apply_jit_compilation()
+            print("JIT compilation enabled for actor and critic networks")
+
         if self.curiosity != 0:
             inverse_m = Inverse(self.state_size, self.action_size)
             forward_m = Forward(self.state_size, self.action_size, inverse_m.calc_input_layer(), device=device)
@@ -148,19 +154,62 @@ class Agent():
             self.learn = self.learn_
 
         print("Using PER: ", per)    
+        print("Using N-Step: ", n_step)
         print("Using Munchausen RL: ", munchausen)
-        
+        print("Using Distributional RL: ", distributional)
+        if distributional:
+            print("Number of quantiles N:", self.N)
+
+    def _apply_jit_compilation(self):
+        """Apply JIT compilation to actor and critic networks for faster inference"""
+        try:
+            # Create sample inputs for tracing
+            sample_state = torch.randn(1, self.state_size).to(self.device)
+            sample_action = torch.randn(1, self.action_size).to(self.device)
+            
+            # Only compile for inference - keep original networks for training
+            print("Preparing JIT-compiled inference networks...")
+            
+            # Create JIT-compiled inference versions
+            self.actor_local.eval()
+            with torch.no_grad():
+                # Test the actor forward pass first
+                _ = self.actor_local(sample_state)
+                # Create traced version for inference only
+                self._actor_jit = torch.jit.trace(self.actor_local, sample_state)
+                print("Actor network JIT compilation successful")
+            
+            # For distributional critics, skip JIT compilation as it's complex
+            if not self.distributional:
+                self.critic_local.eval()
+                with torch.no_grad():
+                    # Test the critic forward pass first
+                    _ = self.critic_local(sample_state, sample_action)
+                    # Create traced version for inference only
+                    self._critic_jit = torch.jit.trace(self.critic_local, (sample_state, sample_action))
+                    print("Critic network JIT compilation successful")
+            else:
+                print("Skipping critic JIT compilation for distributional networks")
+                self._critic_jit = None
+                
+            # Set networks back to training mode
+            self.actor_local.train()
+            self.critic_local.train()
+            
+        except Exception as e:
+            print(f"Warning: JIT compilation failed: {e}")
+            print("Continuing without JIT optimization...")
+            self.jit_compile = False
+            self._actor_jit = None
+            self._critic_jit = None
+
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         """Save experience in replay memory, and use random sample from buffer to learn."""
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
-        
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        if len(self.memory) > self.BATCH_SIZE and timestamp % self.LEARN_EVERY == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 
@@ -175,10 +224,17 @@ class Agent():
         state = torch.from_numpy(state).float().to(self.device)
 
         assert state.shape == (state.shape[0],self.state_size), "shape: {}".format(state.shape)
-        self.actor_local.eval()
-        with torch.no_grad():
+        
+        # Use JIT-compiled version for inference if available
+        if self.jit_compile and hasattr(self, '_actor_jit') and self._actor_jit is not None:
+            with torch.no_grad():
+                action = self._actor_jit(state).cpu().data.numpy()
+        else:
+            self.actor_local.eval()
+            with torch.no_grad():
                 action = self.actor_local(state).cpu().data.numpy()
-        self.actor_local.train()
+            self.actor_local.train()
+            
         if add_noise:
             if self.noise_type == "ou":
                 action += self.noise.sample() * self.epsilon

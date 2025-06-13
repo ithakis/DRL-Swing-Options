@@ -36,7 +36,7 @@ class Agent():
                       random_seed,
                       hidden_size,
                       BUFFER_SIZE = int(1e6),  # replay buffer size
-                      BATCH_SIZE = 128,        # minibatch size
+                      BATCH_SIZE = 12,        # minibatch size
                       GAMMA = 0.99,            # discount factor
                       TAU = 1e-3,              # for soft update of target parameters
                       LR_ACTOR = 1e-4,         # learning rate of the actor 
@@ -75,7 +75,6 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
         # distributional Values
         self.N = 32
@@ -155,12 +154,8 @@ class Agent():
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
-        
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        if len(self.memory) > self.BATCH_SIZE and timestamp % self.LEARN_EVERY == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 

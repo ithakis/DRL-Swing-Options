@@ -48,7 +48,8 @@ class Agent():
                       EPSILON_DECAY = 1,
                       device = "cuda",
                       frames = 100000,
-                      worker=1
+                      worker=1,
+                      jit_compile=False
                       ):
         """Initialize an Agent object.
         
@@ -75,8 +76,8 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
+        self.jit_compile = jit_compile
         # distributional Values
         self.N = 32
         self.entropy_coeff = 0.001
@@ -121,6 +122,11 @@ class Agent():
         print("Actor: \n", self.actor_local)
         print("\nCritic: \n", self.critic_local)
 
+        # Apply JIT compilation if enabled
+        if self.jit_compile:
+            self._apply_jit_compilation()
+            print("JIT compilation enabled for actor and critic networks")
+
         if self.curiosity != 0:
             inverse_m = Inverse(self.state_size, self.action_size)
             forward_m = Forward(self.state_size, self.action_size, inverse_m.calc_input_layer(), device=device)
@@ -148,19 +154,53 @@ class Agent():
             self.learn = self.learn_
 
         print("Using PER: ", per)    
+        print("Using N-Step: ", n_step)
         print("Using Munchausen RL: ", munchausen)
-        
+        print("Using Distributional RL: ", distributional)
+        if distributional:
+            print("Number of quantiles N:", self.N)
+
+    def _apply_jit_compilation(self):
+        """Apply JIT compilation to actor and critic networks for faster inference"""
+        try:
+            # Create sample inputs for tracing
+            sample_state = torch.randn(1, self.state_size).to(self.device)
+            sample_action = torch.randn(1, self.action_size).to(self.device)
+            
+            # Compile actor network
+            self.actor_local.eval()
+            with torch.no_grad():
+                self.actor_local = torch.jit.trace(self.actor_local, sample_state)
+                print("Actor network successfully compiled with JIT")
+            
+            # Compile critic network
+            self.critic_local.eval()
+            with torch.no_grad():
+                if self.distributional:
+                    # For distributional critics, we need to handle the forward method differently
+                    # since they have variable number of tau samples
+                    self.critic_local = torch.jit.script(self.critic_local)
+                else:
+                    # For regular critics, use trace
+                    self.critic_local = torch.jit.trace(self.critic_local, (sample_state, sample_action))
+                print("Critic network successfully compiled with JIT")
+                
+            # Set networks back to training mode
+            self.actor_local.train()
+            self.critic_local.train()
+            
+        except Exception as e:
+            print(f"Warning: JIT compilation failed: {e}")
+            print("Continuing without JIT optimization...")
+            self.jit_compile = False
+
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         """Save experience in replay memory, and use random sample from buffer to learn."""
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
-        
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        if len(self.memory) > self.BATCH_SIZE and timestamp % self.LEARN_EVERY == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 
