@@ -5,6 +5,10 @@ import multiprocessing as mp
 # Configure PyTorch threading BEFORE importing torch to avoid runtime errors
 import os
 import time
+import warnings
+
+# Suppress the macOS PyTorch profiling warning
+warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
 
 # import pybullet_envs # to run e.g. HalfCheetahBullet-v0 different reward function bullet-v0 starts ~ -1500. pybullet-v0 starts at 0
 from collections import deque
@@ -62,8 +66,10 @@ def evaluate(frame, eval_runs=5, capture=False, render=False):
             if done:
                 break
         reward_batch.append(rewards)
-    if not capture:   
+    if not capture and frame is not None:   
         writer.add_scalar("Reward", np.mean(reward_batch), frame)
+    
+    return reward_batch
 
 
 
@@ -83,6 +89,9 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
     state = envs.reset()
     score = 0.0
     curiosity_logs = []
+    
+    # Performance monitoring variables
+    start_time = time.time()
     
     # Calculate iterations needed: total frames divided by number of workers
     # Each iteration collects 'worker' number of environment steps
@@ -111,14 +120,37 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
         score += reward
         
         if done.any():
-            scores_window.append(score)       # save most recent score
-            scores.append(score)              # save most recent score
+            # Calculate performance metrics
+            current_time = time.time()
+            total_elapsed = current_time - start_time
+            
+            # Calculate frames per second (based on total training time)
+            if total_elapsed > 0:
+                frames_per_second = current_frame / total_elapsed
+            else:
+                frames_per_second = 0.0
+            
+            # Calculate episode return (accumulated reward for this episode)
+            # score is accumulated from vectorized environments, so we take the sum
+            if hasattr(score, '__len__'):
+                episode_return = np.sum(score)
+            else:
+                episode_return = float(score)
+            
+            scores_window.append(episode_return)       # save most recent score
+            scores.append(episode_return)              # save most recent score
             writer.add_scalar("Average100", np.mean(scores_window), current_frame)
+            writer.add_scalar("Episode_Return", episode_return, current_frame)
+            writer.add_scalar("Frames_Per_Second", frames_per_second, current_frame)
+            
             for v in curiosity_logs:
                 i, r = v[0], v[1]
                 writer.add_scalar("Intrinsic Reward", r, i)
-            print('\rEpisode {}\tFrame {} \tAverage100 Score: {:.2f}'.format(i_episode, current_frame, np.mean(scores_window)), end="")
-            i_episode +=1 
+            
+            # Enhanced performance monitoring output - matches your requested format
+            print(f'\rEpisode Return = {episode_return:.3f} | Frames = {current_frame}/{frames} | Frames Per Second = {frames_per_second:.3f}', end="")
+            
+            i_episode += 1 
             state = envs.reset()
             score = 0.0
             curiosity_logs = []
@@ -237,6 +269,33 @@ if __name__ == "__main__":
             eval_every=args.eval_every,
             eval_runs=args.eval_runs,
             worker=args.worker)
+
+    # Final evaluation at the end of training
+    print("\n" + "="*60)
+    print("FINAL EVALUATION RESULTS")
+    print("="*60)
+    
+    final_eval_runs = max(10, args.eval_runs * 2)  # Use more runs for final evaluation
+    final_rewards = evaluate(frame=args.frames, eval_runs=final_eval_runs, capture=True)
+    
+    # Calculate statistics
+    avg_return = np.mean(final_rewards)
+    std_return = np.std(final_rewards)
+    min_return = np.min(final_rewards)
+    max_return = np.max(final_rewards)
+    
+    print(f"Average Episode Return: {avg_return:.3f} ± {std_return:.3f}")
+    print(f"Min Episode Return: {min_return:.3f}")
+    print(f"Max Episode Return: {max_return:.3f}")
+    print(f"Number of Evaluation Episodes: {final_eval_runs}")
+    
+    # Log final metrics to tensorboard
+    writer.add_scalar("Final_Evaluation/Average_Return", avg_return, args.frames)
+    writer.add_scalar("Final_Evaluation/Std_Return", std_return, args.frames)
+    writer.add_scalar("Final_Evaluation/Min_Return", min_return, args.frames)
+    writer.add_scalar("Final_Evaluation/Max_Return", max_return, args.frames)
+    
+    print("="*60)
 
     t1 = time.time()
     eval_env.close()

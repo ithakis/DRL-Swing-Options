@@ -49,8 +49,8 @@ class Agent():
                       device = "cuda",
                       frames = 100000,
                       worker=1,
-                      speed_mode=False,        # NEW: Enable speed optimizations
-                      use_compile=False,       # NEW: Enable torch.compile optimization
+                      speed_mode=True,        # NEW: Enable speed optimizations
+                      use_compile=True,       # NEW: Enable torch.compile optimization
                       use_amp=False            # NEW: Enable automatic mixed precision
                       ):
         """Initialize an Agent object.
@@ -144,7 +144,7 @@ class Agent():
         print("Actor: \n", self.actor_local)
         print("\nCritic: \n", self.critic_local)
 
-        # Apply torch.compile with CPU-optimized settings
+        # Apply torch.compile with optimized settings
         if use_compile and hasattr(torch, 'compile'):
             print("Compiling models with torch.compile...")
             try:
@@ -154,17 +154,25 @@ class Agent():
                 self._critic_local_orig = self.critic_local
                 self._critic_target_orig = self.critic_target
                 
-                # Use CPU-optimized compile mode for better performance
+                # Use appropriate compile mode based on device and network size
                 if device.type == 'cpu':
-                    # For CPU, use 'default' mode with dynamic=False for better optimization
+                    # For CPU and small networks, use 'default' mode for faster compilation
+                    # with minimal overhead while still getting some optimization benefits
                     compile_mode = 'default'
-                    dynamic_setting = False
-                    print("🚀 Using CPU-optimized torch.compile settings")
+                    dynamic_setting = True  # Allow dynamic shapes to reduce recompilation
+                    print("🚀 Using CPU-optimized torch.compile settings (mode: default, dynamic: True)")
                 else:
-                    # For GPU, use max-autotune for best performance
-                    compile_mode = 'max-autotune'
-                    dynamic_setting = False
+                    # For GPU, use reduce-overhead mode for better balance
+                    compile_mode = 'reduce-overhead'
+                    dynamic_setting = True
+                    print("🚀 Using GPU-optimized torch.compile settings (mode: reduce-overhead, dynamic: True)")
                     
+                # torch.compile mode explanation:
+                # - 'default': Balanced compilation time vs runtime performance (best for small networks)
+                # - 'reduce-overhead': Optimizes for frequent model calls (good for RL)  
+                # - 'max-autotune': Maximum optimization but high compilation overhead (GPU + large models)
+                # - dynamic=True: Reduces recompilation when input shapes vary
+
                 self.actor_local = torch.compile(self.actor_local, mode=compile_mode, dynamic=dynamic_setting)
                 self.actor_target = torch.compile(self.actor_target, mode=compile_mode, dynamic=dynamic_setting)
                 self.critic_local = torch.compile(self.critic_local, mode=compile_mode, dynamic=dynamic_setting)
@@ -264,6 +272,15 @@ class Agent():
             gamma (float): discount factor
         """
         states, actions, rewards, next_states, dones, idx, weights = experiences
+
+        # Move tensors to device
+        states = states.to(self.device, non_blocking=True)
+        actions = actions.to(self.device, non_blocking=True)
+        rewards = rewards.to(self.device, non_blocking=True)
+        next_states = next_states.to(self.device, non_blocking=True)
+        dones = dones.to(self.device, non_blocking=True)
+        weights = weights.to(self.device, non_blocking=True)
+        
         icm_loss = 0
         # calculate curiosity
         if self.curiosity:
@@ -280,18 +297,17 @@ class Agent():
         if not self.munchausen:
             # Get predicted next-state actions and Q values from target models
             with torch.no_grad():
-                actions_next = self.actor_target(next_states.to(self.device))
-                Q_targets_next = self.critic_target(next_states.to(self.device), actions_next.to(self.device))
+                actions_next = self.actor_target(next_states)
+                Q_targets_next = self.critic_target(next_states, actions_next)
                 # Compute Q targets for current states (y_i)
                 Q_targets = rewards + (gamma**self.n_step * Q_targets_next * (1 - dones))
         else:
             with torch.no_grad():
-                actions_next = self.actor_target(next_states.to(self.device))
-                q_t_n = self.critic_target(next_states.to(self.device), actions_next.to(self.device))
+                actions_next = self.actor_target(next_states)
+                q_t_n = self.critic_target(next_states, actions_next)
                 # calculate log-pi - in the paper they subtracted the max_Q value from the Q to ensure stability since we only predict the max value we dont do that
                 # this might cause some instability (?) needs to be tested
-                logsum = torch.logsumexp(\
-                    q_t_n /self.entropy_tau, 1).unsqueeze(-1) #logsum trick
+                logsum = torch.logsumexp(                    q_t_n /self.entropy_tau, 1).unsqueeze(-1) #logsum trick
                 assert logsum.shape == (self.BATCH_SIZE, 1), "log pi next has wrong shape: {}".format(logsum.shape)
                 tau_log_pi_next = (q_t_n  - self.entropy_tau*logsum)
                 
@@ -300,10 +316,13 @@ class Agent():
                 Q_target = (self.GAMMA**self.n_step * (pi_target * (q_t_n-tau_log_pi_next)*(1 - dones)))
                 assert Q_target.shape == (self.BATCH_SIZE, 1), "has shape: {}".format(Q_target.shape)
 
-                q_k_target = self.critic_target(states, actions)
-                tau_log_pik = q_k_target - self.entropy_tau*torch.logsumexp(\
-                                                                        q_k_target/self.entropy_tau, 1).unsqueeze(-1)
-                assert tau_log_pik.shape == (self.BATCH_SIZE, 1), "shape instead is {}".format(tau_log_pik.shape)
+                if self.distributional:
+                    q_k_target, _ = self.critic_target(states, actions)
+                    q_k_target = q_k_target.mean(dim=1)  # shape: [batch_size, 1]
+                else:
+                    q_k_target = self.critic_target(states, actions)  # Regular critic returns single tensor
+                tau_log_pik = q_k_target - self.entropy_tau * torch.logsumexp(q_k_target/self.entropy_tau, 1, keepdim=True)
+                assert tau_log_pik.shape == (self.BATCH_SIZE, 1), f"shape instead is {tau_log_pik.shape}"
                 # calc munchausen reward:
                 munchausen_reward = (rewards + self.alpha*torch.clamp(tau_log_pik, min=self.lo, max=0))
                 assert munchausen_reward.shape == (self.BATCH_SIZE, 1)
@@ -313,11 +332,11 @@ class Agent():
         Q_expected = self.critic_local(states, actions)
         if self.per:
             td_error =  Q_targets - Q_expected
-            critic_loss = (td_error.pow(2)*weights.to(self.device)).mean().to(self.device)
+            critic_loss = (td_error.pow(2)*weights).mean()
         else:
             critic_loss = F.mse_loss(Q_expected, Q_targets)
         # Minimize the loss
-        self.critic_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         clip_grad_norm_(self.critic_local.parameters(), 1)
         self.critic_optimizer.step()
@@ -327,7 +346,7 @@ class Agent():
         actions_pred = self.actor_local(states)
         actor_loss = -self.critic_local(states, actions_pred).mean()
         # Minimize the loss
-        self.actor_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_optimizer.step()
 
@@ -341,7 +360,8 @@ class Agent():
         
         self.epsilon *= self.EPSILON_DECAY
         
-        if self.noise_type == "ou": self.noise.reset()
+        if self.noise_type == "ou":
+            self.noise.reset()
         return critic_loss.detach().cpu().numpy(), actor_loss.detach().cpu().numpy(), icm_loss
 
     
@@ -403,10 +423,10 @@ class Agent():
                     Q_target = (self.GAMMA**self.n_step * (pi_target * (Q_targets_next-tau_log_pi_next)*(1 - dones.unsqueeze(-1)))).transpose(1,2)
                     assert Q_target.shape == (self.BATCH_SIZE, self.action_size, self.N), "has shape: {}".format(Q_target.shape)
 
-                    q_k_target = self.critic_target.get_qvalues(states, actions)
-                    tau_log_pik = q_k_target - self.entropy_tau*torch.logsumexp(\
-                                                                            q_k_target/self.entropy_tau, 1).unsqueeze(-1)
-                    assert tau_log_pik.shape == (self.BATCH_SIZE, self.action_size), "shape instead is {}".format(tau_log_pik.shape)
+                    q_k_target, _ = self.critic_target(states, actions)
+                    q_k_target = q_k_target.mean(dim=1)  # shape: [batch_size, 1]
+                    tau_log_pik = q_k_target - self.entropy_tau * torch.logsumexp(q_k_target/self.entropy_tau, 1, keepdim=True)
+                    assert tau_log_pik.shape == (self.BATCH_SIZE, 1), f"shape instead is {tau_log_pik.shape}"
                     # calc munchausen reward:
                     munchausen_reward = (rewards + self.alpha*torch.clamp(tau_log_pik, min=self.lo, max=0)).unsqueeze(-1)
                     assert munchausen_reward.shape == (self.BATCH_SIZE, self.action_size, 1)
@@ -452,7 +472,8 @@ class Agent():
             
             self.epsilon *= self.EPSILON_DECAY
             
-            if self.noise_type == "ou": self.noise.reset()
+            if self.noise_type == "ou":
+                self.noise.reset()
             return critic_loss.detach().cpu().numpy(), actor_loss.detach().cpu().numpy()
 
         
