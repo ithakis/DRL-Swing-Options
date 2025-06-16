@@ -33,7 +33,6 @@ class Actor(nn.Module):
         super(Actor, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.fc1 = nn.Linear(state_size, hidden_size)
-        self.batch_norm = nn.BatchNorm1d(hidden_size) ## seems to improve the final performance a lot
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, action_size)
         self.reset_parameters()
@@ -46,7 +45,6 @@ class Actor(nn.Module):
     def forward(self, state):
         """Build an actor (policy) network that maps states -> actions."""
         x = torch.relu(self.fc1(state))
-        x = self.batch_norm(x)
         x = torch.relu(self.fc2(x))
         return torch.tanh(self.fc3(x))
 
@@ -67,7 +65,6 @@ class Critic(nn.Module):
         super(Critic, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.fcs1 = nn.Linear(state_size, hidden_size)
-        self.batch_norm = nn.BatchNorm1d(hidden_size)
         self.fc2 = nn.Linear(hidden_size+action_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, 1)
         self.reset_parameters()
@@ -80,7 +77,6 @@ class Critic(nn.Module):
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
         xs = F.relu(self.fcs1(state))
-        xs = self.batch_norm(xs)
         x = torch.cat((xs, action), dim=1)
         x = F.relu(self.fc2(x))
         return self.fc3(x)
@@ -94,7 +90,7 @@ class IQN(nn.Module):
         self.N = N  
         self.n_cos = 64
         self.layer_size = layer_size
-        self.pis = torch.FloatTensor([np.pi*i for i in range(1,self.n_cos+1)]).view(1,1,self.n_cos).to(device) # Starting from 0 as in the paper 
+        self.pis = torch.tensor([np.pi*i for i in range(1,self.n_cos+1)], dtype=torch.float32).view(1,1,self.n_cos).to(device) # Starting from 0 as in the paper 
         self.dueling = dueling
         self.device = device
 
@@ -262,7 +258,7 @@ class DeepIQN(nn.Module):
         self.N = N  
         self.n_cos = 64
         self.layer_size = layer_size
-        self.pis = torch.FloatTensor([np.pi*i for i in range(1,self.n_cos+1)]).view(1,1,self.n_cos).to(device) # Starting from 0 as in the paper 
+        self.pis = torch.tensor([np.pi*i for i in range(1,self.n_cos+1)], dtype=torch.float32).view(1,1,self.n_cos).to(device) # Starting from 0 as in the paper 
         self.dueling = dueling
         self.device = device
 

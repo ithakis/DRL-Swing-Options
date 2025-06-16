@@ -1,9 +1,9 @@
 import torch
-import numpy as np 
-import torch.nn as nn 
+import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Normal
 from torch.nn.utils import clip_grad_norm_
+
 
 class Inverse(nn.Module):
     """
@@ -37,7 +37,7 @@ class Inverse(nn.Module):
         x = torch.cat((enc_state, enc_next_state), dim=1)
         x = torch.relu(self.layer1(x))
         x = torch.tanh(self.layer2(x))
-        dist = Normal(loc=x, scale=torch.FloatTensor([0.1]).to(x.device))
+        dist = Normal(loc=x, scale=torch.tensor([0.1], dtype=torch.float32).to(x.device))
         action = dist.sample()
         return action
 
@@ -91,7 +91,7 @@ class ICM(nn.Module):
         self.forward_scale = 1.
         self.inverse_scale = 1e4
         self.lr = learning_rate
-        self.beta = torch.FloatTensor([beta]).to(device)
+        self.beta = torch.tensor([beta], dtype=torch.float32).to(device)
         self.lambda_ = lambda_
         self.forward_loss = nn.MSELoss(reduction='none')
         self.inverse_loss = nn.MSELoss(reduction='none') # CrossEntropyLoss for discrete
@@ -134,7 +134,7 @@ class ICM(nn.Module):
     def get_intrinsic_reward(self, state, next_state, action):
         state = torch.from_numpy(state).float().to(self.device).unsqueeze(0)
         next_state = torch.from_numpy(next_state).float().to(self.device).unsqueeze(0)
-        action = torch.FloatTensor(action).to(self.device).unsqueeze(0)
+        action = torch.tensor(action, dtype=torch.float32).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
             enc_state1 = self.inverse_model.encoder(state)

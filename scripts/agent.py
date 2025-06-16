@@ -48,7 +48,10 @@ class Agent():
                       EPSILON_DECAY = 1,
                       device = "cuda",
                       frames = 100000,
-                      worker=1
+                      worker=1,
+                      speed_mode=False,        # NEW: Enable speed optimizations
+                      use_compile=False,       # NEW: Enable torch.compile optimization
+                      use_amp=False            # NEW: Enable automatic mixed precision
                       ):
         """Initialize an Agent object.
         
@@ -58,6 +61,15 @@ class Agent():
             action_size (int): dimension of each action
             random_seed (int): random seed
         """
+        # CPU-specific optimizations
+        if device.type == 'cpu':
+            # Enable optimized CPU kernels if available
+            if hasattr(torch.backends, 'mkl'):
+                torch.backends.mkl.enabled = True
+            if hasattr(torch.backends, 'mkldnn'):
+                torch.backends.mkldnn.enabled = True
+            
+            
         self.state_size = state_size
         self.action_size = action_size
         self.BUFFER_SIZE = BUFFER_SIZE
@@ -77,6 +89,17 @@ class Agent():
         self.device = device
         self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
+        self.use_amp = use_amp  # Store AMP setting
+        
+        # Initialize AMP scaler if requested
+        if self.use_amp and device.type == 'cuda':
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+            print("✅ Automatic Mixed Precision (AMP) enabled")
+        else:
+            self.scaler = None
+            if self.use_amp:
+                print("⚠️ AMP requested but not available (GPU required)")
         # distributional Values
         self.N = 32
         self.entropy_coeff = 0.001
@@ -85,7 +108,7 @@ class Agent():
         self.lo = -1
         self.alpha = 0.9
         
-        self.eta = torch.FloatTensor([.1]).to(device)
+        self.eta = torch.tensor([.1], dtype=torch.float32).to(device)
         
         print("Using: ", device)
         
@@ -120,6 +143,39 @@ class Agent():
 
         print("Actor: \n", self.actor_local)
         print("\nCritic: \n", self.critic_local)
+
+        # Apply torch.compile with CPU-optimized settings
+        if use_compile and hasattr(torch, 'compile'):
+            print("Compiling models with torch.compile...")
+            try:
+                # Store original networks before compilation
+                self._actor_local_orig = self.actor_local
+                self._actor_target_orig = self.actor_target
+                self._critic_local_orig = self.critic_local
+                self._critic_target_orig = self.critic_target
+                
+                # Use CPU-optimized compile mode for better performance
+                if device.type == 'cpu':
+                    # For CPU, use 'default' mode with dynamic=False for better optimization
+                    compile_mode = 'default'
+                    dynamic_setting = False
+                    print("🚀 Using CPU-optimized torch.compile settings")
+                else:
+                    # For GPU, use max-autotune for best performance
+                    compile_mode = 'max-autotune'
+                    dynamic_setting = False
+                    
+                self.actor_local = torch.compile(self.actor_local, mode=compile_mode, dynamic=dynamic_setting)
+                self.actor_target = torch.compile(self.actor_target, mode=compile_mode, dynamic=dynamic_setting)
+                self.critic_local = torch.compile(self.critic_local, mode=compile_mode, dynamic=dynamic_setting)
+                self.critic_target = torch.compile(self.critic_target, mode=compile_mode, dynamic=dynamic_setting)
+                print(f"✅ All models successfully compiled with torch.compile (mode: {compile_mode}, dynamic: {dynamic_setting})")
+                
+            except Exception as e:
+                print(f"⚠️ torch.compile failed: {e}")
+                print("Falling back to non-compiled models")
+        elif use_compile:
+            print("⚠️ torch.compile not available in this PyTorch version")
 
         if self.curiosity != 0:
             inverse_m = Inverse(self.state_size, self.action_size)
@@ -158,7 +214,13 @@ class Agent():
         # Adjust learning frequency based on worker count to maintain consistent learning rate
         # When using multiple workers, we collect experiences faster, so we should learn less frequently
         effective_learn_every = self.LEARN_EVERY * self.worker
-        
+
+        # # Optimize learning frequency - learn less frequently but with more gradient steps
+        # # This reduces overhead while maintaining sample efficiency
+        # effective_learn_every = max(4, self.LEARN_EVERY * self.worker)  # Learn every 4+ steps minimum
+        # effective_learn_number = min(4, self.LEARN_NUMBER * 2)  # But learn more when we do learn
+        effective_learn_number = self.LEARN_NUMBER
+
         # Learn, if enough samples are available in memory
         if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
             for _ in range(self.LEARN_NUMBER):

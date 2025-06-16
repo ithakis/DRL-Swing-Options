@@ -1,5 +1,9 @@
 import argparse
 import json
+import multiprocessing as mp
+
+# Configure PyTorch threading BEFORE importing torch to avoid runtime errors
+import os
 import time
 
 # import pybullet_envs # to run e.g. HalfCheetahBullet-v0 different reward function bullet-v0 starts ~ -1500. pybullet-v0 starts at 0
@@ -7,12 +11,26 @@ from collections import deque
 
 import gymnasium as gym
 import numpy as np
+
+# Set threading environment variables if not already set
+if not os.environ.get('OMP_NUM_THREADS'):
+    cpu_count = mp.cpu_count()
+    os.environ['OMP_NUM_THREADS'] = str(cpu_count)
+    os.environ['MKL_NUM_THREADS'] = str(cpu_count)
+
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from scripts import MultiPro
+# Set PyTorch threading after import but before any operations
+if torch.get_num_threads() != mp.cpu_count():
+    try:
+        torch.set_num_threads(mp.cpu_count())
+        torch.set_num_interop_threads(min(4, mp.cpu_count() // 2))
+        print(f"🔧 PyTorch configured for {mp.cpu_count()} CPU cores")
+    except RuntimeError:
+        print("⚠️  Threading already configured, skipping manual setup")
 
-#from  files import MultiPro
+from scripts import MultiPro
 from scripts.agent import Agent
 
 
@@ -31,8 +49,9 @@ def evaluate(frame, eval_runs=5, capture=False, render=False):
     reward_batch = []
     for i in range(eval_runs):
         state, _ = eval_env.reset()
-        if render: eval_env.render()
-        rewards = 0
+        if render: 
+            eval_env.render()
+        rewards = 0.0
         while True:
             action = agent.act(np.expand_dims(state, axis=0))
             action_v = np.clip(action, action_low, action_high)
@@ -43,7 +62,7 @@ def evaluate(frame, eval_runs=5, capture=False, render=False):
             if done:
                 break
         reward_batch.append(rewards)
-    if capture == False:   
+    if not capture:   
         writer.add_scalar("Reward", np.mean(reward_batch), frame)
 
 
@@ -62,7 +81,7 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
     scores_window = deque(maxlen=100)  # last 100 scores
     i_episode = 1
     state = envs.reset()
-    score = 0
+    score = 0.0
     curiosity_logs = []
     
     # Calculate iterations needed: total frames divided by number of workers
@@ -101,7 +120,7 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
             print('\rEpisode {}\tFrame {} \tAverage100 Score: {:.2f}'.format(i_episode, current_frame, np.mean(scores_window)), end="")
             i_episode +=1 
             state = envs.reset()
-            score = 0
+            score = 0.0
             curiosity_logs = []
             
 
@@ -135,8 +154,17 @@ parser.add_argument("-w", "--worker", type=int, default=1, help="Number of paral
 parser.add_argument("--saved_model", type=str, default=None, help="Load a saved model to perform a test run!")
 parser.add_argument("--icm", type=int, default=0, choices=[0,1], help="Using Intrinsic Curiosity Module, default=0 (NO!)")
 parser.add_argument("--add_ir", type=int, default=0, choices=[0,1], help="Add intrisic reward to the extrinsic reward, default = 0 (NO!) ")
+parser.add_argument("--compile", type=int, default=0, choices=[0,1], help="Use torch.compile for model optimization, default=0 (NO!)")
+parser.add_argument("--fp32", type=int, default=1, choices=[0,1], help="Use float32 precision for better performance, default=1 (YES!)")
 
 args = parser.parse_args()
+
+# Apply float32 optimization if enabled
+if args.fp32:
+    torch.set_default_dtype(torch.float32)
+    print("Using float32 precision for improved performance")
+else:
+    print("Using default precision (float64)")
 
 if __name__ == "__main__":
     env_name = args.env
@@ -162,14 +190,11 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     np.random.seed(seed)
     
-    # Enhanced device selection with MPS support for Apple Silicon
+    # Device selection (CPU only)
     if args.device == "gpu":
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
             print("Using CUDA GPU")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("Using MPS (Metal Performance Shaders) GPU acceleration")
         else:
             device = torch.device("cpu")
             print("GPU requested but not available, using CPU")
@@ -180,9 +205,20 @@ if __name__ == "__main__":
     # Optimize PyTorch threading for better CPU utilization
     import multiprocessing as mp
     cpu_count = mp.cpu_count()
+    
+    # For training, use all available cores for intra-op parallelism
+    # but limit inter-op parallelism to reduce contention  
     torch.set_num_threads(cpu_count)
-    torch.set_num_interop_threads(cpu_count)
-    print("PyTorch optimized for {} CPU cores".format(cpu_count))
+    torch.set_num_interop_threads(min(4, cpu_count // 2))
+    
+    # Enable optimized CPU kernels if available
+    if hasattr(torch.backends, 'mkl'):
+        torch.backends.mkl.enabled = True
+    if hasattr(torch.backends, 'mkldnn'):
+        torch.backends.mkldnn.enabled = True
+    
+    print("PyTorch optimized for {} CPU cores (intra: {}, inter: {})".format(
+        cpu_count, torch.get_num_threads(), torch.get_num_interop_threads()))
     
     action_high = eval_env.action_space.high[0]
     action_low = eval_env.action_space.low[0]
@@ -190,10 +226,10 @@ if __name__ == "__main__":
     action_size = eval_env.action_space.shape[0]
     agent = Agent(state_size=state_size, action_size=action_size, n_step=args.nstep, per=args.per, munchausen=args.munchausen,distributional=args.iqn,
                  D2RL=D2RL, curiosity=(args.icm, args.add_ir), noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
-                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device, frames=args.frames, worker=args.worker) 
+                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device, frames=args.frames, worker=args.worker, use_compile=bool(args.compile)) 
     
     t0 = time.time()
-    if saved_model != None:
+    if saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(saved_model))
         evaluate(frame=None, capture=False)
     else:    

@@ -153,12 +153,12 @@ class PrioritizedReplay(object):
         
         states, actions, rewards, next_states, dones = zip(*samples) 
 
-        states      = torch.FloatTensor(np.float32(np.concatenate(states))).to(self.device)
-        next_states = torch.FloatTensor(np.float32(np.concatenate(next_states))).to(self.device)
+        states      = torch.tensor(np.float32(np.concatenate(states)), dtype=torch.float32).to(self.device)
+        next_states = torch.tensor(np.float32(np.concatenate(next_states)), dtype=torch.float32).to(self.device)
         actions     = torch.cat(actions).to(self.device)
-        rewards     = torch.FloatTensor(rewards).to(self.device).unsqueeze(1) 
-        dones       = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
-        weights    = torch.FloatTensor(weights).unsqueeze(1)
+        rewards     = torch.tensor(rewards, dtype=torch.float32).to(self.device).unsqueeze(1) 
+        dones       = torch.tensor(dones, dtype=torch.float32).to(self.device).unsqueeze(1)
+        weights    = torch.tensor(weights, dtype=torch.float32).unsqueeze(1)
         #print("s",states.shape)
         #print("ns", next_states.shape)
         #print("a", actions.shape)
