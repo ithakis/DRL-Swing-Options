@@ -10,7 +10,7 @@ This implementation extends the core D4PG algorithm with several advanced featur
 
 - **🎯 Distributional Critic**: Uses **IQN (Implicit Quantile Networks)** instead of traditional C51 for improved distributional learning
 - **🚀 Munchausen RL**: Entropy-regularized policy improvement for enhanced exploration and stability
-- **🧠 D2RL Networks**: Deep dense architectures with skip connections for better gradient flow
+- **🧠 Munchausen RL**: Enhanced exploration through better action-value estimation
 - **⚡ Prioritized Experience Replay (PER)**: Importance sampling for more efficient learning from experience
 - **🔄 N-Step Bootstrapping**: Multi-step returns for faster value propagation
 - **🌊 Parallel Environments**: Vectorized environment support for accelerated training
@@ -95,7 +95,6 @@ python run.py -h  # Show all available options
 - `-per 1`: Enable Prioritized Experience Replay
 - `-munchausen 1`: Enable Munchausen RL
 - `-iqn 1`: Use distributional IQN critic (default: 0)
-- `-d2rl 1`: Use deep dense networks
 - `-nstep N`: N-step bootstrapping (default: 1)
 - `-w N`: Number of parallel environments (default: 1)
 - `-learn_every N`: Learning frequency (default: 1)
@@ -145,7 +144,6 @@ This implementation includes several cutting-edge extensions that can be combine
 
 - **Prioritized Experience Replay (PER)**: Samples important transitions more frequently based on TD-error magnitude
 - **N-Step Bootstrapping**: Uses multi-step returns for faster value propagation and improved sample efficiency  
-- **D2RL Deep Dense Networks**: Dense architectures with skip connections for better gradient flow and representation learning
 - **Distributional IQN Critic**: Implicit Quantile Networks for robust distributional value learning with reduced variance
 - **Munchausen RL**: Entropy-regularized policy improvement that adds a scaled log-policy term to rewards for enhanced exploration
 - **Parallel Environments**: Vectorized environment execution for faster data collection and training acceleration
@@ -156,7 +154,6 @@ This implementation includes several cutting-edge extensions that can be combine
 
 - **PER + N-Step**: Dramatically improves sample efficiency by focusing on important experiences
 - **Munchausen RL**: Provides natural exploration bonus and improved policy regularization
-- **D2RL Networks**: Better gradient flow leads to more stable training and higher final performance
 - **IQN Distributional Learning**: Reduced critic loss variance and more robust value estimates
 - **Parallel Environments**: Linear speedup in data collection (4x workers = ~4x faster training)
 
@@ -212,7 +209,7 @@ This repository has been successfully updated to support **Gymnasium** (the mode
 ### Migration Features
 - ✅ **Full Gymnasium compatibility** with all modern environment APIs
 - ✅ **Backward compatibility** maintained for existing workflows  
-- ✅ **All extensions verified**: PER, N-Step, Munchausen RL, D2RL, IQN work seamlessly
+- ✅ **All extensions verified**: PER, N-Step, Munchausen RL, IQN work seamlessly
 - ✅ **Enhanced vectorized environments** with improved error handling
 - ✅ **Zero performance impact** on training or evaluation speed
 
@@ -257,6 +254,5 @@ D4PG-QR-FRM/
 
 - [D4PG: Distributed Distributional Deep Deterministic Policy Gradient](https://openreview.net/forum?id=SyZipzbCb)
 - [Munchausen Reinforcement Learning](https://arxiv.org/abs/2007.14430)
-- [D2RL: Deep Dense Architectures in Reinforcement Learning](https://arxiv.org/abs/2010.09163)
 - [Implicit Quantile Networks for Distributional Reinforcement Learning](https://arxiv.org/abs/1806.06923)
 - [Prioritized Experience Replay](https://arxiv.org/abs/1511.05952)

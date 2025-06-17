@@ -10,12 +10,12 @@ from torch.nn.utils import clip_grad_norm_
 try:
     # Try relative imports first (when called from run.py)
     from .ICM import ICM, Forward, Inverse
-    from .networks import IQN, Actor, Critic, DeepActor, DeepCritic, DeepIQN
+    from .networks import IQN, Actor, Critic
     from .replay_buffer import PrioritizedReplay, ReplayBuffer
 except ImportError:
     # Fall back to absolute imports (when called from notebook or directly)
     from ICM import ICM, Forward, Inverse
-    from networks import IQN, Actor, Critic, DeepActor, DeepCritic, DeepIQN
+    from networks import IQN, Actor, Critic
     from replay_buffer import PrioritizedReplay, ReplayBuffer
 
 # TODO: Check for batch norm comparison! batch norm seems to have a big impact on final performance
@@ -30,7 +30,6 @@ class Agent():
                       per, 
                       munchausen,
                       distributional,
-                      D2RL,
                       noise_type,
                       curiosity,
                       random_seed,
@@ -78,7 +77,6 @@ class Agent():
         self.munchausen = munchausen
         self.n_step = n_step
         self.distributional = distributional
-        self.D2RL = D2RL
         self.curiosity = curiosity[0]
         self.reward_addon = curiosity[1]
         self.GAMMA = GAMMA
@@ -113,30 +111,18 @@ class Agent():
         print("Using: ", device)
         
         # Actor Network (w/ Target Network)
-        if not self.D2RL:
-            self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-            self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-        else:
-            self.actor_local = DeepActor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-            self.actor_target = DeepActor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
+        self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
+        self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
 
         self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
 
         # Critic Network (w/ Target Network)
         if self.distributional:
-            if not self.D2RL:
-                self.critic_local = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=None, N=self.N).to(device)
-                self.critic_target = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=None, N=self.N).to(device)
-            else:
-                self.critic_local = DeepIQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=None, N=self.N).to(device)
-                self.critic_target = DeepIQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=None, N=self.N).to(device)
+            self.critic_local = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
+            self.critic_target = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
         else:
-            if not self.D2RL:
-                self.critic_local = Critic(state_size, action_size, random_seed).to(device)
-                self.critic_target = Critic(state_size, action_size, random_seed).to(device)
-            else:
-                self.critic_local = DeepCritic(state_size, action_size, random_seed).to(device)
-                self.critic_target = DeepCritic(state_size, action_size, random_seed).to(device)
+            self.critic_local = Critic(state_size, action_size, random_seed).to(device)
+            self.critic_target = Critic(state_size, action_size, random_seed).to(device)
 
         
         self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)

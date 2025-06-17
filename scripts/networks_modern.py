@@ -1,15 +1,13 @@
 """
 Modernized neural networks for D4PG-QR-FRM algorithm.
 
-Updated for PyTorch 2.8+ and Python 3.11 with modern best practices:
+Updated for PyTorch 2.7.1 and Python 3.11 with modern best practices:
 - Type hints for better code clarity and IDE support
 - Improved documentation with Google-style docstrings
 - Better device handling and memory efficiency
-- Modern PyTorch initialization methods with torch.compile support
+- Modern PyTorch initialization methods
 - Improved error handling and validation
 - Code organization following PEP 8 and modern Python standards
-- Enhanced numerical stability and performance optimizations
-- Better integration with PyTorch 2.x features like autocast and GradScaler
 """
 
 from typing import List, Optional, Tuple, Union
@@ -19,28 +17,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-
-
-# Modern PyTorch 2.x optimizations
-def make_compilable(model: nn.Module) -> nn.Module:
-    """Make a model compilable with torch.compile for PyTorch 2.x performance.
-    
-    Args:
-        model: PyTorch model to make compilable
-        
-    Returns:
-        Potentially compiled model for better performance
-        
-    Note:
-        torch.compile may not be available in all environments,
-        so we return the original model if compilation fails.
-    """
-    try:
-        if hasattr(torch, 'compile'):
-            return torch.compile(model)
-    except Exception:
-        pass
-    return model
 
 
 def hidden_init(layer: nn.Linear) -> Tuple[float, float]:
@@ -68,7 +44,7 @@ def weight_init_kaiming(layers: List[nn.Module]) -> None:
         layers: List of PyTorch layers to initialize
     """
     for layer in layers:
-        if hasattr(layer, 'weight') and isinstance(layer.weight, torch.Tensor):
+        if hasattr(layer, 'weight'):
             torch.nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
 
 
@@ -79,7 +55,7 @@ def weight_init_xavier(layers: List[nn.Module]) -> None:
         layers: List of PyTorch layers to initialize
     """
     for layer in layers:
-        if hasattr(layer, 'weight') and isinstance(layer.weight, torch.Tensor):
+        if hasattr(layer, 'weight'):
             torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
 
 
@@ -128,35 +104,12 @@ class Actor(nn.Module):
         
         # Move to device
         self.to(self.device)
-        
-        # Store compilation state for PyTorch 2.x optimization
-        self._compiled = False
 
     def reset_parameters(self) -> None:
         """Reset network parameters using custom initialization."""
         self.fc1.weight.data.uniform_(*hidden_init(self.fc1))
         self.fc2.weight.data.uniform_(*hidden_init(self.fc2))
         self.fc3.weight.data.uniform_(-3e-3, 3e-3)
-    
-    def compile_for_performance(self) -> None:
-        """Compile the model for better performance in PyTorch 2.x.
-        
-        Note:
-            This is optional and may not work in all environments.
-            Call this after model creation for potential speedups.
-        """
-        if not self._compiled:
-            try:
-                compiled_model = make_compilable(self)
-                if compiled_model is not self:
-                    # If compilation succeeded, we would need to replace self
-                    # For now, just mark as compiled
-                    self._compiled = True
-                    print("✓ Actor model compiled for performance")
-                else:
-                    print("⚠ torch.compile not available, using standard model")
-            except Exception as e:
-                print(f"⚠ Compilation failed: {e}")
 
     def forward(self, state: Tensor) -> Tensor:
         """Forward pass through the actor network.
@@ -320,7 +273,7 @@ class IQN(nn.Module):
         taus = torch.rand(batch_size, n_tau, 1, device=self.device)
         
         # Calculate cosine embeddings
-        cos = torch.cos(taus * self.pis)  # type: ignore
+        cos = torch.cos(taus * self.pis)
         
         assert cos.shape == (batch_size, n_tau, self.n_cos), f"cos shape is incorrect: {cos.shape}"
         return cos, taus
