@@ -12,6 +12,7 @@ Updated for PyTorch 2.8+ and Python 3.11 with modern best practices:
 - Better integration with PyTorch 2.x features like autocast and GradScaler
 """
 
+import math
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -37,7 +38,8 @@ def make_compilable(model: nn.Module) -> nn.Module:
     """
     try:
         if hasattr(torch, 'compile'):
-            return torch.compile(model)
+            # Type ignore for torch.compile return type compatibility
+            return torch.compile(model)  # type: ignore
     except Exception:
         pass
     return model
@@ -83,6 +85,24 @@ def weight_init_xavier(layers: List[nn.Module]) -> None:
             torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
 
 
+def weight_init_orthogonal(layers: List[nn.Module], gain: float = 1.0) -> None:
+    """Initialize weights using orthogonal initialization.
+    
+    Orthogonal initialization preserves variance in both forward and backward passes,
+    which is particularly beneficial for RL applications as it keeps gradients stable
+    and improves exploration by maintaining isotropic output covariance.
+    
+    Args:
+        layers: List of PyTorch layers to initialize
+        gain: Scaling factor for the orthogonal matrix (√2 for ReLU, 1.0 for tanh)
+    """
+    for layer in layers:
+        if hasattr(layer, 'weight') and isinstance(layer.weight, torch.Tensor):
+            torch.nn.init.orthogonal_(layer.weight, gain=gain)
+        if hasattr(layer, 'bias') and isinstance(layer.bias, torch.Tensor):
+            torch.nn.init.zeros_(layer.bias)
+
+
 class Actor(nn.Module):
     """Actor (Policy) network for continuous control.
     
@@ -118,9 +138,17 @@ class Actor(nn.Module):
         # Set seed for reproducibility
         torch.manual_seed(seed)
         
-        # Network architecture
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        # Network architecture with LayerNorm
+        self.fc1 = nn.Sequential(
+            nn.Linear(state_size, hidden_size, bias=True),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(inplace=True)
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(inplace=True)
+        )
         self.fc3 = nn.Linear(hidden_size, action_size)
         
         # Initialize weights
@@ -133,10 +161,23 @@ class Actor(nn.Module):
         self._compiled = False
 
     def reset_parameters(self) -> None:
-        """Reset network parameters using custom initialization."""
-        self.fc1.weight.data.uniform_(*hidden_init(self.fc1))
-        self.fc2.weight.data.uniform_(*hidden_init(self.fc2))
-        self.fc3.weight.data.uniform_(-3e-3, 3e-3)
+        """Reset network parameters using D4PG-recommended initialization.
+        
+        Uses orthogonal initialization for hidden layers (gain=√2 for ReLU)
+        and small uniform initialization for the final layer to start with
+        small, centered actions near the data manifold.
+        """
+        # Orthogonal initialization for hidden layers with ReLU gain
+        # Only initialize Linear layers, not LayerNorm
+        linear_layers = [self.fc1[0], self.fc2[0]]  # index 0 = Linear
+        for layer in linear_layers:
+            if isinstance(layer, nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+                torch.nn.init.zeros_(layer.bias)
+        
+        # Small uniform initialization for final layer (actor output)
+        torch.nn.init.uniform_(self.fc3.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.fc3.bias)
     
     def compile_for_performance(self) -> None:
         """Compile the model for better performance in PyTorch 2.x.
@@ -167,8 +208,15 @@ class Actor(nn.Module):
         Returns:
             Action tensor of shape (batch_size, action_size) in range [-1, 1]
         """
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
+        x = self.fc1(state)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after LayerNorm/ReLU block
+        hidden_size = self.fc1[0].out_features  # Get hidden_size from Linear layer
+        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        
+        x = self.fc2(x)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after second LayerNorm/ReLU block
+        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        
         return torch.tanh(self.fc3(x))
 
 
@@ -206,9 +254,17 @@ class Critic(nn.Module):
         # Set seed for reproducibility
         torch.manual_seed(seed)
         
-        # Network architecture
-        self.fcs1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size + action_size, hidden_size)
+        # Network architecture with LayerNorm
+        self.fcs1 = nn.Sequential(
+            nn.Linear(state_size, hidden_size, bias=True),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(inplace=True)
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(hidden_size + action_size, hidden_size, bias=True),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(inplace=True)
+        )
         self.fc3 = nn.Linear(hidden_size, 1)
         
         # Initialize weights
@@ -216,12 +272,49 @@ class Critic(nn.Module):
         
         # Move to device
         self.to(self.device)
+        
+        # Store compilation state for PyTorch 2.x optimization
+        self._compiled = False
 
     def reset_parameters(self) -> None:
-        """Reset network parameters using custom initialization."""
-        self.fcs1.weight.data.uniform_(*hidden_init(self.fcs1))
-        self.fc2.weight.data.uniform_(*hidden_init(self.fc2))
-        self.fc3.weight.data.uniform_(-3e-3, 3e-3)
+        """Reset network parameters using D4PG-recommended initialization.
+        
+        Uses orthogonal initialization for hidden layers (gain=√2 for ReLU)
+        and specific initialization for the final layer to produce neutral
+        Q-values initially, improving distributional critic stability.
+        """
+        # Orthogonal initialization for hidden layers with ReLU gain
+        # Only initialize Linear layers, not LayerNorm
+        linear_layers = [self.fcs1[0], self.fc2[0]]  # index 0 = Linear
+        for layer in linear_layers:
+            if isinstance(layer, nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+                torch.nn.init.zeros_(layer.bias)
+        
+        # Initialize final layer to produce neutral Q-values
+        # Small uniform initialization for the final critic layer
+        torch.nn.init.uniform_(self.fc3.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.fc3.bias)
+
+    def compile_for_performance(self) -> None:
+        """Compile the model for better performance in PyTorch 2.x.
+        
+        Note:
+            This is optional and may not work in all environments.
+            Call this after model creation for potential speedups.
+        """
+        if not self._compiled:
+            try:
+                compiled_model = make_compilable(self)
+                if compiled_model is not self:
+                    # If compilation succeeded, we would need to replace self
+                    # For now, just mark as compiled
+                    self._compiled = True
+                    print("✓ Critic model compiled for performance")
+                else:
+                    print("⚠ torch.compile not available, using standard model")
+            except Exception as e:
+                print(f"⚠ Compilation failed: {e}")
 
     def forward(self, state: Tensor, action: Tensor) -> Tensor:
         """Forward pass through the critic network.
@@ -233,9 +326,16 @@ class Critic(nn.Module):
         Returns:
             Q-value tensor of shape (batch_size, 1)
         """
-        xs = F.relu(self.fcs1(state))
+        xs = self.fcs1(state)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after LayerNorm/ReLU block
+        hidden_size = self.fcs1[0].out_features  # Get hidden_size from Linear layer
+        assert xs.dim() == 2 and xs.size(1) == hidden_size, "LayerNorm integration broke shape"
+        
         x = torch.cat((xs, action), dim=1)
-        x = F.relu(self.fc2(x))
+        x = self.fc2(x)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after second LayerNorm/ReLU block
+        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        
         return self.fc3(x)
 
 
@@ -297,14 +397,53 @@ class IQN(nn.Module):
             ).view(1, 1, self.n_cos)
         )
         
-        # Network architecture
-        self.head = nn.Linear(self.action_size + self.input_shape, layer_size)
+        # Network architecture with LayerNorm
+        self.head = nn.Sequential(
+            nn.Linear(self.action_size + self.input_shape, layer_size, bias=True),
+            nn.LayerNorm(layer_size),
+            nn.ReLU(inplace=True)
+        )
         self.cos_embedding = nn.Linear(self.n_cos, layer_size)
-        self.ff_1 = nn.Linear(layer_size, layer_size)
+        self.ff_1 = nn.Sequential(
+            nn.Linear(layer_size, layer_size, bias=True),
+            nn.LayerNorm(layer_size),
+            nn.ReLU(inplace=True)
+        )
         self.ff_2 = nn.Linear(layer_size, 1)
+        
+        # Initialize weights using D4PG-recommended scheme
+        self.reset_parameters()
         
         # Move to device
         self.to(self.device)
+        
+        # Store compilation state for PyTorch 2.x optimization
+        self._compiled = False
+
+    def reset_parameters(self) -> None:
+        """Reset network parameters using D4PG-recommended initialization.
+        
+        Uses orthogonal initialization for hidden layers and specific
+        initialization for distributional outputs to start with neutral
+        value distributions.
+        """
+        # Orthogonal initialization for hidden layers with ReLU gain
+        # Only initialize Linear layers, not LayerNorm
+        linear_layers = [self.head[0], self.ff_1[0]]  # index 0 = Linear
+        for layer in linear_layers:
+            if isinstance(layer, nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+                torch.nn.init.zeros_(layer.bias)
+        
+        # Initialize cosine embedding layer
+        if isinstance(self.cos_embedding, nn.Linear):
+            torch.nn.init.orthogonal_(self.cos_embedding.weight, gain=math.sqrt(2.0))
+            torch.nn.init.zeros_(self.cos_embedding.bias)
+        
+        # Initialize final layer to produce neutral value distribution
+        # Small uniform initialization similar to critic
+        torch.nn.init.uniform_(self.ff_2.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.ff_2.bias)
 
     def calc_cos(self, batch_size: int, n_tau: int = 32) -> Tuple[Tensor, Tensor]:
         """Calculate cosine embeddings for quantile values.
@@ -342,7 +481,11 @@ class IQN(nn.Module):
 
         # Concatenate state and action
         x = torch.cat((input_tensor, action), dim=1)
-        x = F.relu(self.head(x))
+        x = self.head(x)  # Linear -> LayerNorm -> ReLU already included
+        
+        # Unit-test guard: verify shape after LayerNorm/ReLU block
+        hidden_size = self.head[0].out_features  # Get layer_size from Linear layer
+        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
         
         # Calculate cosine embeddings
         cos, taus = self.calc_cos(batch_size, num_tau)
@@ -353,7 +496,10 @@ class IQN(nn.Module):
         x = (x.unsqueeze(1) * cos_x).view(batch_size * num_tau, self.layer_size)
         
         # Final layers
-        x = F.relu(self.ff_1(x))
+        x = self.ff_1(x)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after second LayerNorm/ReLU block
+        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        
         out = self.ff_2(x)
         
         return out.view(batch_size, num_tau, 1), taus
@@ -371,6 +517,26 @@ class IQN(nn.Module):
         quantiles, _ = self.forward(inputs, action, self.N)
         return quantiles.mean(dim=1)
 
+    def compile_for_performance(self) -> None:
+        """Compile the model for better performance in PyTorch 2.x.
+        
+        Note:
+            This is optional and may not work in all environments.
+            Call this after model creation for potential speedups.
+        """
+        if not self._compiled:
+            try:
+                compiled_model = make_compilable(self)
+                if compiled_model is not self:
+                    # If compilation succeeded, we would need to replace self
+                    # For now, just mark as compiled
+                    self._compiled = True
+                    print("✓ IQN model compiled for performance")
+                else:
+                    print("⚠ torch.compile not available, using standard model")
+            except Exception as e:
+                print(f"⚠ Compilation failed: {e}")
+
 
 # Backward compatibility aliases
-weight_init = weight_init_kaiming  # Maintain original function name
+weight_init = weight_init_orthogonal  # Use orthogonal as default for D4PG

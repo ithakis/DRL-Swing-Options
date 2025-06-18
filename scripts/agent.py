@@ -48,6 +48,7 @@ class Agent():
                       device = "cuda",
                       frames = 100000,
                       worker=1,
+                      min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
                       speed_mode=True,        # NEW: Enable speed optimizations
                       use_compile=True,       # NEW: Enable torch.compile optimization
                       use_amp=False            # NEW: Enable automatic mixed precision
@@ -88,6 +89,14 @@ class Agent():
         self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
         self.use_amp = use_amp  # Store AMP setting
+        
+        # Initialize minimum replay size - use buffer size as fallback if None
+        if min_replay_size is None:
+            self.min_replay_size = BUFFER_SIZE
+        else:
+            self.min_replay_size = min_replay_size
+        
+        print(f"🔄 Minimum replay buffer size set to {self.min_replay_size:,} samples before learning starts")
         
         # Initialize AMP scaler if requested
         if self.use_amp and device.type == 'cuda':
@@ -215,8 +224,12 @@ class Agent():
         # effective_learn_number = min(4, self.LEARN_NUMBER * 2)  # But learn more when we do learn
         effective_learn_number = self.LEARN_NUMBER
 
-        # Learn, if enough samples are available in memory
-        if len(self.memory) > self.BATCH_SIZE and timestamp % effective_learn_every == 0:
+        # Learn only after minimum replay size is reached and we have enough samples
+        # During initial collection, agent only collects experiences without learning
+        buffer_has_min_samples = len(self.memory) >= self.min_replay_size
+        buffer_has_batch_samples = len(self.memory) > self.BATCH_SIZE
+        
+        if buffer_has_min_samples and buffer_has_batch_samples and timestamp % effective_learn_every == 0:
             for _ in range(self.LEARN_NUMBER):
                 experiences = self.memory.sample()
                 
@@ -225,6 +238,12 @@ class Agent():
             writer.add_scalar("Actor_loss", losses[1], timestamp)
             if self.curiosity:
                 writer.add_scalar("ICM_loss", losses[2], timestamp)
+        elif not buffer_has_min_samples:
+            # Log initial collection progress
+            collection_progress = len(self.memory) / self.min_replay_size * 100
+            if timestamp % 1000 == 0:  # Log every 1000 steps during initial collection
+                writer.add_scalar("Collection_Progress", collection_progress, timestamp)
+                print(f"\r🔄 Collecting samples: {collection_progress:.1f}% ({len(self.memory):,}/{self.min_replay_size:,} samples)", end="")
 
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""

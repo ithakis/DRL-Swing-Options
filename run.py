@@ -178,8 +178,9 @@ parser.add_argument("-lr_c", type=float, default=3e-4, help="Critic learning rat
 parser.add_argument("-learn_every", type=int, default=1, help="Learn every x interactions, default = 1")
 parser.add_argument("-learn_number", type=int, default=1, help="Learn x times per interaction, default = 1")
 parser.add_argument("-layer_size", type=int, default=256, help="Number of nodes per neural network layer, default is 256")
-parser.add_argument("-repm", "--replay_memory", type=int, default=int(1e6), help="Size of the Replay memory, default is 1e6")
-parser.add_argument("-bs", "--batch_size", type=int, default=256, help="Batch size, default is 256")
+parser.add_argument("--max_replay_size", type=int, default=int(1e6), help="Maximum size of the replay buffer, default is 1e6")
+parser.add_argument("--min_replay_size", type=int, default=1000, help="Minimum replay buffer size before learning starts (default: 1000)")
+parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
 parser.add_argument("-t", "--tau", type=float, default=1e-3, help="Softupdate factor tau, default is 1e-3") #for per 1e-2 for regular 1e-3 -> Pendulum!
 parser.add_argument("-g", "--gamma", type=float, default=0.99, help="discount factor gamma, default is 0.99")
 parser.add_argument("-w", "--worker", type=int, default=1, help="Number of parallel environments, default = 1")
@@ -206,7 +207,7 @@ if __name__ == "__main__":
     GAMMA = args.gamma
     TAU = args.tau
     HIDDEN_SIZE = args.layer_size
-    BUFFER_SIZE = int(args.replay_memory)
+    BUFFER_SIZE = int(args.max_replay_size)
     BATCH_SIZE = args.batch_size  # Keep batch size constant regardless of worker count
     LR_ACTOR = args.lr_a         # learning rate of the actor 
     LR_CRITIC = args.lr_c        # learning rate of the critic
@@ -257,7 +258,8 @@ if __name__ == "__main__":
     action_size = eval_env.action_space.shape[0]
     agent = Agent(state_size=state_size, action_size=action_size, n_step=args.nstep, per=args.per, munchausen=args.munchausen,distributional=args.iqn,
                  curiosity=(args.icm, args.add_ir), noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
-                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device, frames=args.frames, worker=args.worker, use_compile=bool(args.compile)) 
+                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device, frames=args.frames, worker=args.worker, 
+                 min_replay_size=args.min_replay_size, use_compile=bool(args.compile)) 
     
     t0 = time.time()
     if saved_model is not None:
