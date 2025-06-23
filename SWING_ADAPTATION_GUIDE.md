@@ -85,43 +85,6 @@ def evaluate_price(agent, runs=100):
     return np.mean(discounted_returns)
 ```
 
-### Parallel Variant
-
-```python
-from scripts.MultiPro import SubprocVecEnv
-
-def evaluate_price_parallel(agent, runs=100, num_envs=8):
-    """Evaluate with a batch of paths using a single agent."""
-    # Replicate the environment so the agent receives a batch of states
-    def make_env(idx):
-        return lambda: SwingOptionEnv()
-
-    env_fns = [make_env(i) for i in range(num_envs)]
-    vec_env = SubprocVecEnv(env_fns)
-
-    discounted_returns = np.zeros(runs)
-    finished = 0
-    while finished < runs:
-        batch = min(num_envs, runs - finished)
-        vec_env.seed(base_seed + finished + 1)
-        states = vec_env.reset()[:batch]
-        disc = np.zeros(batch)
-        steps = np.zeros(batch)
-        active = np.arange(batch)
-        while len(active) > 0:
-            actions = agent.act(states[active])
-            obs, reward, done, _ = vec_env.step(actions)
-            disc[active] += (discount ** steps[active]) * reward
-            steps[active] += 1
-            states[active] = obs
-            active = active[~done]
-        discounted_returns[finished:finished+batch] = disc
-        finished += batch
-
-    vec_env.close()
-    return np.mean(discounted_returns)
-```
-
 `discount` should equal `exp(-r * dt)`. Logging this value during training allows you to
 monitor convergence and yields the final option price once training is complete.
 
