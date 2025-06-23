@@ -29,6 +29,144 @@ The D4PG algorithm combines:
 
 The distributional aspect allows the agent to model uncertainty in value estimates, leading to more robust decision-making and improved sample efficiency.
 
+## Architecture Overview
+
+The following diagram illustrates the complete architecture and data flow of the D4PG-QR-FRM implementation:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#e1f5fe', 'primaryTextColor':'#000', 'primaryBorderColor':'#01579b', 'lineColor':'#666', 'fontSize':'16px', 'fontFamily':'Arial, sans-serif'}}}%%
+graph TB
+    %% Main execution entry points
+    RunScript["`<b>run.py</b><br/>Main Training Script`"]
+    EnjoyScript["`<b>enjoy.py</b><br/>Policy Evaluation`"]
+    RunShell["`<b>run.sh</b><br/>Batch Training`"]
+    
+    %% Core Agent Components
+    Agent["`<b>Agent</b><br/>(scripts/agent.py)<br/>• Coordinates training<br/>• Manages networks<br/>• Handles experience`"]
+    
+    %% Neural Networks
+    subgraph Networks["<b>Neural Networks</b><br/>(scripts/networks.py)"]
+        Actor["`<b>Actor Network</b><br/>Deterministic Policy<br/>μ(s) → a`"]
+        
+        Critic["`<b>Critic Network</b><br/>Standard Q-function<br/>Q(s,a) → scalar`"]
+        
+        IQN["`<b>IQN Network</b><br/>Implicit Quantile Network<br/>Distributional Q-learning`"]
+        
+        ActorTarget["`<b>Target Networks</b><br/>Slowly updated copies<br/>for stable learning`"]
+    end
+    
+    %% Experience Replay Systems
+    subgraph ReplayBuffer["<b>Experience Replay</b><br/>(scripts/replay_buffer.py)"]
+        StandardReplay["`<b>ReplayBuffer</b><br/>Standard uniform sampling<br/>with n-step returns`"]
+        
+        PER["`<b>PrioritizedReplay</b><br/>Priority-based sampling<br/>using TD-errors`"]
+    end
+    
+    %% Curiosity-Driven Exploration
+    subgraph ICMModule["<b>Intrinsic Curiosity</b><br/>(scripts/ICM.py)"]
+        ICM["`<b>ICM Module</b><br/>Curiosity-driven exploration`"]
+        
+        Forward["`<b>Forward Model</b><br/>Predicts next state<br/>from current state + action`"]
+        
+        Inverse["`<b>Inverse Model</b><br/>Predicts action<br/>from state transitions`"]
+    end
+    
+    %% Environment & Training Loop
+    subgraph Environment["<b>Environment Interaction</b>"]
+        GymEnv["`<b>Gymnasium Environment</b><br/>(e.g., Pendulum-v1)<br/>Provides states, rewards`"]
+        
+        Noise["`<b>Exploration Noise</b><br/>• Ornstein-Uhlenbeck<br/>• Gaussian Noise`"]
+    end
+    
+    %% Data Analysis & Monitoring
+    subgraph Analysis["<b>Analysis & Monitoring</b>"]
+        TensorBoard["`<b>TensorBoard</b><br/>Training metrics<br/>& visualizations`"]
+        
+        Notebook["`<b>Jupyter Notebook</b><br/>2FactorOUwJumps_Simulation.ipynb<br/>Statistical analysis`"]
+        
+        StatScript["`<b>statistical_analysis.py</b><br/>(Empty - for future analysis)`"]
+    end
+    
+    %% Model Storage
+    subgraph Storage["<b>Model Storage</b>"]
+        RunsDir["`<b>runs/ directory</b><br/>• Model weights (.pth)<br/>• Hyperparameters (.json)<br/>• TensorBoard logs`"]
+    end
+    
+    %% Data Flow Connections
+    RunScript --> Agent
+    EnjoyScript --> Agent
+    RunShell --> RunScript
+    
+    Agent --> Actor
+    Agent --> Critic
+    Agent --> IQN
+    Agent --> ActorTarget
+    
+    Agent --> StandardReplay
+    Agent --> PER
+    
+    Agent --> ICM
+    ICM --> Forward
+    ICM --> Inverse
+    
+    Agent --> GymEnv
+    Agent --> Noise
+    
+    Agent --> TensorBoard
+    Agent --> RunsDir
+    
+    %% Algorithm Flow
+    subgraph D4PGFlow["<b>D4PG Algorithm Flow</b>"]
+        direction TB
+        
+        ObserveState["`<b>1. Observe State s</b>`"]
+        SelectAction["`<b>2. Actor selects action a</b><br/>+ exploration noise`"]
+        ExecuteAction["`<b>3. Execute action in environment</b><br/>observe s', r, done`"]
+        StoreExperience["`<b>4. Store (s,a,r,s',done)</b><br/>in replay buffer`"]
+        SampleBatch["`<b>5. Sample batch from buffer</b><br/>(prioritized or uniform)`"]
+        ComputeTargets["`<b>6. Compute target values</b><br/>using target networks`"]
+        UpdateCritic["`<b>7. Update Critic/IQN</b><br/>minimize distributional loss`"]
+        UpdateActor["`<b>8. Update Actor</b><br/>maximize Q-value`"]
+        UpdateTargets["`<b>9. Soft update target networks</b><br/>θ' ← τθ + (1-τ)θ'`"]
+        UpdateICM["`<b>10. Update ICM (if enabled)</b><br/>for intrinsic rewards`"]
+        
+        ObserveState --> SelectAction
+        SelectAction --> ExecuteAction
+        ExecuteAction --> StoreExperience
+        StoreExperience --> SampleBatch
+        SampleBatch --> ComputeTargets
+        ComputeTargets --> UpdateCritic
+        UpdateCritic --> UpdateActor
+        UpdateActor --> UpdateTargets
+        UpdateTargets --> UpdateICM
+        UpdateICM --> ObserveState
+    end
+    
+    %% Key Features Annotations
+    classDef mainComponent fill:#e1f5fe,stroke:#01579b,stroke-width:3px,font-size:16px
+    classDef networkComponent fill:#f3e5f5,stroke:#4a148c,stroke-width:3px,font-size:16px
+    classDef dataComponent fill:#e8f5e8,stroke:#1b5e20,stroke-width:3px,font-size:16px
+    classDef analysisComponent fill:#fff3e0,stroke:#e65100,stroke-width:3px,font-size:16px
+    
+    class RunScript,Agent mainComponent
+    class Actor,Critic,IQN,ActorTarget networkComponent
+    class StandardReplay,PER,RunsDir dataComponent
+    class TensorBoard,Notebook,StatScript analysisComponent
+    
+    %% Feature Annotations
+    Agent -.->|"`<b>Key Features:</b><br/>• Distributional RL (IQN)<br/>• Munchausen RL<br/>• N-step returns<br/>• Prioritized Experience Replay<br/>• Intrinsic Curiosity (ICM)<br/>• torch.compile optimization<br/>• Mixed precision training`"| Networks
+```
+
+### Architecture Highlights
+
+- **🏗️ Modular Design**: Each component can be enabled/disabled independently
+- **🔄 Complete D4PG Flow**: Full implementation of the distributional policy gradient algorithm
+- **🚀 Advanced Extensions**: State-of-the-art RL techniques integrated seamlessly
+- **📊 Comprehensive Monitoring**: TensorBoard integration and analysis tools
+- **⚡ Performance Optimized**: PyTorch 2.x features for maximum efficiency
+
+The diagram shows how the main training script orchestrates the interaction between neural networks, experience replay, curiosity-driven exploration, and environment interaction, with comprehensive monitoring and storage capabilities.
+
 ## Dependencies
 
 This implementation uses **Python 3.11** with the following core packages:

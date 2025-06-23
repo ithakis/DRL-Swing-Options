@@ -1,41 +1,22 @@
 import argparse
 import json
 import multiprocessing as mp
-
-# Configure PyTorch threading BEFORE importing torch to avoid runtime errors
 import os
 import time
 import warnings
+from collections import deque
+
+import gymnasium as gym
+import numpy as np
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
+from scripts.agent import Agent
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
 
 # import pybullet_envs # to run e.g. HalfCheetahBullet-v0 different reward function bullet-v0 starts ~ -1500. pybullet-v0 starts at 0
-from collections import deque
-
-import gymnasium as gym
-import numpy as np
-
-# Set threading environment variables if not already set
-if not os.environ.get('OMP_NUM_THREADS'):
-    cpu_count = mp.cpu_count()
-    os.environ['OMP_NUM_THREADS'] = str(cpu_count)
-    os.environ['MKL_NUM_THREADS'] = str(cpu_count)
-
-import torch
-from torch.utils.tensorboard import SummaryWriter
-
-# Set PyTorch threading after import but before any operations
-if torch.get_num_threads() != mp.cpu_count():
-    try:
-        torch.set_num_threads(mp.cpu_count())
-        torch.set_num_interop_threads(min(4, mp.cpu_count() // 2))
-        print(f"🔧 PyTorch configured for {mp.cpu_count()} CPU cores")
-    except RuntimeError:
-        print("⚠️  Threading already configured, skipping manual setup")
-
-from scripts import MultiPro
-from scripts.agent import Agent
 
 
 def timer(start,end):
@@ -62,7 +43,7 @@ def evaluate(frame, eval_runs=5, capture=False, render=False):
 
             state, reward, terminated, truncated, _ = eval_env.step(action_v[0])
             done = terminated or truncated
-            rewards += reward
+            rewards += float(reward)
             if done:
                 break
         reward_batch.append(rewards)
@@ -73,7 +54,7 @@ def evaluate(frame, eval_runs=5, capture=False, render=False):
 
 
 
-def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
+def run(frames=1000, eval_every=1000, eval_runs=5):
     """Deep Q-Learning.
     
     Params
@@ -81,45 +62,37 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
         frames (int): total number of environment steps to run
         eval_every (int): evaluate every N environment steps  
         eval_runs (int): number of evaluation runs
-        worker (int): number of parallel environments
     """
     scores = []                        # list containing scores from each episode
     scores_window = deque(maxlen=100)  # last 100 scores
     i_episode = 1
-    state = envs.reset()
+    state, _ = train_env.reset()
     score = 0.0
     curiosity_logs = []
     
     # Performance monitoring variables
     start_time = time.time()
     
-    # Calculate iterations needed: total frames divided by number of workers
-    # Each iteration collects 'worker' number of environment steps
-    total_iterations = frames // worker
-    
-    for iteration in range(1, total_iterations + 1):
-        # Current total environment steps
-        current_frame = iteration * worker
-        
+    for current_frame in range(1, frames + 1):
         # evaluation runs
-        if current_frame % eval_every == 0 or iteration == 1:
+        if current_frame % eval_every == 0 or current_frame == 1:
             evaluate(current_frame, eval_runs)
 
-        action = agent.act(state)
+        action = agent.act(np.expand_dims(state, axis=0))
         action_v = np.clip(action, action_low, action_high)
-        next_state, reward, done, _ = envs.step(action_v)
-        # done is already the combination of terminated and truncated from the vectorized env
+        next_state, reward, terminated, truncated, _ = train_env.step(action_v[0])
+        done = terminated or truncated
 
-        for s, a, r, ns, d in zip(state, action, reward, next_state, done):
-            agent.step(s, a, r, ns, d, current_frame, writer)
+        agent.step(state, action_v[0], reward, next_state, done, current_frame, writer)
             
         if args.icm:
-            reward_i = agent.icm.get_intrinsic_reward(state[0], next_state[0], action[0])
+            reward_i = agent.icm.get_intrinsic_reward(state, next_state, action_v[0])
             curiosity_logs.append((current_frame, reward_i))
-        state = next_state
-        score += reward
         
-        if done.any():
+        state = next_state
+        score += float(reward)
+        
+        if done:
             # Calculate performance metrics
             current_time = time.time()
             total_elapsed = current_time - start_time
@@ -131,11 +104,7 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
                 frames_per_second = 0.0
             
             # Calculate episode return (accumulated reward for this episode)
-            # score is accumulated from vectorized environments, so we take the sum
-            if hasattr(score, '__len__'):
-                episode_return = np.sum(score)
-            else:
-                episode_return = float(score)
+            episode_return = float(score)
             
             scores_window.append(episode_return)       # save most recent score
             scores.append(episode_return)              # save most recent score
@@ -151,7 +120,7 @@ def run(frames=1000, eval_every=1000, eval_runs=5, worker=1):
             print(f'\rEpisode Return = {episode_return:.3f} | Frames = {current_frame}/{frames} | Frames Per Second = {frames_per_second:.3f}', end="")
             
             i_episode += 1 
-            state = envs.reset()
+            state, _ = train_env.reset()
             score = 0.0
             curiosity_logs = []
             
@@ -183,7 +152,7 @@ parser.add_argument("--min_replay_size", type=int, default=1000, help="Minimum r
 parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
 parser.add_argument("-t", "--tau", type=float, default=1e-3, help="Softupdate factor tau, default is 1e-3") #for per 1e-2 for regular 1e-3 -> Pendulum!
 parser.add_argument("-g", "--gamma", type=float, default=0.99, help="discount factor gamma, default is 0.99")
-parser.add_argument("-w", "--worker", type=int, default=1, help="Number of parallel environments, default = 1")
+parser.add_argument("-n_cores", type=int, default=None, help="Maximum number of CPU cores to use (default: use all available cores)")
 parser.add_argument("--saved_model", type=str, default=None, help="Load a saved model to perform a test run!")
 parser.add_argument("--icm", type=int, default=0, choices=[0,1], help="Using Intrinsic Curiosity Module, default=0 (NO!)")
 parser.add_argument("--add_ir", type=int, default=0, choices=[0,1], help="Add intrisic reward to the extrinsic reward, default = 0 (NO!) ")
@@ -203,21 +172,21 @@ if __name__ == "__main__":
     env_name = args.env
     seed = args.seed
     frames = args.frames
-    worker = args.worker
     GAMMA = args.gamma
     TAU = args.tau
     HIDDEN_SIZE = args.layer_size
     BUFFER_SIZE = int(args.max_replay_size)
-    BATCH_SIZE = args.batch_size  # Keep batch size constant regardless of worker count
+    BATCH_SIZE = args.batch_size
     LR_ACTOR = args.lr_a         # learning rate of the actor 
     LR_CRITIC = args.lr_c        # learning rate of the critic
     saved_model = args.saved_model
 
     writer = SummaryWriter("runs/"+args.info)
-    envs = MultiPro.SubprocVecEnv([lambda: gym.make(args.env) for i in range(args.worker)])
+    train_env = gym.make(args.env)
     eval_env = gym.make(args.env)
-    envs.seed(seed)
-    # Update seeding for gymnasium
+    
+    # Seed environments
+    train_env.reset(seed=seed)
     eval_env.reset(seed=seed+1)
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -226,39 +195,59 @@ if __name__ == "__main__":
     if args.device == "gpu":
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
+            device_str = "cuda:0"
             print("Using CUDA GPU")
         else:
             device = torch.device("cpu")
+            device_str = "cpu"
             print("GPU requested but not available, using CPU")
     else:
         device = torch.device("cpu")
+        device_str = "cpu"
         print("Using CPU (as requested)")
     
-    # Optimize PyTorch threading for better CPU utilization
-    import multiprocessing as mp
-    cpu_count = mp.cpu_count()
+    # Configure CPU cores
+    if args.n_cores is not None:
+        n_cores = min(args.n_cores, mp.cpu_count())
+        print(f"Using {n_cores} CPU cores (requested: {args.n_cores}, available: {mp.cpu_count()})")
+    else:
+        n_cores = mp.cpu_count()
+        print(f"Using all available CPU cores: {n_cores}")
     
-    # For training, use all available cores for intra-op parallelism
-    # but limit inter-op parallelism to reduce contention  
-    torch.set_num_threads(cpu_count)
-    torch.set_num_interop_threads(min(4, cpu_count // 2))
+    # Set threading environment variables
+    os.environ['OMP_NUM_THREADS'] = str(n_cores)
+    os.environ['MKL_NUM_THREADS'] = str(n_cores)
+    
+    # Configure PyTorch threading
+    torch.set_num_threads(n_cores)
+    torch.set_num_interop_threads(min(4, n_cores // 2))
     
     # Enable optimized CPU kernels if available
-    if hasattr(torch.backends, 'mkl'):
-        torch.backends.mkl.enabled = True
-    if hasattr(torch.backends, 'mkldnn'):
-        torch.backends.mkldnn.enabled = True
+    try:
+        if hasattr(torch.backends, 'mkl') and hasattr(torch.backends.mkl, 'enabled'):
+            torch.backends.mkl.enabled = True
+    except Exception:
+        pass
+    try:
+        if hasattr(torch.backends, 'mkldnn') and hasattr(torch.backends.mkldnn, 'enabled'):
+            torch.backends.mkldnn.enabled = True
+    except Exception:
+        pass
     
     print("PyTorch optimized for {} CPU cores (intra: {}, inter: {})".format(
-        cpu_count, torch.get_num_threads(), torch.get_num_interop_threads()))
+        n_cores, torch.get_num_threads(), torch.get_num_interop_threads()))
     
-    action_high = eval_env.action_space.high[0]
-    action_low = eval_env.action_space.low[0]
-    state_size = eval_env.observation_space.shape[0]
-    action_size = eval_env.action_space.shape[0]
+    # Initialize environments and get action/state space info
+    temp_env = gym.make(args.env)
+    temp_env.reset(seed=seed)
+    action_high = temp_env.action_space.high[0]
+    action_low = temp_env.action_space.low[0]
+    state_size = temp_env.observation_space.shape[0]
+    action_size = temp_env.action_space.shape[0]
+    temp_env.close()  # Close temporary environment
     agent = Agent(state_size=state_size, action_size=action_size, n_step=args.nstep, per=args.per, munchausen=args.munchausen,distributional=args.iqn,
                  curiosity=(args.icm, args.add_ir), noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
-                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device, frames=args.frames, worker=args.worker, 
+                 LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device_str, frames=args.frames, 
                  min_replay_size=args.min_replay_size, use_compile=bool(args.compile)) 
     
     t0 = time.time()
@@ -266,10 +255,9 @@ if __name__ == "__main__":
         agent.actor_local.load_state_dict(torch.load(saved_model))
         evaluate(frame=None, capture=False)
     else:    
-        run(frames = args.frames,  # Keep total frames constant, not divided by workers
+        run(frames=args.frames,
             eval_every=args.eval_every,
-            eval_runs=args.eval_runs,
-            worker=args.worker)
+            eval_runs=args.eval_runs)
 
     # Final evaluation at the end of training
     print("\n" + "="*60)

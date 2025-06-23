@@ -47,7 +47,6 @@ class Agent():
                       EPSILON_DECAY = 1,
                       device = "cuda",
                       frames = 100000,
-                      worker=1,
                       min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
                       speed_mode=True,        # NEW: Enable speed optimizations
                       use_compile=True,       # NEW: Enable torch.compile optimization
@@ -86,7 +85,6 @@ class Agent():
         self.LEARN_NUMBER = LEARN_NUMBER
         self.EPSILON_DECAY = EPSILON_DECAY
         self.device = device
-        self.worker = worker  # Store worker count for learning frequency adjustment
         self.seed = random.seed(random_seed)
         self.use_amp = use_amp  # Store AMP setting
         
@@ -196,10 +194,10 @@ class Agent():
         print("Use Noise: ", noise_type)
         # Replay memory
         if per:
-            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=worker, beta_frames=frames)
+            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1, beta_frames=frames)
 
         else:
-            self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, n_step=n_step, parallel_env=worker, device=device, seed=random_seed, gamma=GAMMA)
+            self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, n_step=n_step, parallel_env=1, device=device, seed=random_seed, gamma=GAMMA)
         
         if distributional:
             self.learn = self.learn_distribution
@@ -214,14 +212,8 @@ class Agent():
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
 
-        # Adjust learning frequency based on worker count to maintain consistent learning rate
-        # When using multiple workers, we collect experiences faster, so we should learn less frequently
-        effective_learn_every = self.LEARN_EVERY * self.worker
-
-        # # Optimize learning frequency - learn less frequently but with more gradient steps
-        # # This reduces overhead while maintaining sample efficiency
-        # effective_learn_every = max(4, self.LEARN_EVERY * self.worker)  # Learn every 4+ steps minimum
-        # effective_learn_number = min(4, self.LEARN_NUMBER * 2)  # But learn more when we do learn
+        # Learning frequency for single environment setup
+        effective_learn_every = self.LEARN_EVERY
         effective_learn_number = self.LEARN_NUMBER
 
         # Learn only after minimum replay size is reached and we have enough samples
