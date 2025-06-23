@@ -367,32 +367,27 @@ This implementation includes several cutting-edge RL extensions, all compatible 
 
 ### Why Munchausen RL Excels for Swing Option Pricing
 
-Munchausen RL provides several unique advantages that make it particularly well-suited for swing option pricing problems:
+Munchausen RL enhances swing option pricing through entropy-regularized learning, particularly effective for the complex exercise strategies required in option pricing.
 
-#### **1. Enhanced Exploration of Exercise Strategies**
-- **Problem**: Swing options have complex, path-dependent optimal exercise policies that vary dramatically with market conditions
-- **Solution**: Munchausen RL's entropy bonus encourages the agent to explore diverse exercise strategies, preventing premature convergence to suboptimal "always exercise" or "never exercise" policies
-- **Benefit**: Discovers sophisticated timing strategies (e.g., exercising during price spikes while preserving capacity for future opportunities)
+**Core Enhancement:**
+Munchausen RL modifies the standard reward with an entropy bonus term:
 
-#### **2. Improved Policy Stability**
-- **Problem**: Traditional RL can exhibit unstable policies that oscillate between different exercise strategies
-- **Solution**: The entropy regularization in Munchausen RL acts as a natural regularizer, promoting smoother, more consistent exercise policies
-- **Benefit**: Leads to more robust pricing estimates and reduces variance in Monte Carlo evaluations
+$$
+r_{\text{M-RL}} = r_{\text{env}} + \alpha \log \pi(a_t | s_t)
+$$
 
-#### **3. Better Handling of Sparse Rewards**
-- **Problem**: In swing options, rewards are sparse (only when exercising in-the-money) and highly variable due to price volatility
-- **Solution**: Munchausen RL's intrinsic motivation (entropy bonus) provides consistent learning signal even when extrinsic rewards are sparse
-- **Benefit**: Maintains learning progress during periods of low volatility or out-of-the-money conditions
+where:
+- $r_{\text{env}}$ is the environmental reward (option payoff)
+- $\alpha > 0$ is the entropy regularization coefficient  
+- $\pi(a_t | s_t)$ is the policy probability of action $a_t$ in state $s_t$
+- The log term provides intrinsic motivation for exploration
 
-#### **4. Risk-Aware Decision Making**
-- **Problem**: Option pricing requires balancing expected returns with uncertainty (risk-neutral pricing)
-- **Solution**: The entropy term naturally incorporates uncertainty preferences, making the agent more risk-aware
-- **Benefit**: Exercise decisions better reflect the risk-return tradeoffs inherent in option pricing
-
-#### **5. Constraint-Aware Exploration**
-- **Problem**: Swing options have complex constraints (volume limits, refraction periods) that create irregular feasible action spaces
-- **Solution**: Entropy regularization helps the agent maintain diverse policies while respecting constraints
-- **Benefit**: Better exploration of boundary conditions and constraint interactions
+**Key Benefits for Swing Options:**
+- **Enhanced Exploration**: Prevents premature convergence to suboptimal "always/never exercise" policies
+- **Policy Stability**: Entropy regularization reduces oscillations between exercise strategies
+- **Sparse Reward Handling**: Intrinsic motivation maintains learning during out-of-the-money periods
+- **Risk-Aware Decisions**: Natural incorporation of uncertainty preferences for option pricing
+- **Constraint Navigation**: Better exploration of complex volume and refraction constraints
 
 ### Extension Benefits for Swing Options
 
