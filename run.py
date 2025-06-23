@@ -68,7 +68,6 @@ def run(frames=1000, eval_every=1000, eval_runs=5):
     i_episode = 1
     state, _ = train_env.reset()
     score = 0.0
-    curiosity_logs = []
     
     # Performance monitoring variables
     start_time = time.time()
@@ -82,12 +81,7 @@ def run(frames=1000, eval_every=1000, eval_runs=5):
         action_v = np.clip(action, action_low, action_high)
         next_state, reward, terminated, truncated, _ = train_env.step(action_v[0])
         done = terminated or truncated
-
         agent.step(state, action_v[0], reward, next_state, done, current_frame, writer)
-            
-        if args.icm:
-            reward_i = agent.icm.get_intrinsic_reward(state, next_state, action_v[0])
-            curiosity_logs.append((current_frame, reward_i))
         
         state = next_state
         score += float(reward)
@@ -112,17 +106,12 @@ def run(frames=1000, eval_every=1000, eval_runs=5):
             writer.add_scalar("Episode_Return", episode_return, current_frame)
             writer.add_scalar("Frames_Per_Second", frames_per_second, current_frame)
             
-            for v in curiosity_logs:
-                i, r = v[0], v[1]
-                writer.add_scalar("Intrinsic Reward", r, i)
-            
             # Enhanced performance monitoring output - matches your requested format
             print(f'\rEpisode Return = {episode_return:.3f} | Frames = {current_frame}/{frames} | Frames Per Second = {frames_per_second:.3f}', end="")
             
             i_episode += 1 
             state, _ = train_env.reset()
             score = 0.0
-            curiosity_logs = []
             
 
 
@@ -154,8 +143,6 @@ parser.add_argument("-t", "--tau", type=float, default=1e-3, help="Softupdate fa
 parser.add_argument("-g", "--gamma", type=float, default=0.99, help="discount factor gamma, default is 0.99")
 parser.add_argument("-n_cores", type=int, default=None, help="Maximum number of CPU cores to use (default: use all available cores)")
 parser.add_argument("--saved_model", type=str, default=None, help="Load a saved model to perform a test run!")
-parser.add_argument("--icm", type=int, default=0, choices=[0,1], help="Using Intrinsic Curiosity Module, default=0 (NO!)")
-parser.add_argument("--add_ir", type=int, default=0, choices=[0,1], help="Add intrisic reward to the extrinsic reward, default = 0 (NO!) ")
 parser.add_argument("--compile", type=int, default=0, choices=[0,1], help="Use torch.compile for model optimization, default=0 (NO!)")
 parser.add_argument("--fp32", type=int, default=1, choices=[0,1], help="Use float32 precision for better performance, default=1 (YES!)")
 
@@ -246,7 +233,7 @@ if __name__ == "__main__":
     action_size = temp_env.action_space.shape[0]
     temp_env.close()  # Close temporary environment
     agent = Agent(state_size=state_size, action_size=action_size, n_step=args.nstep, per=args.per, munchausen=args.munchausen,distributional=args.iqn,
-                 curiosity=(args.icm, args.add_ir), noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
+                 noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
                  LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device_str, frames=args.frames, 
                  min_replay_size=args.min_replay_size, use_compile=bool(args.compile)) 
     

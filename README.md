@@ -10,11 +10,9 @@ This implementation extends the core D4PG algorithm with several advanced featur
 
 - **🎯 Distributional Critic**: Uses **IQN (Implicit Quantile Networks)** instead of traditional C51 for improved distributional learning
 - **🚀 Munchausen RL**: Entropy-regularized policy improvement for enhanced exploration and stability
-- **🧠 Munchausen RL**: Enhanced exploration through better action-value estimation
 - **⚡ Prioritized Experience Replay (PER)**: Importance sampling for more efficient learning from experience
 - **🔄 N-Step Bootstrapping**: Multi-step returns for faster value propagation
 - **🌊 Parallel Environments**: Vectorized environment support for accelerated training
-- **🎮 Intrinsic Curiosity Module (ICM)**: Optional curiosity-driven exploration
 - **💨 Performance Optimizations**: torch.compile, automatic mixed precision, and CPU/GPU optimizations
 
 ### D4PG Core Algorithm
@@ -62,15 +60,6 @@ graph TB
         PER["`<b>PrioritizedReplay</b><br/>Priority-based sampling<br/>using TD-errors`"]
     end
     
-    %% Curiosity-Driven Exploration
-    subgraph ICMModule["<b>Intrinsic Curiosity</b><br/>(scripts/ICM.py)"]
-        ICM["`<b>ICM Module</b><br/>Curiosity-driven exploration`"]
-        
-        Forward["`<b>Forward Model</b><br/>Predicts next state<br/>from current state + action`"]
-        
-        Inverse["`<b>Inverse Model</b><br/>Predicts action<br/>from state transitions`"]
-    end
-    
     %% Environment & Training Loop
     subgraph Environment["<b>Environment Interaction</b>"]
         GymEnv["`<b>Gymnasium Environment</b><br/>(e.g., Pendulum-v1)<br/>Provides states, rewards`"]
@@ -105,10 +94,6 @@ graph TB
     Agent --> StandardReplay
     Agent --> PER
     
-    Agent --> ICM
-    ICM --> Forward
-    ICM --> Inverse
-    
     Agent --> GymEnv
     Agent --> Noise
     
@@ -128,7 +113,6 @@ graph TB
         UpdateCritic["`<b>7. Update Critic/IQN</b><br/>minimize distributional loss`"]
         UpdateActor["`<b>8. Update Actor</b><br/>maximize Q-value`"]
         UpdateTargets["`<b>9. Soft update target networks</b><br/>θ' ← τθ + (1-τ)θ'`"]
-        UpdateICM["`<b>10. Update ICM (if enabled)</b><br/>for intrinsic rewards`"]
         
         ObserveState --> SelectAction
         SelectAction --> ExecuteAction
@@ -138,8 +122,7 @@ graph TB
         ComputeTargets --> UpdateCritic
         UpdateCritic --> UpdateActor
         UpdateActor --> UpdateTargets
-        UpdateTargets --> UpdateICM
-        UpdateICM --> ObserveState
+        UpdateTargets --> ObserveState
     end
     
     %% Key Features Annotations
@@ -154,7 +137,7 @@ graph TB
     class TensorBoard,Notebook,StatScript analysisComponent
     
     %% Feature Annotations
-    Agent -.->|"`<b>Key Features:</b><br/>• Distributional RL (IQN)<br/>• Munchausen RL<br/>• N-step returns<br/>• Prioritized Experience Replay<br/>• Intrinsic Curiosity (ICM)<br/>• torch.compile optimization<br/>• Mixed precision training`"| Networks
+    Agent -.->|"`<b>Key Features:</b><br/>• Distributional RL (IQN)<br/>• Munchausen RL<br/>• N-step returns<br/>• Prioritized Experience Replay<br/>• torch.compile optimization<br/>• Mixed precision training`"| Networks
 ```
 
 ### Architecture Highlights
@@ -165,7 +148,7 @@ graph TB
 - **📊 Comprehensive Monitoring**: TensorBoard integration and analysis tools
 - **⚡ Performance Optimized**: PyTorch 2.x features for maximum efficiency
 
-The diagram shows how the main training script orchestrates the interaction between neural networks, experience replay, curiosity-driven exploration, and environment interaction, with comprehensive monitoring and storage capabilities.
+The diagram shows how the main training script orchestrates the interaction between neural networks, experience replay, and environment interaction, with comprehensive monitoring and storage capabilities.
 
 ## Dependencies
 
@@ -285,7 +268,6 @@ This implementation includes several cutting-edge extensions that can be combine
 - **Distributional IQN Critic**: Implicit Quantile Networks for robust distributional value learning with reduced variance
 - **Munchausen RL**: Entropy-regularized policy improvement that adds a scaled log-policy term to rewards for enhanced exploration
 - **Parallel Environments**: Vectorized environment execution for faster data collection and training acceleration
-- **Intrinsic Curiosity Module (ICM)**: Optional curiosity-driven exploration using prediction error as intrinsic reward
 - **Performance Optimizations**: torch.compile acceleration, automatic mixed precision, and optimized CPU/GPU utilization
 
 ### Extension Benefits
@@ -382,7 +364,6 @@ D4PG-QR-FRM/
 │   ├── agent.py             # D4PG agent with all extensions
 │   ├── networks.py          # Actor/Critic networks (standard & deep)
 │   ├── replay_buffer.py     # PER and standard replay buffer
-│   ├── ICM.py               # Intrinsic Curiosity Module
 │   └── MultiPro.py          # Vectorized environment wrapper
 ├── runs/                     # TensorBoard logs and saved models
 └── __pycache__/             # Python bytecode cache

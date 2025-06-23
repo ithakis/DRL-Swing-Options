@@ -58,10 +58,10 @@ if __name__ == "__main__":
     
     # create agent
     agent = Agent(state_size=state_size, action_size=action_size, n_step=parameters.nstep, per=parameters.per, munchausen=parameters.munchausen,distributional=parameters.iqn,
-                 curiosity=(parameters.icm, parameters.add_ir), noise_type=parameters.noise, random_seed=parameters.seed,
+                 noise_type=parameters.noise, random_seed=parameters.seed,
                  hidden_size=parameters.layer_size,
                  BATCH_SIZE=parameters.batch_size, BUFFER_SIZE=parameters.replay_memory, GAMMA=parameters.gamma,
                  LR_ACTOR=parameters.lr_a, LR_CRITIC=parameters.lr_c, TAU=parameters.tau, LEARN_EVERY=parameters.learn_every,
-                 LEARN_NUMBER=parameters.learn_number, device="cpu", frames=0, worker=parameters.worker) 
+                 LEARN_NUMBER=parameters.learn_number, device="cpu", frames=0) 
     evaluate(args.runs)
     

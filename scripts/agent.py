@@ -9,12 +9,10 @@ from torch.nn.utils import clip_grad_norm_
 
 try:
     # Try relative imports first (when called from run.py)
-    from .ICM import ICM, Forward, Inverse
     from .networks import IQN, Actor, Critic
     from .replay_buffer import PrioritizedReplay, ReplayBuffer
 except ImportError:
     # Fall back to absolute imports (when called from notebook or directly)
-    from ICM import ICM, Forward, Inverse
     from networks import IQN, Actor, Critic
     from replay_buffer import PrioritizedReplay, ReplayBuffer
 
@@ -31,7 +29,6 @@ class Agent():
                       munchausen,
                       distributional,
                       noise_type,
-                      curiosity,
                       random_seed,
                       hidden_size,
                       BUFFER_SIZE = int(1e6),  # replay buffer size
@@ -77,8 +74,6 @@ class Agent():
         self.munchausen = munchausen
         self.n_step = n_step
         self.distributional = distributional
-        self.curiosity = curiosity[0]
-        self.reward_addon = curiosity[1]
         self.GAMMA = GAMMA
         self.TAU = TAU
         self.LEARN_EVERY = LEARN_EVERY
@@ -177,13 +172,6 @@ class Agent():
                 print("Falling back to non-compiled models")
         elif use_compile:
             print("⚠️ torch.compile not available in this PyTorch version")
-
-        if self.curiosity != 0:
-            inverse_m = Inverse(self.state_size, self.action_size)
-            forward_m = Forward(self.state_size, self.action_size, inverse_m.calc_input_layer(), device=device)
-            self.icm = ICM(inverse_m, forward_m, device=device)#.to(device)
-            print(inverse_m, forward_m)
-            
         # Noise process
         self.noise_type = noise_type
         if noise_type == "ou":
@@ -228,8 +216,6 @@ class Agent():
                 losses = self.learn(experiences, self.GAMMA)
             writer.add_scalar("Critic_loss", losses[0], timestamp)
             writer.add_scalar("Actor_loss", losses[1], timestamp)
-            if self.curiosity:
-                writer.add_scalar("ICM_loss", losses[2], timestamp)
         elif not buffer_has_min_samples:
             # Log initial collection progress
             collection_progress = len(self.memory) / self.min_replay_size * 100
@@ -278,18 +264,6 @@ class Agent():
         dones = dones.to(self.device, non_blocking=True)
         weights = weights.to(self.device, non_blocking=True)
         
-        icm_loss = 0
-        # calculate curiosity
-        if self.curiosity:
-            icm_loss, forward_pred_err = self.icm.calc_errors(state1=states, state2=next_states, action=actions)
-            r_i = self.eta * forward_pred_err
-            assert r_i.shape == rewards.shape, "r_ and r_e have not the same shape"
-            
-            if self.reward_addon == 1:
-                rewards += r_i.detach()
-            else:
-                rewards = r_i.detach()
-
         # ---------------------------- update critic ---------------------------- #
         if not self.munchausen:
             # Get predicted next-state actions and Q values from target models
@@ -359,7 +333,7 @@ class Agent():
         
         if self.noise_type == "ou":
             self.noise.reset()
-        return critic_loss.detach().cpu().numpy(), actor_loss.detach().cpu().numpy(), icm_loss
+        return critic_loss.detach().cpu().numpy(), actor_loss.detach().cpu().numpy()
 
     
     def soft_update(self, local_model, target_model):
