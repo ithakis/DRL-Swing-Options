@@ -6,7 +6,7 @@ import gymnasium as gym
 import numpy as np
 
 #from  files import MultiPro
-from scripts.agent import Agent
+from src.agent import Agent
 
 
 def evaluate(eval_runs=5):
@@ -62,6 +62,6 @@ if __name__ == "__main__":
                  hidden_size=parameters.layer_size,
                  BATCH_SIZE=parameters.batch_size, BUFFER_SIZE=parameters.replay_memory, GAMMA=parameters.gamma,
                  LR_ACTOR=parameters.lr_a, LR_CRITIC=parameters.lr_c, TAU=parameters.tau, LEARN_EVERY=parameters.learn_every,
-                 LEARN_NUMBER=parameters.learn_number, device="cpu", frames=0) 
+                 LEARN_NUMBER=parameters.learn_number, device="cpu", paths=0) 
     evaluate(args.runs)
     

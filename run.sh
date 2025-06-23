@@ -4,43 +4,48 @@
 #  tail -f .terminal_output.txt
 
 
-# Baseline4 - Benchmark:
+# Monthly Swing Option Baseline:
 args=( 
-    -env="Pendulum-v1"
-    -frames=50000
+    # Training parameters
+    -n_paths=16384
     -eval_every=500
     -munchausen=1
-    -eval_runs=5
+    -eval_runs=1024
     -nstep=5
     -learn_every=2
     -per=1
     -iqn=0
-    -w=1
     -bs=64
     -layer_size=128
     -t=5e-3
     --compile=0
+    
+    # Monthly Swing Option Contract Parameters
+    --strike=100.0              # At-the-money strike
+    --maturity=0.0833           # 1 month = 1/12 year
+    --n_rights=22               # ~22 trading days in a month
+    --q_min=0.0                 # No minimum exercise requirement per day
+    --q_max=2.0                 # Max 2 units per day (reasonable daily limit)
+    --Q_min=0.0                 # No minimum total exercise requirement
+    --Q_max=20.0                # Max 20 units total over the month (10 days worth)
+    --risk_free_rate=0.05       # 5% annual risk-free rate
+    --min_refraction_days=0     # No refraction period (can exercise daily)
+    
+    # Market Process Parameters (monthly calibration)
+    --S0=100.0                  # Initial spot price
+    --alpha=12.0                # Higher mean reversion for monthly timeframe
+    --sigma=1.2                 # Moderate volatility for monthly period
+    --beta=150.0                # Jump decay rate
+    --lam=6.0                   # Jump intensity (6 jumps per year average)
+    --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -info "Baseline1" -seed 11
-python run.py "${args[@]}" -info "Baseline2" -seed 12
-python run.py "${args[@]}" -info "Baseline3" -seed 13
-python run.py "${args[@]}" -info "Baseline4" -seed 14
-python run.py "${args[@]}" -info "Baseline5" -seed 15
-python run.py "${args[@]}" -info "Baseline6" -seed 16
-python run.py "${args[@]}" -info "Baseline7" -seed 17
-python run.py "${args[@]}" -info "Baseline8" -seed 18
-python run.py "${args[@]}" -info "Baseline9" -seed 19
-
-
-# Episode Return = -123.790 | Frames = 30000/30000 | Frames Per Second = 537.0734
-# ============================================================
-# FINAL EVALUATION RESULTS
-# ============================================================
-# Average Episode Return: -396.093 ± 190.691
-# Min Episode Return: -715.351
-# Max Episode Return: -121.875
-# Number of Evaluation Episodes: 10
-# ============================================================
-
-# Training Time:  00:00:55.97
+python run.py "${args[@]}" -info "MonthlySwing_Baseline1" -seed 11
+python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12
+python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13
+python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14
+python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15
+python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16
+python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17
+python run.py "${args[@]}" -info "MonthlySwing_Baseline8" -seed 18
+python run.py "${args[@]}" -info "MonthlySwing_Baseline9" -seed 19
 

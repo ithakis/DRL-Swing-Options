@@ -43,7 +43,7 @@ class Agent():
                       EPSILON = 1.0,
                       EPSILON_DECAY = 1,
                       device = "cuda",
-                      frames = 100000,
+                      paths = 100000,
                       min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
                       speed_mode=True,        # NEW: Enable speed optimizations
                       use_compile=True,       # NEW: Enable torch.compile optimization
@@ -57,6 +57,16 @@ class Agent():
             action_size (int): dimension of each action
             random_seed (int): random seed
         """
+        # Convert device string to torch device object if needed
+        if isinstance(device, str):
+            if device.lower() == "cuda" or device.lower() == "gpu":
+                if torch.cuda.is_available():
+                    device = torch.device("cuda")
+                else:
+                    device = torch.device("cpu")
+            else:
+                device = torch.device("cpu")
+        
         # CPU-specific optimizations
         if device.type == 'cpu':
             # Enable optimized CPU kernels if available
@@ -182,7 +192,7 @@ class Agent():
         print("Use Noise: ", noise_type)
         # Replay memory
         if per:
-            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1, beta_frames=frames)
+            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1, beta_paths=paths)
 
         else:
             self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, n_step=n_step, parallel_env=1, device=device, seed=random_seed, gamma=GAMMA)
@@ -262,7 +272,8 @@ class Agent():
         rewards = rewards.to(self.device, non_blocking=True)
         next_states = next_states.to(self.device, non_blocking=True)
         dones = dones.to(self.device, non_blocking=True)
-        weights = weights.to(self.device, non_blocking=True)
+        if weights is not None:
+            weights = weights.to(self.device, non_blocking=True)
         
         # ---------------------------- update critic ---------------------------- #
         if not self.munchausen:

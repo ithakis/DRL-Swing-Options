@@ -70,12 +70,12 @@ class PrioritizedReplay(object):
     """
     Proportional Prioritization
     """
-    def __init__(self, capacity, batch_size, device, seed, gamma=0.99, n_step=1, parallel_env=1, alpha=0.6, beta_start = 0.4, beta_frames=100000):
+    def __init__(self, capacity, batch_size, device, seed, gamma=0.99, n_step=1, parallel_env=1, alpha=0.6, beta_start = 0.4, beta_paths=100000):
         self.alpha = alpha
         self.beta_start = beta_start
-        self.beta_frames = beta_frames
+        self.beta_paths = beta_paths
         self.device = device
-        self.frame = 1 #for beta calculation
+        self.path = 1 #for beta calculation
         self.batch_size = batch_size
         self.capacity   = capacity
         self.buffer     = deque(maxlen=capacity)
@@ -96,16 +96,16 @@ class PrioritizedReplay(object):
         
         return n_step_buffer[0][0], n_step_buffer[0][1], Return, n_step_buffer[-1][3], n_step_buffer[-1][4]
 
-    def beta_by_frame(self, frame_idx):
+    def beta_by_path(self, path_idx):
         """
-        Linearly increases beta from beta_start to 1 over time from 1 to beta_frames.
+        Linearly increases beta from beta_start to 1 over time from 1 to beta_paths.
         
         3.4 ANNEALING THE BIAS (Paper: PER)
         We therefore exploit the flexibility of annealing the amount of importance-sampling
         correction over time, by defining a schedule on the exponent 
         that reaches 1 only at the end of learning. In practice, we linearly anneal from its initial value 0 to 1
         """
-        return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / self.beta_frames)
+        return min(1.0, self.beta_start + path_idx * (1.0 - self.beta_start) / self.beta_paths)
     
     def add(self, state, action, reward, next_state, done):
         if self.iter_ == self.parallel_env:
@@ -141,9 +141,9 @@ class PrioritizedReplay(object):
         indices = np.random.choice(N, self.batch_size, p=P) 
         samples = [self.buffer[idx] for idx in indices]
         
-        beta = self.beta_by_frame(self.frame)
+        beta = self.beta_by_path(self.path)
         #print(beta)
-        self.frame+=1
+        self.path+=1
                 
         #Compute importance-sampling weight
         weights  = (N * P[indices])**(-beta)
