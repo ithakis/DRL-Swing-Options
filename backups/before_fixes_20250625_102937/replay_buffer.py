@@ -53,31 +53,11 @@ class ReplayBuffer:
         """Randomly sample a batch of experiences from memory."""
         experiences = random.sample(self.memory, k=self.batch_size)
 
-        # Pre-allocate numpy arrays for better memory efficiency
-        batch_size = len(experiences)
-        state_shape = experiences[0].state.shape
-        action_shape = experiences[0].action.shape
-        
-        states_np = np.empty((batch_size,) + state_shape, dtype=np.float32)
-        actions_np = np.empty((batch_size,) + action_shape, dtype=np.float32)
-        rewards_np = np.empty((batch_size, 1), dtype=np.float32)
-        next_states_np = np.empty((batch_size,) + state_shape, dtype=np.float32)
-        dones_np = np.empty((batch_size, 1), dtype=np.float32)
-        
-        # Fill arrays efficiently
-        for i, e in enumerate(experiences):
-            states_np[i] = e.state
-            actions_np[i] = e.action
-            rewards_np[i] = e.reward
-            next_states_np[i] = e.next_state
-            dones_np[i] = e.done
-
-        # Convert to tensors with non_blocking transfer for better performance
-        states = torch.from_numpy(states_np).to(self.device, non_blocking=True)
-        actions = torch.from_numpy(actions_np).to(self.device, non_blocking=True)
-        rewards = torch.from_numpy(rewards_np).to(self.device, non_blocking=True)
-        next_states = torch.from_numpy(next_states_np).to(self.device, non_blocking=True)
-        dones = torch.from_numpy(dones_np).to(self.device, non_blocking=True)
+        states = torch.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
+        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(self.device)
+        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
+        next_states = torch.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
+        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
 
         return (states, actions, rewards, next_states, dones, None, None)
 
@@ -162,15 +142,15 @@ class PrioritizedReplay(object):
             
         # More efficient priority sampling - avoid creating full arrays
         if not hasattr(self, '_prob_cache') or len(self._prob_cache) != N:
-            prios = np.array(list(self.priorities), dtype=np.float32)
+            prios = np.array(self.priorities, dtype=np.float32)
             probs = prios ** self.alpha
             self._prob_cache = probs / probs.sum()
         
         P = self._prob_cache
         
-        # Get indices based on probability  
+        # Get indices based on probability
         indices = np.random.choice(N, self.batch_size, p=P, replace=True)
-        indices = np.asarray(indices, dtype=int)  # Ensure it's a numpy array
+        samples = [self.buffer[idx] for idx in indices]
         
         beta = self.beta_by_path(self.path)
         self.path += 1
@@ -180,17 +160,9 @@ class PrioritizedReplay(object):
         weights = weights / weights.max()
         weights = weights.astype(np.float32)
         
-        # Extract samples efficiently
-        states, actions, rewards, next_states, dones = [], [], [], [], []
-        for idx in indices:
-            state, action, reward, next_state, done = self.buffer[idx]
-            states.append(state)
-            actions.append(action)
-            rewards.append(reward)
-            next_states.append(next_state)
-            dones.append(done)
+        states, actions, rewards, next_states, dones = zip(*samples)
 
-        # More efficient tensor creation with concatenation
+        # More efficient tensor creation with pre-allocated arrays
         states = torch.from_numpy(np.concatenate(states).astype(np.float32)).to(self.device, non_blocking=True)
         next_states = torch.from_numpy(np.concatenate(next_states).astype(np.float32)).to(self.device, non_blocking=True)
         actions = torch.cat(actions).to(self.device, non_blocking=True)

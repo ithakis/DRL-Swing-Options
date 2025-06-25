@@ -385,23 +385,6 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
                 paths_per_second = 0.0
                 steps_per_second = 0.0
         
-        # Performance degradation detection
-        if current_path > 100 and current_path % 1000 == 0:
-            # Check if performance has degraded significantly
-            if hasattr(agent, 'monitor_performance'):
-                perf_info = agent.monitor_performance()
-                if perf_info:
-                    print(f"\n📊 Performance Check (Episode {current_path}):")
-                    print(f"  Steps/sec: {steps_per_second:.1f}")
-                    print(f"  Memory: {perf_info['memory_mb']:.1f} MB")
-                    print(f"  Buffer: {perf_info['buffer_size']:,} ({perf_info['buffer_fill_ratio']*100:.1f}%)")
-                    print(f"  Learn every: {perf_info['current_learn_every']} steps")
-                    
-                    # Force cleanup if performance is poor
-                    if steps_per_second < 100 and perf_info['memory_mb'] > 6000:
-                        print("⚠️ Low performance detected, forcing memory cleanup...")
-                        agent.cleanup_memory(force=True)
-        
         # Calculate episode return (accumulated reward for this path)
         episode_return = float(score)
         

@@ -8,17 +8,21 @@
 args=( 
     # Training parameters
     -n_paths=16384
-    -eval_every=500
+    -eval_every=1500
+    -eval_runs=4096
     -munchausen=1
-    -eval_runs=1024
     -nstep=5
     -learn_every=2
     -per=1
     -iqn=0
     -bs=64
     -layer_size=128
+    --min_replay_size=5000    # Increase from 1000 to 5000
     -t=5e-3
-    --compile=0
+    -lr_a=2e-4 # from lr_a=3e-4
+    -lr_c=2e-4 # from lr_c=3e-4
+    --compile=1
+    -n_cores=2
     
     # Monthly Swing Option Contract Parameters
     --strike=100.0              # At-the-money strike
@@ -39,13 +43,13 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -info "MonthlySwing_Baseline1" -seed 11
-python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12
-python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13
-python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14
-python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15
-python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16
-python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17
-python run.py "${args[@]}" -info "MonthlySwing_Baseline8" -seed 18
-python run.py "${args[@]}" -info "MonthlySwing_Baseline9" -seed 19
+python run.py "${args[@]}" -info "MonthlySwing_6" -seed 11 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16 &
+python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17 
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline8" -seed 18
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline9" -seed 19
 
