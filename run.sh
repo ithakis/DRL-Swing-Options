@@ -21,7 +21,8 @@ args=(
     -t=5e-3
     -lr_a=2e-4 # from lr_a=3e-4
     -lr_c=2e-4 # from lr_c=3e-4
-    --compile=1
+    --compile=0 # Disable JIT compilation for debugging
+    --use_circular_buffer=1   # Enable optimized circular array buffer
     -n_cores=2
     
     # Monthly Swing Option Contract Parameters
@@ -43,7 +44,7 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -info "MonthlySwing_6" -seed 11 &
+python run.py "${args[@]}" -info "MonthlySwing_7" -seed 11 &
 python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12 &
 python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13 &
 python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14 &

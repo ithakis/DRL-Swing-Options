@@ -395,7 +395,8 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
                     print(f"  Steps/sec: {steps_per_second:.1f}")
                     print(f"  Memory: {perf_info['memory_mb']:.1f} MB")
                     print(f"  Buffer: {perf_info['buffer_size']:,} ({perf_info['buffer_fill_ratio']*100:.1f}%)")
-                    print(f"  Learn every: {perf_info['current_learn_every']} steps")
+                    if 'buffer_memory_mb' in perf_info and perf_info['buffer_memory_mb'] > 0:
+                        print(f"  Buffer memory: {perf_info['buffer_memory_mb']:.1f} MB")
                     
                     # Force cleanup if performance is poor
                     if steps_per_second < 100 and perf_info['memory_mb'] > 6000:
@@ -480,6 +481,7 @@ parser.add_argument("-n_cores", type=int, default=None, help="Maximum number of 
 parser.add_argument("--saved_model", type=str, default=None, help="Load a saved model to perform a test run!")
 parser.add_argument("--compile", type=int, default=0, choices=[0,1], help="Use torch.compile for model optimization, default=0 (NO!)")
 parser.add_argument("--fp32", type=int, default=1, choices=[0,1], help="Use float32 precision for better performance, default=1 (YES!)")
+parser.add_argument("--use_circular_buffer", type=int, default=1, choices=[0,1], help="Use optimized circular array buffer instead of deque, default=1 (YES!)")
 
 args = parser.parse_args()
 
@@ -609,7 +611,7 @@ if __name__ == "__main__":
     agent = Agent(state_size=state_size, action_size=action_size, n_step=args.nstep, per=args.per, munchausen=args.munchausen,distributional=args.iqn,
                  noise_type=args.noise, random_seed=seed, hidden_size=HIDDEN_SIZE, BATCH_SIZE=BATCH_SIZE, BUFFER_SIZE=BUFFER_SIZE, GAMMA=GAMMA,
                  LR_ACTOR=LR_ACTOR, LR_CRITIC=LR_CRITIC, TAU=TAU, LEARN_EVERY=args.learn_every, LEARN_NUMBER=args.learn_number, device=device_str, paths=args.n_paths, 
-                 min_replay_size=args.min_replay_size, use_compile=bool(args.compile)) 
+                 min_replay_size=args.min_replay_size, use_compile=bool(args.compile), use_circular_buffer=bool(args.use_circular_buffer)) 
     
     t0 = time.time()
     if saved_model is not None:
