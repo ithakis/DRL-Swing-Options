@@ -25,6 +25,35 @@ This implementation uses the **Hambly-Howison-Kluge (HHK) stochastic process** t
 
 The D4PG agent learns optimal exercise policies while the critic network provides swing option valuations through Monte Carlo simulation.
 
+## Traditional Methods for Comparison
+
+To validate our reinforcement learning approach, we also implement traditional pricing methods in `swing_option_pricing.py`:
+
+### Longstaff-Schwartz Monte Carlo (LSM)
+- **Backward induction** with regression-based continuation value estimation
+- Uses **polynomial basis functions** to approximate the optimal exercise boundary
+- Handles multiple exercise rights through state-dependent regression
+- Provides pricing **confidence intervals** and exercise probability analysis
+
+### Key Features of Traditional Implementation
+- **HHK Model Integration**: Seamless compatibility with existing spot price simulation
+- **Flexible Basis Functions**: Polynomial and Random Forest regression support  
+- **Comprehensive Analysis**: Parameter sensitivity, convergence studies, scenario analysis
+- **Validation Framework**: Cross-validation between RL and traditional methods
+
+This allows direct comparison between modern RL techniques and established financial engineering methods for swing option pricing.
+
+### LSM Benchmark Integration
+
+The LSM benchmark is **automatically computed** before RL training begins:
+
+- **Same Monte Carlo Paths**: LSM uses the exact same pre-generated HHK paths as the RL agent
+- **Fair Comparison**: Eliminates Monte Carlo noise differences between methods  
+- **Automatic Logging**: LSM benchmark results are logged to CSV files alongside RL results
+- **Performance Metrics**: Direct RL vs LSM comparison displayed in final evaluation
+
+This integration ensures that RL performance can be objectively measured against the established LSM benchmark using identical market scenarios.
+
 ## Algorithm Overview
 
 **D4PG (Distributional Deep Deterministic Policy Gradient)** extends DDPG by learning the full distribution over returns rather than just expected values. This is particularly valuable for swing option pricing where uncertainty quantification is crucial for risk management.

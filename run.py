@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
 from src.swing_env import SwingOptionEnv
+from src.longstaff_schwartz_pricer import use_same_paths_for_lsm_and_rl
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
@@ -516,6 +517,44 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
     print(f"   Training paths: {training_S.shape[0]} x {training_S.shape[1]} steps")
     print(f"   Evaluation paths: {eval_S.shape[0]} x {eval_S.shape[1]} steps")
     
+    # Compute LSM benchmark using the same evaluation paths that will be used by RL
+    print(f"\n🔍 Computing Longstaff-Schwartz (LSM) benchmark price...")
+    lsm_start = time.time()
+    try:
+        lsm_results = use_same_paths_for_lsm_and_rl(
+            eval_t,  # Time grid
+            eval_S,  # Spot price paths (same as RL will use)
+            eval_X,  # X process paths
+            eval_Y,  # Y process paths
+            eval_env.contract,  # SwingContract instance
+            random_seed=args.seed
+        )
+        lsm_price = lsm_results['lsm_option_value_same_paths']
+        lsm_time = time.time() - lsm_start
+        print(f"✅ LSM Benchmark Price: {lsm_price:.6f} (computed in {lsm_time:.2f}s)")
+        print(f"   Using {eval_S.shape[0]} Monte Carlo paths")
+        
+        # Log LSM benchmark to CSV for comparison
+        if evaluation_csv is not None:
+            # Create a dummy pricing_stats dict for LSM to use the same logging format
+            lsm_stats = {
+                'option_price': lsm_price,
+                'price_std': lsm_results['lsm_std_error_same_paths'],
+                'confidence_95': (lsm_results['lsm_confidence_interval_same_paths'][1] - 
+                                lsm_results['lsm_confidence_interval_same_paths'][0]) / 2,
+                'avg_total_exercised': lsm_results['lsm_expected_exercises_same_paths'],
+                'avg_exercise_count': lsm_results['lsm_expected_exercises_same_paths'],
+                'all_returns': [lsm_price],  # Single deterministic price
+                'n_runs': lsm_results['lsm_n_paths_same_paths']
+            }
+            log_evaluation_run(evaluation_csv, 0, "LSM_Benchmark", lsm_stats)
+        
+    except Exception as e:
+        print(f"⚠️ LSM benchmark computation failed: {e}")
+        lsm_price = None
+    
+    print(f"{'='*60}")
+    
     # Performance monitoring variables
     start_time = time.time()
     
@@ -627,8 +666,8 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
         
         print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_second:.1f} | Steps/sec = {steps_per_second:.0f}')
     
-    # Return the evaluation paths for final evaluation
-    return eval_t, eval_S, eval_X, eval_Y
+    # Return the evaluation paths and LSM benchmark for final evaluation
+    return eval_t, eval_S, eval_X, eval_Y, lsm_price
             
 
 
@@ -824,8 +863,9 @@ if __name__ == "__main__":
         agent.actor_local.load_state_dict(torch.load(saved_model))
         evaluate(path=None, capture=False, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir)
         eval_t, eval_S, eval_X, eval_Y = None, None, None, None  # No pre-generated paths for saved model
+        lsm_price = None  # No LSM benchmark for saved model
     else:    
-        eval_t, eval_S, eval_X, eval_Y = run(n_paths=args.n_paths,
+        eval_t, eval_S, eval_X, eval_Y, lsm_price = run(n_paths=args.n_paths,
             eval_every=args.eval_every,
             eval_runs=args.eval_runs,
             training_csv=training_csv,
@@ -888,11 +928,27 @@ if __name__ == "__main__":
     print(f"Max Episode Return: {max_return:.3f}")
     print(f"Number of Evaluation Episodes: {final_eval_runs}")
     
+    # Display LSM vs RL comparison if available
+    if 'lsm_price' in locals() and lsm_price is not None:
+        print(f"\n📊 BENCHMARK COMPARISON:")
+        print(f"   LSM (Traditional): {lsm_price:.6f}")
+        print(f"   RL Agent:         {avg_return:.6f}")
+        if lsm_price > 0:
+            rl_performance = (avg_return / lsm_price - 1) * 100
+            print(f"   RL Performance:   {rl_performance:+.2f}% vs LSM")
+        print(f"   {'='*40}")
+    
     # Log final metrics to tensorboard
     writer.add_scalar("Final_Evaluation/Average_Return", avg_return, args.n_paths)
     writer.add_scalar("Final_Evaluation/Std_Return", std_return, args.n_paths)
     writer.add_scalar("Final_Evaluation/Min_Return", min_return, args.n_paths)
     writer.add_scalar("Final_Evaluation/Max_Return", max_return, args.n_paths)
+    
+    # Log LSM benchmark to tensorboard if available
+    if 'lsm_price' in locals() and lsm_price is not None:
+        writer.add_scalar("Final_Evaluation/LSM_Benchmark", lsm_price, args.n_paths)
+        if lsm_price > 0:
+            writer.add_scalar("Final_Evaluation/RL_vs_LSM_Ratio", avg_return / lsm_price, args.n_paths)
     
     print("="*60)
 
