@@ -259,6 +259,172 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
     }
 
 
+def evaluate_with_pregenerated_paths(path, eval_runs=5, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
+    """
+    Evaluation function using pre-generated paths
+    """
+    # Use pre-generated evaluation paths
+    pricing_stats = evaluate_swing_option_price_pregenerated(
+        agent, eval_env, runs=eval_runs, 
+        raw_episodes_csv=raw_episodes_csv, training_episode=path, validation_runs_dir=validation_runs_dir,
+        eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y
+    )
+    avg_price = pricing_stats['option_price']
+    
+    # Log to CSV if file path provided
+    if evaluation_csv is not None and path is not None:
+        log_evaluation_run(evaluation_csv, path, 1, pricing_stats)
+    
+    if path is not None:
+        writer.add_scalar("Swing_Option_Price", avg_price, path)
+        writer.add_scalar("Price_Std", pricing_stats['price_std'], path)
+        writer.add_scalar("Avg_Total_Exercised", pricing_stats['avg_total_exercised'], path)
+        writer.add_scalar("Avg_Exercise_Count", pricing_stats['avg_exercise_count'], path)
+        
+        # Print detailed evaluation results
+        print(f"\n{'='*50}")
+        print(f"EVALUATION RESULTS (Path {path})")
+        print(f"{'='*50}")
+        print(f"Option Price: {avg_price:.3f} ± {pricing_stats['confidence_95']:.3f}")
+        print(f"Price Std Dev: {pricing_stats['price_std']:.3f}")
+        print(f"Avg Total Exercised: {pricing_stats['avg_total_exercised']:.3f}")
+        print(f"Avg Exercise Count: {pricing_stats['avg_exercise_count']:.1f}")
+        print(f"Evaluation Runs: {pricing_stats['n_runs']}")
+        print(f"Min Return: {min(pricing_stats['all_returns']):.3f}")
+        print(f"Max Return: {max(pricing_stats['all_returns']):.3f}")
+        print(f"{'='*50}")
+    
+    return pricing_stats['all_returns']
+
+
+def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_episodes_csv=None, training_episode=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
+    """
+    Evaluate swing option price using pre-generated Monte Carlo paths
+    
+    Args:
+        agent: Trained D4PG agent
+        eval_env: Swing option environment for evaluation
+        runs: Number of Monte Carlo runs (should match pre-generated paths)
+        raw_episodes_csv: Path to raw episodes CSV file for detailed logging
+        training_episode: Current training episode number for logging
+        validation_runs_dir: Directory for detailed step-by-step CSV files
+        eval_t: Pre-generated time grid
+        eval_S: Pre-generated spot price paths
+        eval_X: Pre-generated X process paths
+        eval_Y: Pre-generated Y process paths
+        
+    Returns:
+        dict: Dictionary with pricing statistics
+    """
+    discounted_returns = []
+    exercise_stats = []
+    all_episodes_step_data = []  # Collect step data for all episodes
+    
+    # Use min to handle case where we have fewer pre-generated paths than requested runs
+    actual_runs = min(runs, eval_S.shape[0]) if eval_S is not None else runs
+    
+    for i in range(actual_runs):
+        # Use pre-generated path for this evaluation run
+        if eval_S is not None:
+            eval_env.set_pregenerated_path(eval_t, eval_S[i], eval_X[i], eval_Y[i])
+        
+        state, _ = eval_env.reset()
+        
+        disc_return = 0.0
+        total_exercised = 0.0
+        exercise_count = 0
+        step = 0
+        spot_prices = []
+        
+        # Store detailed step data for this episode
+        episode_step_data = []
+        
+        # Track initial inventory for final calculation
+        initial_inventory = eval_env.contract.Q_max if hasattr(eval_env, 'contract') else 0.0
+        
+        while True:
+            # Get action from agent
+            action = agent.act(np.expand_dims(state, axis=0))
+            action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
+            
+            # Track spot price if available in state
+            if len(state) > 0:
+                spot_prices.append(float(state[0]))  # Assuming first element is spot price
+            
+            # Store step data before taking action
+            step_info = {
+                'step': step,
+                'spot_price': float(state[0]) if len(state) > 0 else 0.0,
+                'q_remaining': float(state[2]) if len(state) > 2 else 0.0,  # Q_remaining
+                'q_exercised': float(state[1]) if len(state) > 1 else 0.0,   # Q_exercised
+                'time_left': float(state[3]) if len(state) > 3 else 0.0,     # time_to_maturity
+                'action': float(action_v.item()) if hasattr(action_v, 'item') else float(action_v)
+            }
+            
+            state, reward, terminated, truncated, info = eval_env.step(action_v)
+            
+            # Complete step info with results
+            step_info['q_actual'] = info.get('q_actual', 0.0)
+            step_info['reward'] = float(reward)
+            episode_step_data.append(step_info)
+            
+            disc_return += reward  # Reward already includes discounting
+            if info.get('q_actual', 0) > 1e-6:
+                exercise_count += 1
+                total_exercised += info['q_actual']
+            
+            step += 1
+            
+            if terminated or truncated:
+                break
+        
+        # Add this episode's step data to the collection
+        all_episodes_step_data.append(episode_step_data)
+        
+        # Calculate episode statistics
+        final_inventory = initial_inventory - total_exercised if initial_inventory > 0 else 0.0
+        avg_spot_price = np.mean(spot_prices) if spot_prices else 0.0
+        max_spot_price = np.max(spot_prices) if spot_prices else 0.0
+        min_spot_price = np.min(spot_prices) if spot_prices else 0.0
+        
+        # Log raw episode data if CSV file provided
+        if raw_episodes_csv is not None and training_episode is not None:
+            # Use deterministic seed based on training episode and run index for reproducibility
+            path_seed = training_episode * 10000 + i + 1
+            log_raw_evaluation_episode(
+                raw_episodes_csv, training_episode, 1, i, path_seed,
+                disc_return, step, total_exercised, exercise_count,
+                final_inventory, avg_spot_price, max_spot_price, min_spot_price
+            )
+        
+        discounted_returns.append(disc_return)
+        exercise_stats.append({
+            'total_exercised': total_exercised,
+            'exercise_count': exercise_count,
+            'steps': step
+        })
+    
+    # Log detailed step data for ALL episodes in this evaluation run
+    if validation_runs_dir is not None and training_episode is not None:
+        log_detailed_step_data(validation_runs_dir, training_episode, all_episodes_step_data)
+    
+    # Calculate statistics
+    option_price = np.mean(discounted_returns)
+    price_std = np.std(discounted_returns)
+    avg_exercised = np.mean([s['total_exercised'] for s in exercise_stats])
+    avg_exercises = np.mean([s['exercise_count'] for s in exercise_stats])
+    
+    return {
+        'option_price': option_price,
+        'price_std': price_std,
+        'confidence_95': 1.96 * price_std / np.sqrt(actual_runs),
+        'avg_total_exercised': avg_exercised,
+        'avg_exercise_count': avg_exercises,
+        'all_returns': discounted_returns,
+        'n_runs': actual_runs
+    }
+
+
 def evaluate(path, eval_runs=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
     """
     Standard evaluation function adapted for swing options
@@ -313,10 +479,42 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
         training_csv (str): path to training CSV file for logging
         evaluation_csv (str): path to evaluation CSV file for logging
         raw_episodes_csv (str): path to raw episodes CSV file for logging
+        
+    Returns
+    =======
+        tuple: (eval_t, eval_S, eval_X, eval_Y) pre-generated evaluation paths
     """
     scores = []                        # list containing scores from each episode
     scores_window = deque(maxlen=100)  # last 100 scores
     total_steps = 0                    # total environment interactions across all paths
+    
+    # Pre-generate all training and evaluation paths using Sobol sequences
+    print(f"🎲 Pre-generating {n_paths} training paths and {eval_runs} evaluation paths using Sobol sequences...")
+    pre_generation_start = time.time()
+    
+    # Generate training paths with base seed
+    from src.simulate_hhk_spot import simulate_hhk_spot
+    training_t, training_S, training_X, training_Y = simulate_hhk_spot(
+        T=train_env.contract.maturity,
+        n_steps=train_env.contract.n_rights,
+        n_paths=n_paths,
+        seed=args.seed,
+        **train_env.hhk_params
+    )
+    
+    # Generate evaluation paths with seed+1 for different quasi-random sequence
+    eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
+        T=eval_env.contract.maturity,
+        n_steps=eval_env.contract.n_rights,
+        n_paths=eval_runs,
+        seed=args.seed + 1,
+        **eval_env.hhk_params
+    )
+    
+    pre_generation_time = time.time() - pre_generation_start
+    print(f"✅ Path pre-generation completed in {pre_generation_time:.2f}s")
+    print(f"   Training paths: {training_S.shape[0]} x {training_S.shape[1]} steps")
+    print(f"   Evaluation paths: {eval_S.shape[0]} x {eval_S.shape[1]} steps")
     
     # Performance monitoring variables
     start_time = time.time()
@@ -329,8 +527,13 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
         # evaluation runs
         if current_path % eval_every == 0 or current_path == 1:
             print(f"\n🔍 Starting evaluation at path {current_path} (eval_runs={eval_runs})...")
-            evaluate(current_path, eval_runs, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir)
+            # Use pre-generated evaluation paths
+            evaluate_with_pregenerated_paths(current_path, eval_runs, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
 
+        # Use pre-generated training path for this episode
+        path_idx = (current_path - 1) % training_S.shape[0]  # Cycle through paths if needed
+        train_env.set_pregenerated_path(training_t, training_S[path_idx], training_X[path_idx], training_Y[path_idx])
+        
         # Reset environment for new path
         state, _ = train_env.reset()
         score = 0.0
@@ -423,6 +626,9 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
         writer.add_scalar("Path_Length", path_steps, current_path)
         
         print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_second:.1f} | Steps/sec = {steps_per_second:.0f}')
+    
+    # Return the evaluation paths for final evaluation
+    return eval_t, eval_S, eval_X, eval_Y
             
 
 
@@ -470,7 +676,7 @@ parser.add_argument("-lr_c", type=float, default=3e-4, help="Critic learning rat
 parser.add_argument("-learn_every", type=int, default=1, help="Learn every x interactions, default = 1")
 parser.add_argument("-learn_number", type=int, default=1, help="Learn x times per interaction, default = 1")
 parser.add_argument("-layer_size", type=int, default=256, help="Number of nodes per neural network layer, default is 256")
-parser.add_argument("--max_replay_size", type=int, default=int(1e6), help="Maximum size of the replay buffer, default is 1e6")
+parser.add_argument("--max_replay_size", type=int, default=int(1e5), help="Maximum size of the replay buffer, default is 1e5")
 parser.add_argument("--min_replay_size", type=int, default=1000, help="Minimum replay buffer size before learning starts (default: 1000)")
 parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
 parser.add_argument("-t", "--tau", type=float, default=1e-3, help="Softupdate factor tau, default is 1e-3") #for per 1e-2 for regular 1e-3 -> Pendulum!
@@ -617,8 +823,9 @@ if __name__ == "__main__":
     if saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(saved_model))
         evaluate(path=None, capture=False, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir)
+        eval_t, eval_S, eval_X, eval_Y = None, None, None, None  # No pre-generated paths for saved model
     else:    
-        run(n_paths=args.n_paths,
+        eval_t, eval_S, eval_X, eval_Y = run(n_paths=args.n_paths,
             eval_every=args.eval_every,
             eval_runs=args.eval_runs,
             training_csv=training_csv,
@@ -632,7 +839,43 @@ if __name__ == "__main__":
     print("="*60)
     
     final_eval_runs = max(10, args.eval_runs * 2)  # Use more runs for final evaluation
-    final_rewards = evaluate(path=args.n_paths, eval_runs=final_eval_runs, capture=True)
+    
+    # Generate more evaluation paths for final evaluation if needed
+    if eval_S is None or final_eval_runs > eval_S.shape[0]:
+        print(f"🎲 Generating {final_eval_runs} additional paths for final evaluation...")
+        from src.simulate_hhk_spot import simulate_hhk_spot
+        final_eval_t, final_eval_S, final_eval_X, final_eval_Y = simulate_hhk_spot(
+            T=eval_env.contract.maturity,
+            n_steps=eval_env.contract.n_rights,
+            n_paths=final_eval_runs,
+            seed=args.seed + 1000,  # Different seed for final evaluation
+            **eval_env.hhk_params
+        )
+    else:
+        # Use existing pre-generated paths
+        final_eval_t, final_eval_S, final_eval_X, final_eval_Y = eval_t, eval_S, eval_X, eval_Y
+    
+    # Run final evaluation with full logging (including detailed step data)
+    if eval_S is not None:
+        # Use pre-generated paths
+        pricing_stats = evaluate_swing_option_price_pregenerated(
+            agent, eval_env, runs=final_eval_runs, 
+            raw_episodes_csv=raw_episodes_csv, training_episode=args.n_paths, 
+            validation_runs_dir=validation_runs_dir,
+            eval_t=final_eval_t, eval_S=final_eval_S, eval_X=final_eval_X, eval_Y=final_eval_Y
+        )
+    else:
+        # Fall back to original method
+        pricing_stats = evaluate_swing_option_price(
+            agent, eval_env, runs=final_eval_runs, base_seed=args.seed,
+            raw_episodes_csv=raw_episodes_csv, training_episode=args.n_paths, 
+            validation_runs_dir=validation_runs_dir
+        )
+    final_rewards = pricing_stats['all_returns']
+    
+    # Log final evaluation to CSV as well
+    if evaluation_csv is not None:
+        log_evaluation_run(evaluation_csv, args.n_paths, 1, pricing_stats)
     
     # Calculate statistics
     avg_return = np.mean(final_rewards)

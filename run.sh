@@ -8,13 +8,14 @@
 args=( 
     # Training parameters
     -n_paths=16384
-    -eval_every=1500
+    -eval_every=1000
     -eval_runs=4096
-    -munchausen=1
+    -munchausen=0
     -nstep=5
     -learn_every=2
     -per=1
     -iqn=0
+    -noise=gauss                  # Use Gaussian noise instead of OU noise
     -bs=64
     -layer_size=128
     --min_replay_size=5000    # Increase from 1000 to 5000
@@ -44,13 +45,13 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -info "MonthlySwing_7" -seed 11 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16 &
-python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17 
+python run.py "${args[@]}" -info "MonthlySwing_10" -seed 11 
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12 &
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13 &
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14 &
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15 &
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16 &
+# python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17 
 # python run.py "${args[@]}" -info "MonthlySwing_Baseline8" -seed 18
 # python run.py "${args[@]}" -info "MonthlySwing_Baseline9" -seed 19
 

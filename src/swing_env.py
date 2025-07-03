@@ -64,46 +64,23 @@ class SwingOptionEnv(gym.Env):
         # Episode state
         self.reset()
         
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
-        """Reset environment for new episode"""
-        super().reset(seed=seed)
+    def set_pregenerated_path(self, t_grid: np.ndarray, spot_path: np.ndarray, 
+                             X_path: np.ndarray, Y_path: np.ndarray):
+        """
+        Set pre-generated paths for this environment instance.
+        This allows for variance reduction by using Sobol-generated paths.
         
-        if seed is not None:
-            episode_seed = seed
-        else:
-            episode_seed = None
-            
-        # Generate new price path
-        self.t_grid, self.spot_path = simulate_single_path(
-            T=self.contract.maturity,
-            n_steps=self.contract.n_rights,
-            seed=episode_seed,
-            **self.hhk_params
-        )
-        
-        # Also get full simulation for X, Y processes
-        from .simulate_hhk_spot import simulate_hhk_spot
-        _, S_full, X_full, Y_full = simulate_hhk_spot(
-            T=self.contract.maturity,
-            n_steps=self.contract.n_rights,
-            n_paths=1,
-            seed=episode_seed,
-            **self.hhk_params
-        )
-        self.spot_path = S_full[0]
-        self.X_path = X_full[0] 
-        self.Y_path = Y_full[0]
-        
-        # Initialize episode state
-        self.current_step = 0
-        self.q_exercised = 0.0
-        self.last_exercise_step = -1
-        self.episode_return = 0.0
-        
-        # Calculate initial volatility
-        self.recent_volatility = self._calculate_recent_volatility(0)
-        
-        return self._get_observation(), {}
+        Args:
+            t_grid: Time grid for the paths
+            spot_path: Pre-generated spot price path
+            X_path: Pre-generated X process path  
+            Y_path: Pre-generated Y process path
+        """
+        self.t_grid = t_grid.copy()
+        self.spot_path = spot_path.copy()
+        self.X_path = X_path.copy()
+        self.Y_path = Y_path.copy()
+        self._using_pregenerated = True
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Take one step in the environment"""
@@ -257,6 +234,50 @@ class SwingOptionEnv(gym.Env):
     def unwrapped(self):
         """Return the unwrapped environment"""
         return self
+
+    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
+        """Reset environment for new episode"""
+        super().reset(seed=seed)
+        
+        # Only generate new paths if we're not using pre-generated ones
+        if not hasattr(self, '_using_pregenerated') or not self._using_pregenerated:
+            if seed is not None:
+                episode_seed = seed
+            else:
+                episode_seed = None
+                
+            # Generate new price path
+            self.t_grid, self.spot_path = simulate_single_path(
+                T=self.contract.maturity,
+                n_steps=self.contract.n_rights,
+                seed=episode_seed,
+                **self.hhk_params
+            )
+            
+            # Also get full simulation for X, Y processes
+            from .simulate_hhk_spot import simulate_hhk_spot
+            _, S_full, X_full, Y_full = simulate_hhk_spot(
+                T=self.contract.maturity,
+                n_steps=self.contract.n_rights,
+                n_paths=1,
+                seed=episode_seed,
+                **self.hhk_params
+            )
+            self.spot_path = S_full[0]
+            self.X_path = X_full[0] 
+            self.Y_path = Y_full[0]
+        # If using pre-generated paths, they're already set via set_pregenerated_path()
+        
+        # Initialize episode state
+        self.current_step = 0
+        self.q_exercised = 0.0
+        self.last_exercise_step = -1
+        self.episode_return = 0.0
+        
+        # Calculate initial volatility
+        self.recent_volatility = self._calculate_recent_volatility(0)
+        
+        return self._get_observation(), {}
 
 
 def create_swing_env(contract_type: str = 'default') -> SwingOptionEnv:
