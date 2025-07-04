@@ -37,9 +37,9 @@ def init_csv_logging(info_string):
     experiment_dir = f"logs/{info_string}"
     os.makedirs(experiment_dir, exist_ok=True)
     
-    # Create validation_runs subdirectory for step-by-step data
-    validation_runs_dir = f"{experiment_dir}/validation_runs"
-    os.makedirs(validation_runs_dir, exist_ok=True)
+    # Create evaluation_runs subdirectory for step-by-step data
+    evaluation_runs_dir = f"{experiment_dir}/evaluation_runs"
+    os.makedirs(evaluation_runs_dir, exist_ok=True)
     
     # Define CSV file paths - main experiment CSVs stay in experiment folder
     training_csv = f"{experiment_dir}/{info_string}_training.csv"
@@ -72,7 +72,7 @@ def init_csv_logging(info_string):
             'avg_spot_price', 'max_spot_price', 'min_spot_price'
         ])
     
-    return training_csv, evaluation_csv, raw_episodes_csv, validation_runs_dir
+    return training_csv, evaluation_csv, raw_episodes_csv, evaluation_runs_dir
 
 
 def log_training_episode(csv_file, episode, episode_return, path_steps, total_steps, 
@@ -115,11 +115,11 @@ def log_raw_evaluation_episode(csv_file, training_episode, eval_run, episode_idx
         ])
 
 
-def log_detailed_step_data(validation_runs_dir, training_episode, all_episodes_data):
+def log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_data):
     """Log detailed step-by-step data for all episodes in an evaluation run to one CSV file"""
     # Create filename for this evaluation run
     filename = f"eval_run_{training_episode}.csv"
-    filepath = os.path.join(validation_runs_dir, filename)
+    filepath = os.path.join(evaluation_runs_dir, filename)
     
     # Write all episodes data to the file
     with open(filepath, 'w', newline='') as f:
@@ -143,7 +143,7 @@ def log_detailed_step_data(validation_runs_dir, training_episode, all_episodes_d
                 ])
 
 
-def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_episodes_csv=None, training_episode=None, validation_runs_dir=None):
+def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_episodes_csv=None, training_episode=None, evaluation_runs_dir=None):
     """
     Evaluate swing option price using Monte Carlo simulation
     
@@ -154,7 +154,7 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
         base_seed: Base seed for reproducible evaluation
         raw_episodes_csv: Path to raw episodes CSV file for detailed logging
         training_episode: Current training episode number for logging
-        validation_runs_dir: Directory for detailed step-by-step CSV files
+        evaluation_runs_dir: Directory for detailed step-by-step CSV files
         
     Returns:
         dict: Dictionary with pricing statistics
@@ -240,8 +240,8 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
         })
     
     # Log detailed step data for ALL episodes in this evaluation run
-    if validation_runs_dir is not None and training_episode is not None:
-        log_detailed_step_data(validation_runs_dir, training_episode, all_episodes_step_data)
+    if evaluation_runs_dir is not None and training_episode is not None:
+        log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_step_data)
     
     # Calculate statistics
     option_price = np.mean(discounted_returns)
@@ -260,14 +260,14 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
     }
 
 
-def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
+def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
     """
     Evaluation function using pre-generated paths
     """
     # Use pre-generated evaluation paths
     pricing_stats = evaluate_swing_option_price_pregenerated(
         agent, eval_env, runs=n_paths_eval, 
-        raw_episodes_csv=raw_episodes_csv, training_episode=path, validation_runs_dir=validation_runs_dir,
+        raw_episodes_csv=raw_episodes_csv, training_episode=path, evaluation_runs_dir=evaluation_runs_dir,
         eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y
     )
     avg_price = pricing_stats['option_price']
@@ -298,7 +298,7 @@ def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, 
     return pricing_stats['all_returns']
 
 
-def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_episodes_csv=None, training_episode=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
+def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_episodes_csv=None, training_episode=None, evaluation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
     """
     Evaluate swing option price using pre-generated Monte Carlo paths
     
@@ -308,7 +308,7 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
         runs: Number of Monte Carlo runs (should match pre-generated paths)
         raw_episodes_csv: Path to raw episodes CSV file for detailed logging
         training_episode: Current training episode number for logging
-        validation_runs_dir: Directory for detailed step-by-step CSV files
+        evaluation_runs_dir: Directory for detailed step-by-step CSV files
         eval_t: Pre-generated time grid
         eval_S: Pre-generated spot price paths
         eval_X: Pre-generated X process paths
@@ -406,8 +406,8 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
         })
     
     # Log detailed step data for ALL episodes in this evaluation run
-    if validation_runs_dir is not None and training_episode is not None:
-        log_detailed_step_data(validation_runs_dir, training_episode, all_episodes_step_data)
+    if evaluation_runs_dir is not None and training_episode is not None:
+        log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_step_data)
     
     # Calculate statistics
     option_price = np.mean(discounted_returns)
@@ -427,7 +427,7 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
 
 
 
-def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
+def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None):
     """
     Standard evaluation function adapted for swing options
     """
@@ -439,7 +439,7 @@ def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=N
         # Standard evaluation for monitoring training progress
         pricing_stats = evaluate_swing_option_price(
             agent, eval_env, runs=n_paths_eval, base_seed=args.seed,
-            raw_episodes_csv=raw_episodes_csv, training_episode=path, validation_runs_dir=validation_runs_dir
+            raw_episodes_csv=raw_episodes_csv, training_episode=path, evaluation_runs_dir=evaluation_runs_dir
         )
         avg_price = pricing_stats['option_price']
         
@@ -470,7 +470,7 @@ def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=N
 
 
 
-def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
+def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None):
     """Deep Q-Learning for Swing Option Pricing.
     
     Params
@@ -575,7 +575,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         
         # Generate detailed LSM solution CSV for comparison with RL
         print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
-        lsm_csv_filename = f"logs/{args.info}/longstaff_schwartz_solution_{args.info}.csv"
+        lsm_csv_filename = f"logs/{args.info}/evaluation_runs/longstaff_schwartz_solution.csv"
         lsm_csv_results = generate_lsm_solution_csv(
             eval_t, eval_S, eval_X, eval_Y, 
             eval_env.contract, lsm_csv_filename, args.seed
@@ -630,7 +630,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         if should_evaluate:
             print(f"\n🔍 Starting evaluation at path {current_path} (n_paths_eval={n_paths_eval})...")
             # Use pre-generated evaluation paths
-            evaluate_with_pregenerated_paths(current_path, n_paths_eval, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
+            evaluate_with_pregenerated_paths(current_path, n_paths_eval, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, evaluation_runs_dir=evaluation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
 
         # Use pre-generated training path for this episode
         path_idx = (current_path - 1) % training_S.shape[0]  # Cycle through paths if needed
@@ -845,12 +845,12 @@ if __name__ == "__main__":
     writer = SummaryWriter("runs/"+args.info)
     
     # Initialize CSV logging
-    training_csv, evaluation_csv, raw_episodes_csv, validation_runs_dir = init_csv_logging(args.info)
+    training_csv, evaluation_csv, raw_episodes_csv, evaluation_runs_dir = init_csv_logging(args.info)
     print("CSV logging initialized:")
     print(f"  Training data: {training_csv}")
     print(f"  Evaluation data: {evaluation_csv}")
     print(f"  Raw episodes data: {raw_episodes_csv}")
-    print(f"  Validation runs data: {validation_runs_dir}/eval_run_*.csv")
+    print(f"  Evaluation runs data: {evaluation_runs_dir}/eval_run_*.csv")
     
     # Create swing option environments with custom parameters
     train_env = SwingOptionEnv(contract=contract, hhk_params=hhk_params)
@@ -924,7 +924,7 @@ if __name__ == "__main__":
     t0 = time.time()
     if saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(saved_model))
-        evaluate(path=None, capture=False, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir)
+        evaluate(path=None, capture=False, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, evaluation_runs_dir=evaluation_runs_dir)
         eval_t, eval_S, eval_X, eval_Y = None, None, None, None  # No pre-generated paths for saved model
         lsm_price = None  # No LSM benchmark for saved model
     else:    
@@ -934,7 +934,7 @@ if __name__ == "__main__":
             training_csv=training_csv,
             evaluation_csv=evaluation_csv,
             raw_episodes_csv=raw_episodes_csv,
-            validation_runs_dir=validation_runs_dir)
+            evaluation_runs_dir=evaluation_runs_dir)
 
     print("\n" + "="*60)
     print("TRAINING COMPLETED")
