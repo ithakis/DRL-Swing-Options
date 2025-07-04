@@ -491,11 +491,24 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     total_steps = 0                    # total environment interactions across all paths
     
     # Pre-generate all training and evaluation paths using Sobol sequences
-    print(f"🎲 Pre-generating {n_paths} training paths and {n_paths_eval} evaluation paths using Sobol sequences...")
+    print(f"\n{'='*60}")
+    print(f"DATASET GENERATION")
+    print(f"{'='*60}")
+    print(f"🎲 Generating Training Dataset:")
+    print(f"   - Seed: {args.seed}")
+    print(f"   - Paths: {n_paths}")
+    print(f"   - Purpose: RL Agent Training")
+    print(f"\n🎲 Generating Evaluation Dataset:")
+    print(f"   - Seed: {args.seed + 1}")
+    print(f"   - Paths: {n_paths_eval}")  
+    print(f"   - Purpose: RL Evaluation & LSM Benchmark")
+    print(f"{'='*60}")
+    
     pre_generation_start = time.time()
     
     # Generate training paths with base seed
     from src.simulate_hhk_spot import simulate_hhk_spot
+    print(f"Generating training paths...")
     training_t, training_S, training_X, training_Y = simulate_hhk_spot(
         T=train_env.contract.maturity,
         n_steps=train_env.contract.n_rights,
@@ -505,6 +518,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     )
     
     # Generate evaluation paths with seed+1 for different quasi-random sequence
+    print(f"Generating evaluation paths...")
     eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
         T=eval_env.contract.maturity,
         n_steps=eval_env.contract.n_rights,
@@ -514,7 +528,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     )
     
     pre_generation_time = time.time() - pre_generation_start
-    print(f"✅ Path pre-generation completed in {pre_generation_time:.2f}s")
+    print(f"✅ Dataset generation completed in {pre_generation_time:.2f}s")
     print(f"   Training paths: {training_S.shape[0]} x {training_S.shape[1]} steps")
     print(f"   Evaluation paths: {eval_S.shape[0]} x {eval_S.shape[1]} steps")
     
@@ -532,8 +546,17 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         )
         lsm_price = lsm_results['lsm_option_value_same_paths']
         lsm_time = time.time() - lsm_start
-        print(f"✅ LSM Benchmark Price: {lsm_price:.6f} (computed in {lsm_time:.2f}s)")
-        print(f"   Using {eval_S.shape[0]} Monte Carlo paths")
+        
+        print(f"\n{'='*60}")
+        print(f"LONGSTAFF-SCHWARTZ BENCHMARK RESULTS")
+        print(f"{'='*60}")
+        print(f"LSM Option Price: {lsm_price:.6f}")
+        print(f"Standard Error: {lsm_results['lsm_std_error_same_paths']:.6f}")
+        print(f"95% Confidence Interval: [{lsm_results['lsm_confidence_interval_same_paths'][0]:.6f}, {lsm_results['lsm_confidence_interval_same_paths'][1]:.6f}]")
+        print(f"Expected Exercises: {lsm_results['lsm_expected_exercises_same_paths']:.3f}")
+        print(f"Monte Carlo Paths: {eval_S.shape[0]}")
+        print(f"Computation Time: {lsm_time:.2f}s")
+        print(f"{'='*60}")
         
         # Log LSM benchmark to CSV for comparison
         if evaluation_csv is not None:
@@ -563,6 +586,12 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         print(f"⚠️ LSM benchmark computation failed: {e}")
         lsm_price = None
     
+    print(f"\n{'='*60}")
+    print(f"STARTING RL AGENT TRAINING")
+    print(f"{'='*60}")
+    print(f"Training Episodes: {n_paths}")
+    print(f"Evaluation Every: {eval_every if eval_every > 0 else 'End Only'}")
+    print(f"Evaluation Paths: {n_paths_eval}")
     print(f"{'='*60}")
     
     # Performance monitoring variables
@@ -572,9 +601,33 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     episode_times = deque(maxlen=50)  # timestamps for last 50 episodes
     episode_steps = deque(maxlen=50)  # steps for last 50 episodes
     
+    # Track if we've run initial evaluation
+    initial_eval_done = False
+    
     for current_path in range(1, n_paths + 1):
-        # evaluation runs
-        if current_path % eval_every == 0 or current_path == 1:
+        # Evaluation logic based on eval_every parameter
+        should_evaluate = False
+        
+        if eval_every == -1:
+            # Only evaluate at the end
+            should_evaluate = (current_path == n_paths)
+        elif eval_every > 1:
+            # Run initial evaluation at path 1
+            if current_path == 1 and not initial_eval_done:
+                should_evaluate = True
+                initial_eval_done = True
+            # Run evaluation every eval_every episodes
+            elif current_path % eval_every == 0:
+                should_evaluate = True
+            # Run final evaluation if n_paths is not a multiple of eval_every
+            elif current_path == n_paths and n_paths % eval_every != 0:
+                should_evaluate = True
+        else:
+            # eval_every == 1 or other values, evaluate at path 1 and every eval_every
+            if current_path % eval_every == 0 or current_path == 1:
+                should_evaluate = True
+        
+        if should_evaluate:
             print(f"\n🔍 Starting evaluation at path {current_path} (n_paths_eval={n_paths_eval})...")
             # Use pre-generated evaluation paths
             evaluate_with_pregenerated_paths(current_path, n_paths_eval, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
