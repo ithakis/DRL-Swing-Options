@@ -9,12 +9,12 @@ import numpy as np
 from src.agent import Agent
 
 
-def evaluate(eval_runs=5):
+def evaluate(n_paths_eval=5):
     """
     Makes an evaluation run 
     """
 
-    for _ in range(eval_runs):
+    for _ in range(n_paths_eval):
         state, _ = eval_env.reset()
 
         rewards = 0

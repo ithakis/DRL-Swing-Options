@@ -260,13 +260,13 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
     }
 
 
-def evaluate_with_pregenerated_paths(path, eval_runs=5, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
+def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
     """
     Evaluation function using pre-generated paths
     """
     # Use pre-generated evaluation paths
     pricing_stats = evaluate_swing_option_price_pregenerated(
-        agent, eval_env, runs=eval_runs, 
+        agent, eval_env, runs=n_paths_eval, 
         raw_episodes_csv=raw_episodes_csv, training_episode=path, validation_runs_dir=validation_runs_dir,
         eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y
     )
@@ -517,18 +517,18 @@ def generate_rl_solution_csv(agent, eval_env, eval_t, eval_S, eval_X, eval_Y, cs
     }
 
 
-def evaluate(path, eval_runs=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
+def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
     """
     Standard evaluation function adapted for swing options
     """
     if capture:
         # Return swing option pricing evaluation for final assessment
-        pricing_stats = evaluate_swing_option_price(agent, eval_env, runs=eval_runs, base_seed=args.seed)
+        pricing_stats = evaluate_swing_option_price(agent, eval_env, runs=n_paths_eval, base_seed=args.seed)
         return pricing_stats['all_returns']
     else:
         # Standard evaluation for monitoring training progress
         pricing_stats = evaluate_swing_option_price(
-            agent, eval_env, runs=eval_runs, base_seed=args.seed,
+            agent, eval_env, runs=n_paths_eval, base_seed=args.seed,
             raw_episodes_csv=raw_episodes_csv, training_episode=path, validation_runs_dir=validation_runs_dir
         )
         avg_price = pricing_stats['option_price']
@@ -560,14 +560,14 @@ def evaluate(path, eval_runs=5, capture=False, render=False, evaluation_csv=None
 
 
 
-def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
+def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
     """Deep Q-Learning for Swing Option Pricing.
     
     Params
     ======
         n_paths (int): total number of Monte Carlo paths/episodes to simulate
         eval_every (int): evaluate every N paths
-        eval_runs (int): number of evaluation runs
+        n_paths_eval (int): number of evaluation runs
         training_csv (str): path to training CSV file for logging
         evaluation_csv (str): path to evaluation CSV file for logging
         raw_episodes_csv (str): path to raw episodes CSV file for logging
@@ -581,7 +581,7 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
     total_steps = 0                    # total environment interactions across all paths
     
     # Pre-generate all training and evaluation paths using Sobol sequences
-    print(f"🎲 Pre-generating {n_paths} training paths and {eval_runs} evaluation paths using Sobol sequences...")
+    print(f"🎲 Pre-generating {n_paths} training paths and {n_paths_eval} evaluation paths using Sobol sequences...")
     pre_generation_start = time.time()
     
     # Generate training paths with base seed
@@ -598,7 +598,7 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
     eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
         T=eval_env.contract.maturity,
         n_steps=eval_env.contract.n_rights,
-        n_paths=eval_runs,
+        n_paths=n_paths_eval,
         seed=args.seed + 1,
         **eval_env.hhk_params
     )
@@ -665,9 +665,9 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
     for current_path in range(1, n_paths + 1):
         # evaluation runs
         if current_path % eval_every == 0 or current_path == 1:
-            print(f"\n🔍 Starting evaluation at path {current_path} (eval_runs={eval_runs})...")
+            print(f"\n🔍 Starting evaluation at path {current_path} (n_paths_eval={n_paths_eval})...")
             # Use pre-generated evaluation paths
-            evaluate_with_pregenerated_paths(current_path, eval_runs, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
+            evaluate_with_pregenerated_paths(current_path, n_paths_eval, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, validation_runs_dir=validation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
 
         # Use pre-generated training path for this episode
         path_idx = (current_path - 1) % training_S.shape[0]  # Cycle through paths if needed
@@ -778,7 +778,7 @@ parser = argparse.ArgumentParser(description="Swing Option Pricing with D4PG")
 # Training Parameters
 parser.add_argument("-n_paths", type=int, default=10000, help="The total number of Monte Carlo paths/episodes to simulate, default is 10k")
 parser.add_argument("-eval_every", type=int, default=1000, help="Number of paths after which evaluation runs are performed, default = 1000")
-parser.add_argument("-eval_runs", type=int, default=1, help="Number of evaluation runs performed, default = 1")
+parser.add_argument("-n_paths_eval", type=int, default=1, help="Number of evaluation runs performed, default = 1")
 parser.add_argument("-seed", type=int, default=0, help="Seed for the env and torch network weights, default is 0")
 parser.add_argument("-info", type=str, help="Information or name of the run")
 
@@ -967,7 +967,7 @@ if __name__ == "__main__":
     else:    
         eval_t, eval_S, eval_X, eval_Y, lsm_price = run(n_paths=args.n_paths,
             eval_every=args.eval_every,
-            eval_runs=args.eval_runs,
+            n_paths_eval=args.n_paths_eval,
             training_csv=training_csv,
             evaluation_csv=evaluation_csv,
             raw_episodes_csv=raw_episodes_csv,
@@ -978,7 +978,7 @@ if __name__ == "__main__":
     print("FINAL EVALUATION RESULTS")
     print("="*60)
     
-    final_eval_runs = max(10, args.eval_runs * 2)  # Use more runs for final evaluation
+    final_eval_runs = max(10, args.n_paths_eval * 2)  # Use more runs for final evaluation
     
     # Generate more evaluation paths for final evaluation if needed
     if eval_S is None or final_eval_runs > eval_S.shape[0]:

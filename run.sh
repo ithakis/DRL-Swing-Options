@@ -9,7 +9,7 @@ args=(
     # Training parameters
     -n_paths=16384
     -eval_every=1000
-    -eval_runs=4096
+    -n_paths_eval=4096
     -munchausen=0
     -nstep=5
     -learn_every=2

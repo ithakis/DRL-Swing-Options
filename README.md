@@ -365,7 +365,7 @@ python run.py \
 
 - `--n_paths`: Number of Monte Carlo paths/episodes to simulate (recommend 10K+ for complex contracts)
 - `--eval_every`: Frequency of Monte Carlo pricing evaluation
-- `--eval_runs`: Number of paths for pricing evaluation (default: 5, recommend 100+ for final pricing)
+- `--n_paths_eval`: Number of paths for pricing evaluation (default: 5, recommend 100+ for final pricing)
 - `--seed`: Random seed for reproducible price paths and training
 
 ### Monitoring Training
