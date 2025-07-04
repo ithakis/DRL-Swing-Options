@@ -301,6 +301,167 @@ class LongstaffSchwartzPricer:
             return np.zeros(len(spots))
 
 
+def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_filename, random_seed: int = 42):
+    """
+    Generate detailed LSM solution CSV with state and q for each path and time step.
+    Uses the exact same MC paths as RL evaluation for perfect comparison.
+    
+    Args:
+        eval_t: Time grid from RL simulation
+        eval_S: Spot price paths from RL simulation  
+        eval_X: X process paths from RL simulation
+        eval_Y: Y process paths from RL simulation
+        contract: SwingContract
+        csv_filename: Output CSV filename
+        random_seed: Random seed
+        
+    Returns:
+        Dictionary with LSM results
+    """
+    import csv
+    
+    print(f"\n🔮 Generating LSM solution CSV: {csv_filename}")
+    print(f"   Using {eval_S.shape[0]} paths with {eval_S.shape[1]} time steps")
+    
+    # Convert contract for LSM
+    lsm_contract = SwingOptionContract(
+        strike=contract.strike,
+        volume_per_exercise=contract.q_max,
+        max_exercises=min(contract.n_rights, int(contract.Q_max / contract.q_max)),
+        maturity=contract.maturity,
+        risk_free_rate=contract.r
+    )
+    
+    # Initialize LSM pricer
+    pricer = LongstaffSchwartzPricer(lsm_contract, random_seed)
+    
+    # Modified LSM pricing to track detailed exercise decisions
+    n_paths, n_steps = eval_S.shape[0], eval_S.shape[1] - 1
+    dt = lsm_contract.maturity / n_steps
+    discount_factor = np.exp(-lsm_contract.risk_free_rate * dt)
+    
+    # Initialize arrays
+    max_rights = lsm_contract.max_exercises
+    option_values = np.zeros((n_paths, n_steps + 1, max_rights + 1))
+    exercise_decisions = np.zeros((n_paths, n_steps + 1))
+    exercise_quantities = np.zeros((n_paths, n_steps + 1))
+    
+    # Terminal condition
+    for m in range(1, max_rights + 1):
+        payoff = lsm_contract.volume_per_exercise * np.maximum(
+            eval_S[:, -1] - lsm_contract.strike, 0
+        )
+        option_values[:, -1, m] = payoff
+    
+    # Backward induction with exercise tracking
+    for t in range(n_steps - 1, -1, -1):
+        for m in range(1, max_rights + 1):
+            available_paths = np.ones(n_paths, dtype=bool)
+            
+            if np.sum(available_paths) == 0:
+                continue
+                
+            current_spots = eval_S[available_paths, t]
+            
+            # Immediate exercise payoff
+            immediate_payoff = lsm_contract.volume_per_exercise * np.maximum(
+                current_spots - lsm_contract.strike, 0
+            )
+            
+            # Values
+            future_value_exercise = discount_factor * option_values[available_paths, t + 1, m - 1]
+            exercise_value = immediate_payoff + future_value_exercise
+            continuation_value = discount_factor * option_values[available_paths, t + 1, m]
+            
+            # Simple continuation value estimation (simplified for CSV generation)
+            if len(current_spots) > 10:
+                itm_mask = immediate_payoff > 0
+                if np.sum(itm_mask) > 5:
+                    try:
+                        fitted_continuation = pricer._fit_continuation_value(
+                            current_spots[itm_mask], continuation_value[itm_mask], 
+                            m, eval_t[t], 'polynomial', 3, None
+                        )
+                        predicted_continuation = pricer._predict_continuation_value(
+                            current_spots, fitted_continuation, 'polynomial'
+                        )
+                    except:
+                        predicted_continuation = continuation_value
+                else:
+                    predicted_continuation = continuation_value
+            else:
+                predicted_continuation = continuation_value
+            
+            # Exercise decision
+            exercise_optimal = exercise_value > predicted_continuation
+            
+            # Update values
+            option_values[available_paths, t, m] = np.where(
+                exercise_optimal, exercise_value, predicted_continuation
+            )
+            
+            # Track exercise decisions for full contract (m == max_rights)
+            if m == max_rights:
+                exercise_decisions[available_paths, t] = exercise_optimal
+                exercise_quantities[available_paths, t] = np.where(
+                    exercise_optimal, lsm_contract.volume_per_exercise, 0.0
+                )
+    
+    # Forward simulation to reconstruct actual exercise path
+    print(f"   📝 Writing detailed step data to CSV...")
+    
+    with open(csv_filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Header matching RL solution format
+        writer.writerow(['path_idx', 'step', 'spot_price', 'q_remaining', 'q_exercised', 
+                        'time_left', 'q_decision'])
+        
+        for path_idx in range(n_paths):
+            q_remaining = contract.Q_max  # Start with full inventory
+            q_exercised_total = 0.0
+            
+            for step in range(n_steps):  # Only go to n_steps (not n_steps + 1) to match RL termination
+                spot_price = eval_S[path_idx, step]
+                time_left = contract.maturity - eval_t[step] if step < len(eval_t) else 0.0
+                
+                # Use LSM exercise decision
+                q_decision = exercise_quantities[path_idx, step]
+                
+                # Ensure we don't over-exercise
+                q_decision = min(q_decision, q_remaining, contract.q_max)
+                
+                # Update state
+                q_remaining -= q_decision
+                q_exercised_total += q_decision
+                
+                # Write row
+                writer.writerow([
+                    path_idx, step, round(spot_price, 6), 
+                    round(q_remaining, 6), round(q_exercised_total, 6),
+                    round(time_left, 6), round(q_decision, 6)
+                ])
+                
+                # Check termination conditions to match RL environment
+                if (step + 1) >= contract.n_rights or q_exercised_total >= contract.Q_max - 1e-6:
+                    break
+    
+    # Calculate final statistics
+    option_prices = option_values[:, 0, max_rights]
+    mean_price = np.mean(option_prices)
+    std_error = np.std(option_prices) / np.sqrt(n_paths)
+    
+    print(f"   ✅ LSM CSV generated: {csv_filename}")
+    print(f"   💰 LSM Option Value: ${mean_price:.6f} ± {std_error:.6f}")
+    print(f"   📊 Total rows written: {n_paths * (n_steps + 1)}")
+    
+    return {
+        'lsm_option_value': mean_price,
+        'lsm_std_error': std_error,
+        'lsm_n_paths': n_paths,
+        'csv_file': csv_filename
+    }
+
+
 def create_default_contract(
     strike: float = 100.0,
     volume_per_exercise: float = 1.0,

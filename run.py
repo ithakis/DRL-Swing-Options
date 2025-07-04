@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
 from src.swing_env import SwingOptionEnv
-from src.longstaff_schwartz_pricer import use_same_paths_for_lsm_and_rl
+from src.longstaff_schwartz_pricer import use_same_paths_for_lsm_and_rl, generate_lsm_solution_csv
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
@@ -426,6 +426,97 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
     }
 
 
+def generate_rl_solution_csv(agent, eval_env, eval_t, eval_S, eval_X, eval_Y, csv_filename):
+    """
+    Generate detailed RL solution CSV with state and q for each path and time step.
+    Uses the same MC paths as LSM for perfect comparison.
+    
+    Args:
+        agent: Trained RL agent
+        eval_env: Swing option environment
+        eval_t: Time grid 
+        eval_S: Spot price paths
+        eval_X: X process paths
+        eval_Y: Y process paths
+        csv_filename: Output CSV filename
+        
+    Returns:
+        Dictionary with RL results
+    """
+    import csv
+    
+    print(f"\n🤖 Generating RL solution CSV: {csv_filename}")
+    print(f"   Using {eval_S.shape[0]} paths with {eval_S.shape[1]} time steps")
+    
+    actual_runs = eval_S.shape[0]
+    total_rewards = []
+    
+    with open(csv_filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Header matching LSM solution format
+        writer.writerow(['path_idx', 'step', 'spot_price', 'q_remaining', 'q_exercised', 
+                        'time_left', 'q_decision'])
+        
+        for path_idx in range(actual_runs):
+            # Use pre-generated path for this evaluation run
+            eval_env.set_pregenerated_path(eval_t, eval_S[path_idx], eval_X[path_idx], eval_Y[path_idx])
+            state, _ = eval_env.reset()
+            
+            disc_return = 0.0
+            step = 0
+            
+            while True:
+                # Get action from agent
+                action = agent.act(np.expand_dims(state, axis=0))
+                action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
+                
+                # Extract RAW state information BEFORE taking step (to get current state)
+                # Use the same raw values that LSM uses, not the normalized RL state
+                spot_price = eval_env.spot_path[eval_env.current_step]  # Raw spot price
+                q_exercised_total = eval_env.q_exercised  # Raw cumulative exercise
+                q_remaining = eval_env.contract.Q_max - eval_env.q_exercised  # Raw remaining capacity
+                time_left = (eval_env.contract.n_rights - eval_env.current_step) * eval_env.contract.dt  # Raw time left
+                q_decision_raw = float(action_v.item()) if hasattr(action_v, 'item') else float(action_v)
+                
+                # Take step in environment
+                next_state, reward, terminated, truncated, info = eval_env.step(action_v)
+                
+                # Get actual exercise quantity from environment
+                q_decision_actual = info.get('q_actual', 0.0)
+                
+                # Write row with state and decision
+                writer.writerow([
+                    path_idx, step, round(spot_price, 6), 
+                    round(q_remaining, 6), round(q_exercised_total, 6),
+                    round(time_left, 6), round(q_decision_actual, 6)
+                ])
+                
+                disc_return += reward
+                state = next_state
+                step += 1
+                
+                if terminated or truncated:
+                    break
+            
+            total_rewards.append(disc_return)
+    
+    # Calculate statistics
+    mean_return = np.mean(total_rewards)
+    std_return = np.std(total_rewards)
+    
+    print(f"   ✅ RL CSV generated: {csv_filename}")
+    print(f"   💰 RL Average Return: {mean_return:.6f} ± {std_return:.6f}")
+    print(f"   📊 Total rows written: {sum(len(eval_t) for _ in range(actual_runs))}")
+    
+    return {
+        'rl_average_return': mean_return,
+        'rl_std_return': std_return,
+        'rl_n_paths': actual_runs,
+        'csv_file': csv_filename,
+        'all_returns': total_rewards
+    }
+
+
 def evaluate(path, eval_runs=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, validation_runs_dir=None):
     """
     Standard evaluation function adapted for swing options
@@ -548,6 +639,15 @@ def run(n_paths=10000, eval_every=1000, eval_runs=5, training_csv=None, evaluati
                 'n_runs': lsm_results['lsm_n_paths_same_paths']
             }
             log_evaluation_run(evaluation_csv, 0, "LSM_Benchmark", lsm_stats)
+        
+        # Generate detailed LSM solution CSV for comparison with RL
+        print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
+        lsm_csv_filename = f"logs/{args.info}/longstaff_schwartz_solution_{args.info}.csv"
+        lsm_csv_results = generate_lsm_solution_csv(
+            eval_t, eval_S, eval_X, eval_Y, 
+            eval_env.contract, lsm_csv_filename, args.seed
+        )
+        print(f"✅ LSM solution CSV saved: {lsm_csv_filename}")
         
     except Exception as e:
         print(f"⚠️ LSM benchmark computation failed: {e}")
@@ -949,6 +1049,23 @@ if __name__ == "__main__":
         writer.add_scalar("Final_Evaluation/LSM_Benchmark", lsm_price, args.n_paths)
         if lsm_price > 0:
             writer.add_scalar("Final_Evaluation/RL_vs_LSM_Ratio", avg_return / lsm_price, args.n_paths)
+    
+    # Generate detailed RL solution CSV for comparison with LSM
+    print(f"\n🤖 Generating RL solution CSV for detailed comparison...")
+    rl_csv_filename = f"logs/{args.info}/RL_solution_{args.info}.csv"
+    
+    # Use the same evaluation paths for perfect comparison
+    if eval_S is not None:
+        rl_csv_results = generate_rl_solution_csv(
+            agent, eval_env, eval_t, eval_S, eval_X, eval_Y, 
+            rl_csv_filename
+        )
+        print(f"✅ RL solution CSV saved: {rl_csv_filename}")
+        print(f"📊 Both CSV files now available for detailed comparison:")
+        print(f"   - LSM: logs/{args.info}/longstaff_schwartz_solution_{args.info}.csv")
+        print(f"   - RL:  {rl_csv_filename}")
+    else:
+        print(f"⚠️ Cannot generate RL CSV - no pre-generated paths available")
     
     print("="*60)
 
