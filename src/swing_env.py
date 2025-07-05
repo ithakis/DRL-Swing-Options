@@ -1,5 +1,31 @@
 """
 Swing Option Environment for Reinforcement Learning
+
+PRICING FORMULA IMPLEMENTATION:
+===============================
+
+This environment implements the swing option pricing formula:
+
+1. Per-step Payoff:
+   Payoff at time t = q_t * (S_t - K)^+
+
+2. Path-wise Total Discounted Payoff:
+   P_path = sum_{t=1}^T e^{-r*t} * q_t * (S_t - K)^+
+
+3. Option Value (Monte Carlo Estimate):
+   V_0 = (1/N) * sum_{i=1}^N P_path,i
+
+Where:
+- q_t: Exercise quantity at time t (q_actual in the code)
+- S_t: Spot price at time t
+- K: Strike price
+- r: Risk-free rate
+- t: Time = (step + 1) * dt
+- N: Number of Monte Carlo paths
+
+The calculate_standardized_reward() function implements the per-step
+discounted payoff calculation, and the evaluation functions in run.py
+compute the Monte Carlo average.
 """
 from typing import Dict, Optional, Tuple
 
@@ -14,29 +40,43 @@ from .swing_contract import DEFAULT_CONTRACT, SwingContract
 def calculate_standardized_reward(spot_price: float, q_actual: float, strike: float, 
                                 current_step: int, discount_factor: float, 
                                 q_exercised_total: float = 0.0, q_min: float = 0.0,
-                                is_terminal: bool = False) -> float:
+                                is_terminal: bool = False, dt: Optional[float] = None, 
+                                r: Optional[float] = None) -> float:
     """
     Standardized reward calculation for both RL and LSM methods
     
+    Updated to match the swing option pricing formula:
+    Per-step Payoff: q_t * (S_t - K)^+
+    Path-wise Total: sum_{t=1}^T e^{-r*t} * q_t * (S_t - K)^+
+    
     Args:
-        spot_price: Current spot price
-        q_actual: Actual exercise quantity
-        strike: Strike price
-        current_step: Current time step
-        discount_factor: Discount factor per step
+        spot_price: Current spot price S_t
+        q_actual: Actual exercise quantity q_t  
+        strike: Strike price K
+        current_step: Current time step (0-indexed)
+        discount_factor: Discount factor per step (for backward compatibility)
         q_exercised_total: Total quantity exercised so far (for terminal penalty)
         q_min: Minimum total exercise requirement
         is_terminal: Whether this is a terminal step
+        dt: Time step size (if provided, uses continuous discounting)
+        r: Risk-free rate (if provided, uses continuous discounting)
         
     Returns:
         Discounted reward including any terminal penalty
     """
-    # Calculate immediate payoff
+    # Calculate immediate payoff: q_t * (S_t - K)^+
     payoff_per_unit = max(spot_price - strike, 0.0)
-    immediate_reward = q_actual * payoff_per_unit
+    immediate_payoff = q_actual * payoff_per_unit
     
-    # Apply discounting
-    discounted_reward = (discount_factor ** current_step) * immediate_reward
+    # Apply discounting: e^{-r*t} where t = (current_step + 1) * dt
+    # Note: current_step is 0-indexed, so actual time is (current_step + 1) * dt
+    if dt is not None and r is not None:
+        # Use continuous discounting as per formula: e^{-r*t}
+        actual_time = (current_step + 1) * dt
+        discounted_reward = np.exp(-r * actual_time) * immediate_payoff
+    else:
+        # Fallback to discrete discounting for backward compatibility
+        discounted_reward = (discount_factor ** (current_step + 1)) * immediate_payoff
     
     # Add terminal penalty if applicable
     terminal_penalty = 0.0
@@ -144,10 +184,12 @@ class SwingOptionEnv(gym.Env):
         truncated = False
         
         # Calculate total reward including terminal penalty if needed
+        # Use continuous discounting as per the swing option pricing formula
         total_reward = calculate_standardized_reward(
             spot_price, q_actual, self.contract.strike, 
             self.current_step - 1, self.contract.discount_factor,
-            new_q_exercised, self.contract.Q_min, terminated
+            new_q_exercised, self.contract.Q_min, terminated,
+            dt=self.contract.dt, r=self.contract.r
         )
         
         # Update episode state

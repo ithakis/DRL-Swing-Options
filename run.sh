@@ -7,8 +7,8 @@
 # Monthly Swing Option Baseline:
 args=( 
     # Training parameters
-    -n_paths=4096 # 4096 or 16384
-    -eval_every=1000
+    -n_paths=16384 # 4096 or 16384
+    -eval_every=-1 # if -1: Disable evaluation during training
     -n_paths_eval=4096
     -munchausen=0
     -nstep=5
@@ -45,7 +45,7 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -name "MonthlySwing_d1" -seed 11 
+python run.py "${args[@]}" -name "MonthlySwing_d" -seed 11 
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline2" -seed 12 &
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline3" -seed 13 &
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline4" -seed 14 &

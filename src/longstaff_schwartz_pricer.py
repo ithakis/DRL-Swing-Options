@@ -111,6 +111,7 @@ class LongstaffSchwartzPricer:
         
         # Terminal condition: at maturity, exercise all remaining rights if profitable
         for m in range(1, max_rights + 1):
+            # Apply the swing option pricing formula: q_t * (S_t - K)^+
             payoff = self.contract.volume_per_exercise * np.maximum(
                 spot_paths[:, -1] - self.contract.strike, 0
             )
@@ -132,7 +133,7 @@ class LongstaffSchwartzPricer:
                 # Current spot prices for available paths
                 current_spots = spot_paths[available_paths, t]
                 
-                # Immediate exercise payoff
+                # Immediate exercise payoff: q_t * (S_t - K)^+
                 immediate_payoff = self.contract.volume_per_exercise * np.maximum(
                     current_spots - self.contract.strike, 0
                 )
@@ -364,7 +365,7 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
                 
             current_spots = eval_S[available_paths, t]
             
-            # Immediate exercise payoff
+            # Immediate exercise payoff: q_t * (S_t - K)^+
             immediate_payoff = lsm_contract.volume_per_exercise * np.maximum(
                 current_spots - lsm_contract.strike, 0
             )
@@ -411,6 +412,8 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
     # Forward simulation to reconstruct actual exercise path
     print(f"   📝 Writing detailed step data to CSV...")
     
+    path_payoffs = []  # Track the total payoff for each path
+    
     with open(csv_filename, 'w', newline='') as f:
         writer = csv.writer(f)
         # Standardized header matching RL solution format
@@ -420,6 +423,7 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
         for path_idx in range(n_paths):
             q_remaining = contract.Q_max  # Start with full inventory
             q_exercised_total = 0.0
+            path_total_reward = 0.0  # Track total reward for this path
             
             for step in range(n_steps):  # Only go to n_steps (not n_steps + 1) to match RL termination
                 spot_price = eval_S[path_idx, step]
@@ -446,6 +450,8 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
                     q_exercised_total, contract.Q_min, is_terminal
                 )
                 
+                path_total_reward += reward  # Add to path total
+                
                 # Write row with standardized format and precision
                 writer.writerow([
                     path_idx, step, round(spot_price, 4), 
@@ -457,15 +463,17 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
                 # Check termination conditions to match RL environment
                 if is_terminal:
                     break
+            
+            path_payoffs.append(path_total_reward)  # Store total payoff for this path
     
-    # Calculate final statistics
-    option_prices = option_values[:, 0, max_rights]
-    mean_price = np.mean(option_prices)
-    std_error = np.std(option_prices) / np.sqrt(n_paths)
+    # Calculate final statistics from actual path payoffs (same as notebook calculation)
+    path_payoffs = np.array(path_payoffs)
+    mean_price = np.mean(path_payoffs)
+    std_error = np.std(path_payoffs) / np.sqrt(n_paths)
     
     print(f"   ✅ LSM CSV generated: {csv_filename}")
     print(f"   💰 LSM Option Value: ${mean_price:.6f} ± {std_error:.6f}")
-    print(f"   📊 Total rows written: {n_paths * (n_steps + 1)}")
+    print(f"   📊 Total rows written: {len(path_payoffs)} path summaries")
     
     return {
         'lsm_option_value': mean_price,
@@ -663,6 +671,9 @@ def compute_lsm_benchmark(contract, hhk_params, n_paths: int = 10000, random_see
     """
     Compute LSM benchmark for swing option pricing using the same setup as RL environment
     
+    IMPORTANT: This function computes the LSM strategy value using the SAME reward 
+    calculation as RL (step-wise discounted payoffs) for fair comparison.
+    
     Args:
         contract: SwingContract from the existing swing option framework
         hhk_params: HHK model parameters 
@@ -672,6 +683,8 @@ def compute_lsm_benchmark(contract, hhk_params, n_paths: int = 10000, random_see
     Returns:
         Dictionary with LSM benchmark results
     """
+    from .swing_env import calculate_standardized_reward
+    
     print(f"\n🔮 Computing LSM Benchmark (Traditional Method)")
     print(f"   Contract: Strike=${contract.strike}, {contract.n_rights} rights, {contract.maturity:.4f}Y maturity")
     print(f"   LSM Paths: {n_paths}")
@@ -679,47 +692,164 @@ def compute_lsm_benchmark(contract, hhk_params, n_paths: int = 10000, random_see
     # Convert SwingContract to SwingOptionContract for LSM
     lsm_contract = SwingOptionContract(
         strike=contract.strike,
-        volume_per_exercise=contract.q_max,  # Use max daily exercise as volume
-        max_exercises=min(contract.n_rights, int(contract.Q_max / contract.q_max)),  # Total exercises possible
+        volume_per_exercise=contract.q_max,
+        max_exercises=min(contract.n_rights, int(contract.Q_max / contract.q_max)),
         maturity=contract.maturity,
         risk_free_rate=contract.r
     )
     
-    # Price using LSM
-    start_time = time.time()
-    result = price_swing_option_with_hhk(
-        contract=lsm_contract,
-        hhk_params=hhk_params,
+    # Simulate HHK paths using same parameters as RL
+    from .simulate_hhk_spot import simulate_hhk_spot
+    time_grid, spot_paths, _, _ = simulate_hhk_spot(
+        T=contract.maturity,
+        n_steps=contract.n_rights,
         n_paths=n_paths,
-        n_steps=contract.n_rights,  # Same time discretization as RL
-        pricing_method='lsm',
-        basis_type='polynomial',
-        polynomial_degree=3,
-        random_seed=random_seed
+        seed=random_seed,
+        **hhk_params
     )
+    
+    # Compute LSM exercise strategy
+    start_time = time.time()
+    pricer = LongstaffSchwartzPricer(lsm_contract, random_seed)
+    
+    # Get exercise strategy using LSM
+    n_steps = spot_paths.shape[1] - 1
+    dt = lsm_contract.maturity / n_steps
+    discount_factor = np.exp(-lsm_contract.risk_free_rate * dt)
+    
+    # Initialize arrays
+    max_rights = lsm_contract.max_exercises
+    option_values = np.zeros((n_paths, n_steps + 1, max_rights + 1))
+    exercise_quantities = np.zeros((n_paths, n_steps + 1))
+    
+    # Terminal condition
+    for m in range(1, max_rights + 1):
+        payoff = lsm_contract.volume_per_exercise * np.maximum(
+            spot_paths[:, -1] - lsm_contract.strike, 0
+        )
+        option_values[:, -1, m] = payoff
+    
+    # Backward induction to find optimal exercise strategy
+    for t in range(n_steps - 1, -1, -1):
+        for m in range(1, max_rights + 1):
+            available_paths = np.ones(n_paths, dtype=bool)
+            
+            if np.sum(available_paths) == 0:
+                continue
+                
+            current_spots = spot_paths[available_paths, t]
+            
+            # Immediate exercise payoff
+            immediate_payoff = lsm_contract.volume_per_exercise * np.maximum(
+                current_spots - lsm_contract.strike, 0
+            )
+            
+            # Values
+            future_value_exercise = discount_factor * option_values[available_paths, t + 1, m - 1]
+            exercise_value = immediate_payoff + future_value_exercise
+            continuation_value = discount_factor * option_values[available_paths, t + 1, m]
+            
+            # Simple continuation value estimation
+            if len(current_spots) > 10:
+                itm_mask = immediate_payoff > 0
+                if np.sum(itm_mask) > 5:
+                    try:
+                        fitted_continuation = pricer._fit_continuation_value(
+                            current_spots[itm_mask], continuation_value[itm_mask], 
+                            m, time_grid[t], 'polynomial', 3, None
+                        )
+                        predicted_continuation = pricer._predict_continuation_value(
+                            current_spots, fitted_continuation, 'polynomial'
+                        )
+                    except:
+                        predicted_continuation = continuation_value
+                else:
+                    predicted_continuation = continuation_value
+            else:
+                predicted_continuation = continuation_value
+            
+            # Exercise decision
+            exercise_optimal = exercise_value > predicted_continuation
+            
+            # Update values
+            option_values[available_paths, t, m] = np.where(
+                exercise_optimal, exercise_value, predicted_continuation
+            )
+            
+            # Track exercise decisions for full contract (m == max_rights)
+            if m == max_rights:
+                exercise_quantities[available_paths, t] = np.where(
+                    exercise_optimal, lsm_contract.volume_per_exercise, 0.0
+                )
+    
+    # Forward simulation using SAME reward calculation as RL
+    path_payoffs = []
+    total_exercises = []
+    
+    for path_idx in range(n_paths):
+        q_remaining = contract.Q_max  # Start with full inventory
+        q_exercised_total = 0.0
+        path_reward = 0.0
+        
+        for step in range(n_steps):
+            spot_price = spot_paths[path_idx, step]
+            
+            # Use LSM exercise decision
+            q_decision = exercise_quantities[path_idx, step]
+            
+            # Ensure we don't over-exercise
+            q_decision = min(q_decision, q_remaining, contract.q_max)
+            
+            # Update state
+            q_remaining -= q_decision
+            q_exercised_total += q_decision
+            
+            # Check if this is a terminal step
+            is_terminal = ((step + 1) >= contract.n_rights or 
+                         q_exercised_total >= contract.Q_max - 1e-6)
+            
+            # Calculate standardized reward using SAME function as RL
+            reward = calculate_standardized_reward(
+                spot_price, q_decision, contract.strike, 
+                step, contract.discount_factor,
+                q_exercised_total, contract.Q_min, is_terminal
+            )
+            
+            path_reward += reward
+            
+            # Check termination conditions to match RL environment
+            if is_terminal:
+                break
+        
+        path_payoffs.append(path_reward)
+        total_exercises.append(q_exercised_total)
     
     benchmark_time = time.time() - start_time
     
-    # Compute expected value per exercise right for comparison
-    value_per_right = result.price / lsm_contract.max_exercises
-    expected_exercises = np.sum(result.exercise_probability)
-    exercise_efficiency = expected_exercises / lsm_contract.max_exercises
+    # Calculate statistics using same method as RL evaluation
+    path_payoffs = np.array(path_payoffs)
+    mean_payoff = np.mean(path_payoffs)
+    std_error = np.std(path_payoffs) / np.sqrt(n_paths)
+    ci_lower = mean_payoff - 1.96 * std_error
+    ci_upper = mean_payoff + 1.96 * std_error
+    
+    expected_exercises = np.mean(total_exercises)
+    exercise_efficiency = expected_exercises / contract.Q_max
     
     benchmark_results = {
-        'lsm_option_value': result.price,
-        'lsm_std_error': result.std_error,
-        'lsm_confidence_interval': result.confidence_interval,
-        'lsm_value_per_right': value_per_right,
+        'lsm_option_value': mean_payoff,
+        'lsm_std_error': std_error,
+        'lsm_confidence_interval': (ci_lower, ci_upper),
         'lsm_expected_exercises': expected_exercises,
         'lsm_exercise_efficiency': exercise_efficiency,
         'lsm_computation_time': benchmark_time,
         'lsm_n_paths': n_paths,
-        'lsm_regression_r2': result.method_info.get('avg_r2', 0.0),
-        'lsm_exercise_probabilities': result.exercise_probability.tolist()
+        'lsm_regression_r2': 0.0,  # Not computed in this simplified version
+        'lsm_exercise_probabilities': []  # Not computed in this simplified version
     }
     
-    print(f"   ✅ LSM Option Value: ${result.price:.6f} ± {result.std_error:.6f}")
-    print(f"   📊 Expected Exercises: {expected_exercises:.2f}/{lsm_contract.max_exercises} ({exercise_efficiency:.1%})")
+    print(f"   ✅ LSM Option Value: ${mean_payoff:.6f} ± {std_error:.6f}")
+    print(f"   📊 Expected Exercises: {expected_exercises:.2f}/{contract.Q_max} ({exercise_efficiency:.1%})")
     print(f"   ⚡ Computation Time: {benchmark_time:.2f}s")
     print(f"   🎯 This is the target value for RL agent to achieve!")
     
@@ -731,6 +861,9 @@ def use_same_paths_for_lsm_and_rl(eval_t, eval_S, eval_X, eval_Y, contract, rand
     Use the exact same MC paths for LSM pricing as will be used for RL evaluation
     This ensures perfect comparability between methods.
     
+    IMPORTANT: This function computes the LSM strategy value using the SAME reward 
+    calculation as RL (step-wise discounted payoffs) for fair comparison.
+    
     Args:
         eval_t: Time grid from RL simulation
         eval_S: Spot price paths from RL simulation  
@@ -740,8 +873,10 @@ def use_same_paths_for_lsm_and_rl(eval_t, eval_S, eval_X, eval_Y, contract, rand
         random_seed: Random seed
         
     Returns:
-        LSM benchmark results using the exact same paths
+        LSM benchmark results using the exact same paths and reward calculation as RL
     """
+    from .swing_env import calculate_standardized_reward
+    
     print(f"\n🎯 Computing LSM with SAME paths as RL evaluation")
     print(f"   Using {eval_S.shape[0]} pre-generated paths")
     
@@ -754,34 +889,147 @@ def use_same_paths_for_lsm_and_rl(eval_t, eval_S, eval_X, eval_Y, contract, rand
         risk_free_rate=contract.r
     )
     
-    # Use LSM pricer directly with the exact same paths
+    # Step 1: Compute LSM exercise strategy
     pricer = LongstaffSchwartzPricer(lsm_contract, random_seed)
     
+    # Modified LSM pricing to get exercise decisions
+    n_paths, n_steps = eval_S.shape[0], eval_S.shape[1] - 1
+    dt = lsm_contract.maturity / n_steps
+    discount_factor = np.exp(-lsm_contract.risk_free_rate * dt)
+    
+    # Initialize arrays
+    max_rights = lsm_contract.max_exercises
+    option_values = np.zeros((n_paths, n_steps + 1, max_rights + 1))
+    exercise_quantities = np.zeros((n_paths, n_steps + 1))
+    
+    # Terminal condition
+    for m in range(1, max_rights + 1):
+        payoff = lsm_contract.volume_per_exercise * np.maximum(
+            eval_S[:, -1] - lsm_contract.strike, 0
+        )
+        option_values[:, -1, m] = payoff
+    
+    # Backward induction to find optimal exercise strategy
+    for t in range(n_steps - 1, -1, -1):
+        for m in range(1, max_rights + 1):
+            available_paths = np.ones(n_paths, dtype=bool)
+            
+            if np.sum(available_paths) == 0:
+                continue
+                
+            current_spots = eval_S[available_paths, t]
+            
+            # Immediate exercise payoff
+            immediate_payoff = lsm_contract.volume_per_exercise * np.maximum(
+                current_spots - lsm_contract.strike, 0
+            )
+            
+            # Values
+            future_value_exercise = discount_factor * option_values[available_paths, t + 1, m - 1]
+            exercise_value = immediate_payoff + future_value_exercise
+            continuation_value = discount_factor * option_values[available_paths, t + 1, m]
+            
+            # Simple continuation value estimation (simplified)
+            if len(current_spots) > 10:
+                itm_mask = immediate_payoff > 0
+                if np.sum(itm_mask) > 5:
+                    try:
+                        fitted_continuation = pricer._fit_continuation_value(
+                            current_spots[itm_mask], continuation_value[itm_mask], 
+                            m, eval_t[t], 'polynomial', 3, None
+                        )
+                        predicted_continuation = pricer._predict_continuation_value(
+                            current_spots, fitted_continuation, 'polynomial'
+                        )
+                    except:
+                        predicted_continuation = continuation_value
+                else:
+                    predicted_continuation = continuation_value
+            else:
+                predicted_continuation = continuation_value
+            
+            # Exercise decision
+            exercise_optimal = exercise_value > predicted_continuation
+            
+            # Update values
+            option_values[available_paths, t, m] = np.where(
+                exercise_optimal, exercise_value, predicted_continuation
+            )
+            
+            # Track exercise decisions for full contract (m == max_rights)
+            if m == max_rights:
+                exercise_quantities[available_paths, t] = np.where(
+                    exercise_optimal, lsm_contract.volume_per_exercise, 0.0
+                )
+    
+    # Step 2: Forward simulation using SAME reward calculation as RL
     start_time = time.time()
-    result = pricer.price_lsm(
-        spot_paths=eval_S,
-        time_grid=eval_t,
-        basis_type='polynomial',
-        polynomial_degree=3
-    )
+    
+    path_payoffs = []
+    total_exercises = []
+    
+    for path_idx in range(n_paths):
+        q_remaining = contract.Q_max  # Start with full inventory
+        q_exercised_total = 0.0
+        path_reward = 0.0
+        
+        for step in range(n_steps):
+            spot_price = eval_S[path_idx, step]
+            
+            # Use LSM exercise decision
+            q_decision = exercise_quantities[path_idx, step]
+            
+            # Ensure we don't over-exercise
+            q_decision = min(q_decision, q_remaining, contract.q_max)
+            
+            # Update state
+            q_remaining -= q_decision
+            q_exercised_total += q_decision
+            
+            # Check if this is a terminal step
+            is_terminal = ((step + 1) >= contract.n_rights or 
+                         q_exercised_total >= contract.Q_max - 1e-6)
+            
+            # Calculate standardized reward using SAME function as RL
+            reward = calculate_standardized_reward(
+                spot_price, q_decision, contract.strike, 
+                step, contract.discount_factor,
+                q_exercised_total, contract.Q_min, is_terminal
+            )
+            
+            path_reward += reward
+            
+            # Check termination conditions to match RL environment
+            if is_terminal:
+                break
+        
+        path_payoffs.append(path_reward)
+        total_exercises.append(q_exercised_total)
+    
     computation_time = time.time() - start_time
     
-    expected_exercises = np.sum(result.exercise_probability)
-    exercise_efficiency = expected_exercises / lsm_contract.max_exercises
+    # Calculate statistics using same method as RL evaluation
+    path_payoffs = np.array(path_payoffs)
+    mean_payoff = np.mean(path_payoffs)
+    std_error = np.std(path_payoffs) / np.sqrt(n_paths)
+    ci_lower = mean_payoff - 1.96 * std_error
+    ci_upper = mean_payoff + 1.96 * std_error
+    
+    expected_exercises = np.mean(total_exercises)
+    exercise_efficiency = expected_exercises / contract.Q_max
     
     benchmark_results = {
-        'lsm_option_value_same_paths': result.price,
-        'lsm_std_error_same_paths': result.std_error,
-        'lsm_confidence_interval_same_paths': result.confidence_interval,
+        'lsm_option_value_same_paths': mean_payoff,
+        'lsm_std_error_same_paths': std_error,
+        'lsm_confidence_interval_same_paths': (ci_lower, ci_upper),
         'lsm_expected_exercises_same_paths': expected_exercises,
         'lsm_exercise_efficiency_same_paths': exercise_efficiency,
         'lsm_computation_time_same_paths': computation_time,
-        'lsm_regression_r2_same_paths': result.method_info.get('avg_r2', 0.0),
         'lsm_n_paths_same_paths': eval_S.shape[0]
     }
     
-    print(f"   ✅ LSM Value (same paths): ${result.price:.6f} ± {result.std_error:.6f}")
-    print(f"   📊 Expected Exercises: {expected_exercises:.2f}/{lsm_contract.max_exercises} ({exercise_efficiency:.1%})")
+    print(f"   ✅ LSM Value (same paths): ${mean_payoff:.6f} ± {std_error:.6f}")
+    print(f"   📊 Expected Exercises: {expected_exercises:.2f}/{contract.Q_max} ({exercise_efficiency:.1%})")
     print(f"   ⚡ Computation Time: {computation_time:.2f}s")
     
     return benchmark_results
