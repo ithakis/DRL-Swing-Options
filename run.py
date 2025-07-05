@@ -200,15 +200,15 @@ def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_epis
             
             # Track spot price if available in state
             if len(state) > 0:
-                spot_prices.append(float(state[0]))  # Assuming first element is spot price
+                spot_prices.append(float(state[0] * eval_env.contract.strike))  # Denormalize: state[0] is normalized by strike
             
             # Store step data before taking action
             step_info = {
                 'step': step,
-                'spot_price': float(state[0]) if len(state) > 0 else 0.0,
-                'q_remaining': float(state[2]) if len(state) > 2 else 0.0,  # Q_remaining
-                'q_exercised': float(state[1]) if len(state) > 1 else 0.0,   # Q_exercised
-                'time_left': float(state[3]) if len(state) > 3 else 0.0,     # time_to_maturity
+                'spot_price': float(state[0] * eval_env.contract.strike) if len(state) > 0 else 0.0,  # Denormalize spot price
+                'q_remaining': float(state[2] * eval_env.contract.Q_max) if len(state) > 2 else 0.0,  # Denormalize Q_remaining
+                'q_exercised': float(state[1] * eval_env.contract.Q_max) if len(state) > 1 else 0.0,   # Denormalize Q_exercised
+                'time_left': float(state[3] * eval_env.contract.maturity) if len(state) > 3 else 0.0,     # Denormalize time_to_maturity
                 'action': float(action_v.item()) if hasattr(action_v, 'item') else float(action_v)
             }
             
@@ -364,15 +364,15 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
             
             # Track spot price if available in state
             if len(state) > 0:
-                spot_prices.append(float(state[0]))  # Assuming first element is spot price
+                spot_prices.append(float(state[0] * eval_env.contract.strike))  # Denormalize: state[0] is normalized by strike
             
             # Store step data before taking action
             step_info = {
                 'step': step,
-                'spot_price': float(state[0]) if len(state) > 0 else 0.0,
-                'q_remaining': float(state[2]) if len(state) > 2 else 0.0,  # Q_remaining
-                'q_exercised': float(state[1]) if len(state) > 1 else 0.0,   # Q_exercised
-                'time_left': float(state[3]) if len(state) > 3 else 0.0,     # time_to_maturity
+                'spot_price': float(state[0] * eval_env.contract.strike) if len(state) > 0 else 0.0,  # Denormalize spot price
+                'q_remaining': float(state[2] * eval_env.contract.Q_max) if len(state) > 2 else 0.0,  # Denormalize Q_remaining
+                'q_exercised': float(state[1] * eval_env.contract.Q_max) if len(state) > 1 else 0.0,   # Denormalize Q_exercised
+                'time_left': float(state[3] * eval_env.contract.maturity) if len(state) > 3 else 0.0,     # Denormalize time_to_maturity
                 'action': float(action_v.item()) if hasattr(action_v, 'item') else float(action_v)
             }
             
