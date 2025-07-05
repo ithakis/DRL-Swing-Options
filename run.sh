@@ -45,13 +45,13 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -info "MonthlySwing_d" -seed 11 
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline2" -seed 12 &
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline3" -seed 13 &
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline4" -seed 14 &
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline5" -seed 15 &
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline6" -seed 16 &
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline7" -seed 17 
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline8" -seed 18
-# python run.py "${args[@]}" -info "MonthlySwing_Baseline9" -seed 19
+python run.py "${args[@]}" -name "MonthlySwing_d" -seed 11 
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline2" -seed 12 &
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline3" -seed 13 &
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline4" -seed 14 &
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline5" -seed 15 &
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline6" -seed 16 &
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline7" -seed 17 
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline8" -seed 18
+# python run.py "${args[@]}" -name "MonthlySwing_Baseline9" -seed 19
 

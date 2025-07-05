@@ -6,6 +6,7 @@ import os
 import time
 import warnings
 from collections import deque
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -26,6 +27,19 @@ def timer(start,end):
     hours, rem = divmod(end-start, 3600)
     minutes, seconds = divmod(rem, 60)
     print("\nTraining Time:  {:0>2}:{:0>2}:{:05.2f}".format(int(hours),int(minutes),seconds))
+
+
+def save_run_parameters(run_name, args_dict, logs_dir):
+    """Save run parameters to logs directory"""
+    run_logs_dir = os.path.join(logs_dir, run_name)
+    os.makedirs(run_logs_dir, exist_ok=True)
+    
+    params_file = os.path.join(run_logs_dir, f"{run_name}_parameters.json")
+    with open(params_file, 'w') as f:
+        json.dump(args_dict, f, indent=2)
+    
+    print(f"Parameters saved to: {params_file}")
+    return params_file
 
 
 def init_csv_logging(info_string):
@@ -575,7 +589,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         
         # Generate detailed LSM solution CSV for comparison with RL
         print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
-        lsm_csv_filename = f"logs/{args.info}/evaluation_runs/longstaff_schwartz_solution.csv"
+        lsm_csv_filename = f"logs/{run_name}/evaluation_runs/longstaff_schwartz_solution.csv"
         lsm_csv_results = generate_lsm_solution_csv(
             eval_t, eval_S, eval_X, eval_Y, 
             eval_env.contract, lsm_csv_filename, args.seed
@@ -743,7 +757,7 @@ parser.add_argument("-n_paths", type=int, default=10000, help="The total number 
 parser.add_argument("-eval_every", type=int, default=1000, help="Number of paths after which evaluation runs are performed, default = 1000")
 parser.add_argument("-n_paths_eval", type=int, default=1, help="Number of evaluation runs performed, default = 1")
 parser.add_argument("-seed", type=int, default=0, help="Seed for the env and torch network weights, default is 0")
-parser.add_argument("-info", type=str, help="Information or name of the run")
+parser.add_argument("-name", type=str, help="Name of the run (default: SwingOption_{timestamp})")
 
 # Swing Option Contract Parameters
 parser.add_argument("--q_min", type=float, default=0.0, help="Minimum exercise quantity per period, default = 0.0")
@@ -792,6 +806,15 @@ parser.add_argument("--fp32", type=int, default=1, choices=[0,1], help="Use floa
 parser.add_argument("--use_circular_buffer", type=int, default=1, choices=[0,1], help="Use optimized circular array buffer instead of deque, default=1 (YES!)")
 
 args = parser.parse_args()
+
+# Generate run name with timestamp if not provided
+if args.name is None:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"SwingOption_{timestamp}"
+else:
+    run_name = args.name
+
+print(f"Run name: {run_name}")
 
 # Apply float32 optimization if enabled
 if args.fp32:
@@ -842,10 +865,13 @@ if __name__ == "__main__":
         'f': default_seasonal_function              # Seasonal function
     }
 
-    writer = SummaryWriter("runs/"+args.info)
+    writer = SummaryWriter("runs/"+run_name)
+    
+    # Save run parameters to logs directory
+    save_run_parameters(run_name, args.__dict__, "logs")
     
     # Initialize CSV logging
-    training_csv, evaluation_csv, raw_episodes_csv, evaluation_runs_dir = init_csv_logging(args.info)
+    training_csv, evaluation_csv, raw_episodes_csv, evaluation_runs_dir = init_csv_logging(run_name)
     print("CSV logging initialized:")
     print(f"  Training data: {training_csv}")
     print(f"  Evaluation data: {evaluation_csv}")
@@ -944,7 +970,7 @@ if __name__ == "__main__":
     eval_env.close()
     timer(t0, t1)
     # save trained model 
-    torch.save(agent.actor_local.state_dict(), 'runs/'+args.info+".pth")
+    torch.save(agent.actor_local.state_dict(), 'runs/'+run_name+".pth")
     # save parameter
-    with open('runs/'+args.info+".json", 'w') as f:
+    with open('runs/'+run_name+".json", 'w') as f:
         json.dump(args.__dict__, f, indent=2)

@@ -260,10 +260,22 @@ state = [
 
 **Reward Function**: 
 ```python
-reward = discount_factor^t × q_t × max(S_t - K, 0)
+# Per-step reward with proper financial discounting
+reward = exp(-r * t) × q_t × max(S_t - K, 0)
 ```
 
-Where `discount_factor = exp(-r × dt)` ensures proper present value calculation.
+Where `exp(-r * t)` ensures proper present value calculation for swing option pricing.
+
+**Swing Option Valuation Formulas:**
+
+**1. Per-step Payoff:**
+$$\text{Payoff at time } t = q_t \cdot (S_t - K)^+$$
+
+**2. Path-wise Total Discounted Payoff:**
+$$P_{\text{path}} = \sum_{t=1}^{T} e^{-r t} \cdot q_t \cdot (S_t - K)^+$$
+
+**3. Option Value (Monte Carlo Estimate):**
+$$V_0 = \frac{1}{N} \sum_{i=1}^{N} P_{\text{path},i}$$
 
 ## Dependencies
 
@@ -321,6 +333,79 @@ pip install torch gymnasium numpy scipy matplotlib pandas tensorboard tqdm
 python -c "from src.swing_env import SwingOptionEnv; env = SwingOptionEnv(); print('✓ Environment ready')"
 
 # Start training
+python run.py --info "SwingOption_Baseline" --n_paths 10000 --seed 42
+```
+
+### New Run System (v2.0+)
+
+The project now uses an improved run naming and data management system:
+
+```bash
+# Run with automatic timestamp naming
+python run.py -n_paths 5000 -seed 42
+# Creates: SwingOption_20250104_143022
+
+# Run with custom name  
+python run.py -n_paths 5000 -name "MonthlySwing_Experiment1"
+# Creates: MonthlySwing_Experiment1
+
+# Use the convenient shell script
+./run.sh  # Runs predefined monthly swing option experiment
+```
+
+### Data Organization
+
+All run data is automatically organized:
+```
+logs/
+  └── {run_name}/
+      ├── {run_name}_parameters.json      # All run configuration
+      ├── {run_name}_training.csv         # Training progress
+      ├── {run_name}_evaluation.csv       # Evaluation results  
+      ├── {run_name}_raw_episodes.csv     # Detailed episode data
+      └── evaluation_runs/
+          ├── eval_run_1000.csv           # Step-by-step data
+          ├── eval_run_2000.csv
+          └── ...
+```
+
+### Jupyter Analysis
+
+In Jupyter notebooks, simply specify the run name:
+
+```python
+# Automatic data loading and analysis setup
+RUN_NAME = "MonthlySwing_Experiment1"  
+run_data = setup_notebook_for_run(RUN_NAME)
+
+# All data is now available:
+# - run_data['parameters']: Configuration
+# - run_data['training_data']: Training progress  
+# - run_data['eval_data']: Evaluation results
+# - run_data['raw_data']: Raw episodes
+# - run_data['validation_data']: Step-by-step data
+```
+
+## Traditional Quick Start (Pre-v2.0)
+
+For older run data or manual setup:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd D4PG-QR-FRM
+
+# Create conda environment (recommended)
+conda create -n swing_pricing python=3.11
+conda activate swing_pricing
+
+# Install dependencies
+pip install torch gymnasium numpy scipy matplotlib pandas tensorboard tqdm
+
+# Test the swing option environment
+python -c "from src.swing_env import SwingOptionEnv; env = SwingOptionEnv(); print('✓ Environment ready')"
+
+# Start training with traditional command
 python run.py --info "SwingOption_Baseline" --n_paths 10000 --seed 42
 ```
 
