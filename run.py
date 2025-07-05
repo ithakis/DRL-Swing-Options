@@ -141,7 +141,7 @@ def log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_d
         # Write compact headers including episode_idx
         writer.writerow(['episode_idx', 'step', 'spot', 'q_remain', 'q_exerc', 'time_left', 'action', 'q_actual', 'reward'])
         
-        # Write step data for all episodes with minimal precision to save space
+        # Write step data for all episodes with standardized precision (4 decimal places)
         for episode_idx, step_data in enumerate(all_episodes_data):
             for step_info in step_data:
                 writer.writerow([
@@ -152,7 +152,7 @@ def log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_d
                     round(step_info['q_exercised'], 4),
                     round(step_info['time_left'], 4),
                     round(step_info['action'], 6),
-                    round(step_info['q_actual'], 6),
+                    round(step_info['q_actual'], 4),
                     round(step_info['reward'], 6)
                 ])
 

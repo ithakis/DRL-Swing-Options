@@ -319,6 +319,7 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
         Dictionary with LSM results
     """
     import csv
+    from .swing_env import calculate_standardized_reward
     
     print(f"\n🔮 Generating LSM solution CSV: {csv_filename}")
     print(f"   Using {eval_S.shape[0]} paths with {eval_S.shape[1]} time steps")
@@ -412,9 +413,9 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
     
     with open(csv_filename, 'w', newline='') as f:
         writer = csv.writer(f)
-        # Header matching RL solution format
-        writer.writerow(['path_idx', 'step', 'spot_price', 'q_remaining', 'q_exercised', 
-                        'time_left', 'q_decision'])
+        # Standardized header matching RL solution format
+        writer.writerow(['episode_idx', 'step', 'spot', 'q_remain', 'q_exerc', 
+                        'time_left', 'action', 'q_actual', 'reward'])
         
         for path_idx in range(n_paths):
             q_remaining = contract.Q_max  # Start with full inventory
@@ -430,19 +431,31 @@ def generate_lsm_solution_csv(eval_t, eval_S, eval_X, eval_Y, contract, csv_file
                 # Ensure we don't over-exercise
                 q_decision = min(q_decision, q_remaining, contract.q_max)
                 
-                # Update state
+                # Update state first
                 q_remaining -= q_decision
                 q_exercised_total += q_decision
                 
-                # Write row
+                # Check if this is a terminal step
+                is_terminal = ((step + 1) >= contract.n_rights or 
+                             q_exercised_total >= contract.Q_max - 1e-6)
+                
+                # Calculate standardized reward using same function as RL with terminal penalty
+                reward = calculate_standardized_reward(
+                    spot_price, q_decision, contract.strike, 
+                    step, contract.discount_factor,
+                    q_exercised_total, contract.Q_min, is_terminal
+                )
+                
+                # Write row with standardized format and precision
                 writer.writerow([
-                    path_idx, step, round(spot_price, 6), 
-                    round(q_remaining, 6), round(q_exercised_total, 6),
-                    round(time_left, 6), round(q_decision, 6)
+                    path_idx, step, round(spot_price, 4), 
+                    round(q_remaining, 4), round(q_exercised_total, 4),
+                    round(time_left, 4), round(q_decision, 6), 
+                    round(q_decision, 4), round(reward, 6)
                 ])
                 
                 # Check termination conditions to match RL environment
-                if (step + 1) >= contract.n_rights or q_exercised_total >= contract.Q_max - 1e-6:
+                if is_terminal:
                     break
     
     # Calculate final statistics

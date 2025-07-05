@@ -11,6 +11,42 @@ from .simulate_hhk_spot import DEFAULT_HHK_PARAMS, simulate_single_path
 from .swing_contract import DEFAULT_CONTRACT, SwingContract
 
 
+def calculate_standardized_reward(spot_price: float, q_actual: float, strike: float, 
+                                current_step: int, discount_factor: float, 
+                                q_exercised_total: float = 0.0, q_min: float = 0.0,
+                                is_terminal: bool = False) -> float:
+    """
+    Standardized reward calculation for both RL and LSM methods
+    
+    Args:
+        spot_price: Current spot price
+        q_actual: Actual exercise quantity
+        strike: Strike price
+        current_step: Current time step
+        discount_factor: Discount factor per step
+        q_exercised_total: Total quantity exercised so far (for terminal penalty)
+        q_min: Minimum total exercise requirement
+        is_terminal: Whether this is a terminal step
+        
+    Returns:
+        Discounted reward including any terminal penalty
+    """
+    # Calculate immediate payoff
+    payoff_per_unit = max(spot_price - strike, 0.0)
+    immediate_reward = q_actual * payoff_per_unit
+    
+    # Apply discounting
+    discounted_reward = (discount_factor ** current_step) * immediate_reward
+    
+    # Add terminal penalty if applicable
+    terminal_penalty = 0.0
+    if is_terminal and q_exercised_total < q_min:
+        shortage = q_min - q_exercised_total
+        terminal_penalty = -shortage * strike
+    
+    return discounted_reward + terminal_penalty
+
+
 class SwingOptionEnv(gym.Env):
     """
     Gymnasium environment for swing option pricing using D4PG
@@ -92,36 +128,36 @@ class SwingOptionEnv(gym.Env):
         # Check feasibility and clip if necessary
         q_actual = self._get_feasible_action(q_proposed)
         
-        # Calculate reward (immediate payoff)
+        # Calculate reward using standardized function
         spot_price = self.spot_path[self.current_step]
-        payoff_per_unit = max(spot_price - self.contract.strike, 0.0)
-        immediate_reward = q_actual * payoff_per_unit
         
-        # Apply discounting
-        discount_factor = self.contract.discount_factor ** self.current_step
-        discounted_reward = discount_factor * immediate_reward
-        
-        # Update state
+        # Update state first to get current totals
         if q_actual > 1e-6:  # Threshold for "exercise occurred"
             self.last_exercise_step = self.current_step
             
-        self.q_exercised += q_actual
-        self.episode_return += discounted_reward
+        new_q_exercised = self.q_exercised + q_actual
         self.current_step += 1
         
         # Check termination conditions
         terminated = (self.current_step >= self.contract.n_rights or 
-                     self.q_exercised >= self.contract.Q_max - 1e-6)
+                     new_q_exercised >= self.contract.Q_max - 1e-6)
         truncated = False
         
-        # Penalty for not meeting global minimum (applied at termination)
-        terminal_penalty = 0.0
-        if terminated and self.q_exercised < self.contract.Q_min:
-            # Penalty proportional to unmet obligation
-            shortage = self.contract.Q_min - self.q_exercised
-            terminal_penalty = -shortage * self.contract.strike  # Negative of strike price
-            
-        total_reward = discounted_reward + terminal_penalty
+        # Calculate total reward including terminal penalty if needed
+        total_reward = calculate_standardized_reward(
+            spot_price, q_actual, self.contract.strike, 
+            self.current_step - 1, self.contract.discount_factor,
+            new_q_exercised, self.contract.Q_min, terminated
+        )
+        
+        # Update episode state
+        self.q_exercised = new_q_exercised
+        self.episode_return += total_reward
+        
+        # Calculate components for info (for backward compatibility)
+        immediate_reward = q_actual * max(spot_price - self.contract.strike, 0.0)
+        discounted_reward = (self.contract.discount_factor ** (self.current_step - 1)) * immediate_reward
+        terminal_penalty = total_reward - discounted_reward
         
         info = {
             'spot_price': spot_price,
