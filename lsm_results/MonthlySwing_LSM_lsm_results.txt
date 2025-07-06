@@ -1,0 +1,10 @@
+Longstaff-Schwartz Swing Option Pricing Results
+Run Name: MonthlySwing_LSM
+Timestamp: 2025-07-06 15:27:53
+
+Option Value: $1341.299413
+Standard Error: 0.670803
+95% CI: [$1339.984640, $1342.614186]
+Total Computation Time: 0.65s
+Monte Carlo Paths: 16,384
+Random Seed: 42

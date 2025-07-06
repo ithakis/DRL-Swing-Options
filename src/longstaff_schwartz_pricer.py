@@ -23,9 +23,19 @@ from sklearn.metrics import r2_score
 from typing import Tuple, Dict, Any, Optional, Callable, Union
 import warnings
 import time
+import argparse
+import sys
+import os
 from dataclasses import dataclass
 
-from src.simulate_hhk_spot import simulate_hhk_spot, DEFAULT_HHK_PARAMS
+# Add the project root to the path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from src.simulate_hhk_spot import simulate_hhk_spot, DEFAULT_HHK_PARAMS
+except ImportError:
+    # If running from the src directory directly
+    from simulate_hhk_spot import simulate_hhk_spot, DEFAULT_HHK_PARAMS
 
 
 @dataclass
@@ -1035,18 +1045,76 @@ def use_same_paths_for_lsm_and_rl(eval_t, eval_S, eval_X, eval_Y, contract, rand
     return benchmark_results
 
 
-if __name__ == "__main__":
-    # Example usage and testing
-    print("=== Swing Option Pricing with HHK Model ===\n")
+def parse_arguments():
+    """Parse command line arguments matching run.sh parameters"""
+    parser = argparse.ArgumentParser(description='Longstaff-Schwartz Swing Option Pricing')
     
-    # Create example contract
-    contract = create_default_contract(
-        strike=100.0,
-        volume_per_exercise=1.0,
-        max_exercises=10,
-        maturity=1.0,
-        risk_free_rate=0.05
+    # Training/simulation parameters
+    parser.add_argument('-n_paths', type=int, default=16384, help='Number of Monte Carlo paths')
+    parser.add_argument('-seed', type=int, default=42, help='Random seed')
+    parser.add_argument('-name', type=str, default='LSM_pricing', help='Run name for output files')
+    
+    # Contract parameters
+    parser.add_argument('--strike', type=float, default=100.0, help='Strike price')
+    parser.add_argument('--maturity', type=float, default=0.0833, help='Maturity in years')
+    parser.add_argument('--n_rights', type=int, default=22, help='Number of exercise rights')
+    parser.add_argument('--q_min', type=float, default=0.0, help='Minimum exercise per day')
+    parser.add_argument('--q_max', type=float, default=2.0, help='Maximum exercise per day')
+    parser.add_argument('--Q_min', type=float, default=0.0, help='Minimum total exercise')
+    parser.add_argument('--Q_max', type=float, default=20.0, help='Maximum total exercise')
+    parser.add_argument('--risk_free_rate', type=float, default=0.05, help='Risk-free rate')
+    parser.add_argument('--min_refraction_days', type=int, default=0, help='Minimum refraction days')
+    
+    # Market process parameters
+    parser.add_argument('--S0', type=float, default=100.0, help='Initial spot price')
+    parser.add_argument('--alpha', type=float, default=12.0, help='Mean reversion speed')
+    parser.add_argument('--sigma', type=float, default=1.2, help='Volatility')
+    parser.add_argument('--beta', type=float, default=150.0, help='Jump decay rate')
+    parser.add_argument('--lam', type=float, default=6.0, help='Jump intensity')
+    parser.add_argument('--mu_J', type=float, default=0.3, help='Mean jump size')
+    
+    # LSM specific parameters
+    parser.add_argument('--basis_type', type=str, default='polynomial', 
+                       choices=['polynomial', 'random_forest'], help='Basis function type')
+    parser.add_argument('--polynomial_degree', type=int, default=3, help='Polynomial degree')
+    parser.add_argument('--convergence_test', action='store_true', help='Run convergence analysis')
+    parser.add_argument('--save_results', action='store_true', help='Save results to file')
+    
+    return parser.parse_args()
+
+
+def default_seasonal_function(t):
+    """Default seasonal function (constant for simplicity)"""
+    return 0.0
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    
+    print("=== Longstaff-Schwartz Swing Option Pricing ===\n")
+    print(f"Run name: {args.name}")
+    print(f"Random seed: {args.seed}")
+    print(f"Number of paths: {args.n_paths}")
+    
+    # Create contract from command line arguments
+    contract = SwingOptionContract(
+        strike=args.strike,
+        volume_per_exercise=args.q_max,
+        max_exercises=min(args.n_rights, int(args.Q_max / args.q_max)),
+        maturity=args.maturity,
+        risk_free_rate=args.risk_free_rate
     )
+    
+    # Create HHK parameters from command line arguments
+    hhk_params = {
+        'S0': args.S0,
+        'alpha': args.alpha,
+        'sigma': args.sigma,
+        'beta': args.beta,
+        'lam': args.lam,
+        'mu_J': args.mu_J,
+        'f': default_seasonal_function
+    }
     
     print("Contract specification:")
     print(f"  Strike: ${contract.strike}")
@@ -1055,27 +1123,39 @@ if __name__ == "__main__":
     print(f"  Maturity: {contract.maturity} years")
     print(f"  Risk-free rate: {contract.risk_free_rate:.1%}")
     
+    print("\nHHK Model parameters:")
+    print(f"  S0: {hhk_params['S0']}")
+    print(f"  Alpha: {hhk_params['alpha']}")
+    print(f"  Sigma: {hhk_params['sigma']}")
+    print(f"  Beta: {hhk_params['beta']}")
+    print(f"  Lambda: {hhk_params['lam']}")
+    print(f"  Mu_J: {hhk_params['mu_J']}")
+    
     # Price the option
+    start_time = time.time()
     result = price_swing_option_with_hhk(
         contract=contract,
-        n_paths=5000,
-        n_steps=365,
-        basis_type='polynomial',
-        polynomial_degree=3,
-        random_seed=42
+        hhk_params=hhk_params,
+        n_paths=args.n_paths,
+        n_steps=args.n_rights,
+        basis_type=args.basis_type,
+        polynomial_degree=args.polynomial_degree,
+        random_seed=args.seed
     )
+    total_time = time.time() - start_time
     
     print(f"\n=== Pricing Results ===")
-    print(f"Option price: ${result.price:.4f}")
-    print(f"Standard error: {result.std_error:.4f}")
-    print(f"95% CI: [${result.confidence_interval[0]:.4f}, ${result.confidence_interval[1]:.4f}]")
+    print(f"Option price: ${result.price:.6f}")
+    print(f"Standard error: {result.std_error:.6f}")
+    print(f"95% CI: [${result.confidence_interval[0]:.6f}, ${result.confidence_interval[1]:.6f}]")
     print(f"Computation time: {result.computation_time:.2f}s")
+    print(f"Total time: {total_time:.2f}s")
     
     if result.method_info.get('avg_r2'):
         print(f"Average regression R²: {result.method_info['avg_r2']:.3f}")
     
     # Analyze exercise strategy
-    time_grid = np.linspace(0, contract.maturity, 366)  # Daily grid
+    time_grid = np.linspace(0, contract.maturity, args.n_rights + 1)
     exercise_analysis = analyze_exercise_strategy(result, time_grid, contract)
     
     print(f"\n=== Exercise Strategy Analysis ===")
@@ -1084,19 +1164,64 @@ if __name__ == "__main__":
     print(f"Expected first exercise: {exercise_analysis['expected_first_exercise_time']:.3f} years")
     print(f"Max daily exercise probability: {exercise_analysis['max_daily_exercise_prob']:.1%}")
     
-    # Quick convergence test
-    print(f"\n=== Quick Convergence Test ===")
-    convergence_df = run_convergence_analysis(
-        contract=contract,
-        path_counts=[1000, 2000, 5000],
-        n_repetitions=3,
-        n_steps=365,
-        random_seed=42
-    )
+    # Convergence test (optional)
+    if args.convergence_test:
+        print(f"\n=== Convergence Analysis ===")
+        path_counts = [1000, 2000, 5000, 10000, args.n_paths] if args.n_paths > 10000 else [1000, 2000, args.n_paths]
+        convergence_df = run_convergence_analysis(
+            contract=contract,
+            hhk_params=hhk_params,
+            path_counts=path_counts,
+            n_repetitions=3,
+            n_steps=args.n_rights,
+            random_seed=args.seed
+        )
+        
+        print("\nConvergence results:")
+        for _, row in convergence_df.iterrows():
+            print(f"  {row['n_paths']:5d} paths: ${row['mean_price']:.6f} ± {row['std_error']:.6f} "
+                  f"({row['mean_time']:.1f}s)")
     
-    print("\nConvergence results:")
-    for _, row in convergence_df.iterrows():
-        print(f"  {row['n_paths']:5d} paths: ${row['mean_price']:.4f} ± {row['std_error']:.4f} "
-              f"({row['mean_time']:.1f}s)")
+    # Save results (optional)
+    if args.save_results:
+        results_file = f"lsm_results/{args.name}_lsm_results.txt"
+        import os
+        os.makedirs("lsm_results", exist_ok=True)
+        
+        with open(results_file, 'w') as f:
+            f.write(f"=== Longstaff-Schwartz Swing Option Pricing Results ===\n")
+            f.write(f"Run name: {args.name}\n")
+            f.write(f"Random seed: {args.seed}\n")
+            f.write(f"Number of paths: {args.n_paths}\n\n")
+            
+            f.write(f"Contract Parameters:\n")
+            f.write(f"  Strike: ${contract.strike}\n")
+            f.write(f"  Volume per exercise: {contract.volume_per_exercise}\n")
+            f.write(f"  Max exercises: {contract.max_exercises}\n")
+            f.write(f"  Maturity: {contract.maturity} years\n")
+            f.write(f"  Risk-free rate: {contract.risk_free_rate:.1%}\n\n")
+            
+            f.write(f"HHK Model Parameters:\n")
+            f.write(f"  S0: {hhk_params['S0']}\n")
+            f.write(f"  Alpha: {hhk_params['alpha']}\n")
+            f.write(f"  Sigma: {hhk_params['sigma']}\n")
+            f.write(f"  Beta: {hhk_params['beta']}\n")
+            f.write(f"  Lambda: {hhk_params['lam']}\n")
+            f.write(f"  Mu_J: {hhk_params['mu_J']}\n\n")
+            
+            f.write(f"Pricing Results:\n")
+            f.write(f"  Option price: ${result.price:.6f}\n")
+            f.write(f"  Standard error: {result.std_error:.6f}\n")
+            f.write(f"  95% CI: [${result.confidence_interval[0]:.6f}, ${result.confidence_interval[1]:.6f}]\n")
+            f.write(f"  Computation time: {result.computation_time:.2f}s\n")
+            f.write(f"  Total time: {total_time:.2f}s\n\n")
+            
+            f.write(f"Exercise Strategy:\n")
+            f.write(f"  Expected total exercises: {exercise_analysis['expected_total_exercises']:.2f}\n")
+            f.write(f"  Exercise rate: {exercise_analysis['exercise_rate']:.1%}\n")
+            f.write(f"  Expected first exercise: {exercise_analysis['expected_first_exercise_time']:.3f} years\n")
+            f.write(f"  Max daily exercise probability: {exercise_analysis['max_daily_exercise_prob']:.1%}\n")
+        
+        print(f"\nResults saved to: {results_file}")
     
-    print("\n=== Analysis Complete ===")
+    print("\n=== LSM Analysis Complete ===")

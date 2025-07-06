@@ -1,0 +1,10 @@
+Longstaff-Schwartz Swing Option Pricing Results
+Run Name: QuickTest
+Timestamp: 2025-07-06 15:27:22
+
+Option Value: $1463.641723
+Standard Error: 9.314648
+95% CI: [$1445.385012, $1481.898434]
+Total Computation Time: 0.12s
+Monte Carlo Paths: 100
+Random Seed: 42
