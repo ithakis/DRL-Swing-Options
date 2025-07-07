@@ -126,7 +126,7 @@ def default_seasonal_function(t: float) -> float:
     Returns:
         Seasonal component value
     """
-    return np.log(100.0) + 0.5 * np.cos(2 * np.pi * t)
+    return 0 #np.log(100.0) + 0.5 * np.cos(2 * np.pi * t)
 
 
 # Default HHK parameters based on Hambly et al. (2009)

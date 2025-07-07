@@ -45,7 +45,7 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -name "MonthlySwing_d" -seed 11 
+python run.py "${args[@]}" -name "MonthlySwing" -seed 1
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline2" -seed 12 &
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline3" -seed 13 &
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline4" -seed 14 &
