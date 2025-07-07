@@ -286,6 +286,19 @@ def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, 
     )
     avg_price = pricing_stats['option_price']
     
+    # Also create LSM evaluation run for comparison (only for specific evaluation intervals)
+    if evaluation_runs_dir is not None and path is not None:
+        try:
+            from src.longstaff_schwartz_pricer import save_lsm_evaluation_run
+            print(f"   🔮 Generating LSM evaluation run for training episode {path}...")
+            lsm_eval_run_results = save_lsm_evaluation_run(
+                eval_t, eval_S, eval_X, eval_Y, 
+                eval_env.contract, evaluation_runs_dir, path, args.seed
+            )
+            print(f"   ✅ LSM evaluation run saved: {lsm_eval_run_results['csv_file']}")
+        except Exception as e:
+            print(f"   ⚠️ LSM evaluation run generation failed: {e}")
+    
     # Log to CSV if file path provided
     if evaluation_csv is not None and path is not None:
         log_evaluation_run(evaluation_csv, path, 1, pricing_stats)
@@ -549,6 +562,20 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     # Compute LSM benchmark using the same evaluation paths that will be used by RL
     print(f"\n🔍 Computing Longstaff-Schwartz (LSM) benchmark price...")
     lsm_start = time.time()
+    
+    # Generate detailed LSM solution CSV for comparison with RL (independent of benchmark computation)
+    print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
+    lsm_csv_filename = f"logs/{run_name}/evaluation_runs/longstaff_schwartz_solution.csv"
+    try:
+        lsm_csv_results = generate_lsm_solution_csv(
+            eval_t, eval_S, eval_X, eval_Y, 
+            eval_env.contract, lsm_csv_filename, args.seed
+        )
+        print(f"✅ LSM solution CSV saved: {lsm_csv_filename}")
+    except Exception as e:
+        print(f"⚠️ LSM solution CSV generation failed: {e}")
+    
+    # Compute LSM benchmark for logging and comparison
     try:
         lsm_results = use_same_paths_for_lsm_and_rl(
             eval_t,  # Time grid
@@ -567,7 +594,8 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         print(f"LSM Option Price: {lsm_price:.6f}")
         print(f"Standard Error: {lsm_results['lsm_std_error_same_paths']:.6f}")
         print(f"95% Confidence Interval: [{lsm_results['lsm_confidence_interval_same_paths'][0]:.6f}, {lsm_results['lsm_confidence_interval_same_paths'][1]:.6f}]")
-        print(f"Expected Exercises: {lsm_results['lsm_expected_exercises_same_paths']:.3f}")
+        if 'lsm_expected_exercises_same_paths' in lsm_results:
+            print(f"Expected Exercises: {lsm_results['lsm_expected_exercises_same_paths']:.3f}")
         print(f"Monte Carlo Paths: {eval_S.shape[0]}")
         print(f"Computation Time: {lsm_time:.2f}s")
         print(f"{'='*60}")
@@ -580,21 +608,24 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
                 'price_std': lsm_results['lsm_std_error_same_paths'],
                 'confidence_95': (lsm_results['lsm_confidence_interval_same_paths'][1] - 
                                 lsm_results['lsm_confidence_interval_same_paths'][0]) / 2,
-                'avg_total_exercised': lsm_results['lsm_expected_exercises_same_paths'],
-                'avg_exercise_count': lsm_results['lsm_expected_exercises_same_paths'],
+                'avg_total_exercised': lsm_results.get('lsm_expected_exercises_same_paths', 0.0),
+                'avg_exercise_count': lsm_results.get('lsm_expected_exercises_same_paths', 0.0),
                 'all_returns': [lsm_price],  # Single deterministic price
                 'n_runs': lsm_results['lsm_n_paths_same_paths']
             }
             log_evaluation_run(evaluation_csv, 0, "LSM_Benchmark", lsm_stats)
         
-        # Generate detailed LSM solution CSV for comparison with RL
-        print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
-        lsm_csv_filename = f"logs/{run_name}/evaluation_runs/longstaff_schwartz_solution.csv"
-        lsm_csv_results = generate_lsm_solution_csv(
-            eval_t, eval_S, eval_X, eval_Y, 
-            eval_env.contract, lsm_csv_filename, args.seed
-        )
-        print(f"✅ LSM solution CSV saved: {lsm_csv_filename}")
+        # Also save LSM results in evaluation_runs folder in same format as RL eval runs
+        print(f"\n📊 Generating LSM evaluation run CSV for direct comparison with RL...")
+        from src.longstaff_schwartz_pricer import save_lsm_evaluation_run
+        try:
+            lsm_eval_run_results = save_lsm_evaluation_run(
+                eval_t, eval_S, eval_X, eval_Y, 
+                eval_env.contract, evaluation_runs_dir, 0, args.seed  # Use training_episode=0 for LSM benchmark
+            )
+            print(f"✅ LSM evaluation run CSV saved: {lsm_eval_run_results['csv_file']}")
+        except Exception as e:
+            print(f"⚠️ LSM evaluation run CSV generation failed: {e}")
         
     except Exception as e:
         print(f"⚠️ LSM benchmark computation failed: {e}")
