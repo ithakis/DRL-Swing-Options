@@ -156,121 +156,42 @@ def log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_d
                 ])
 
 
-def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_episodes_csv=None, training_episode=None, evaluation_runs_dir=None):
+def evaluate_swing_option_price(agent, eval_env, runs=100, base_seed=0, raw_episodes_csv=None, training_episode=None, evaluation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
     """
-    Evaluate swing option price using Monte Carlo simulation
+    Evaluate swing option price using pre-generated Monte Carlo paths
+    
+    DEPRECATED: This function now redirects to evaluate_swing_option_price_pregenerated
+    to ensure only pre-generated validation paths are used.
     
     Args:
         agent: Trained D4PG agent
         eval_env: Swing option environment for evaluation
         runs: Number of Monte Carlo runs
-        base_seed: Base seed for reproducible evaluation
+        base_seed: Base seed (IGNORED - using pre-generated paths)
         raw_episodes_csv: Path to raw episodes CSV file for detailed logging
         training_episode: Current training episode number for logging
         evaluation_runs_dir: Directory for detailed step-by-step CSV files
+        eval_t: Pre-generated time grid
+        eval_S: Pre-generated spot price paths
+        eval_X: Pre-generated X process paths
+        eval_Y: Pre-generated Y process paths
         
     Returns:
         dict: Dictionary with pricing statistics
     """
-    discounted_returns = []
-    exercise_stats = []
-    all_episodes_step_data = []  # Collect step data for all episodes
-    
-    for i in range(runs):
-        path_seed = base_seed + i + 1
-        state, _ = eval_env.reset(seed=path_seed)
-        
-        disc_return = 0.0
-        total_exercised = 0.0
-        exercise_count = 0
-        step = 0
-        spot_prices = []
-        
-        # Store detailed step data for this episode
-        episode_step_data = []
-        
-        # Track initial inventory for final calculation
-        initial_inventory = eval_env.contract.Q_max if hasattr(eval_env, 'contract') else 0.0
-        
-        while True:
-            # Get action from agent
-            action = agent.act(np.expand_dims(state, axis=0))
-            action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
-            
-            # Track spot price if available in state
-            if len(state) > 0:
-                spot_prices.append(float(state[0] * eval_env.contract.strike))  # Denormalize: state[0] is normalized by strike
-            
-            # Store step data before taking action
-            step_info = {
-                'step': step,
-                'spot_price': float(state[0] * eval_env.contract.strike) if len(state) > 0 else 0.0,  # Denormalize spot price
-                'q_remaining': float(state[2] * eval_env.contract.Q_max) if len(state) > 2 else 0.0,  # Denormalize Q_remaining
-                'q_exercised': float(state[1] * eval_env.contract.Q_max) if len(state) > 1 else 0.0,   # Denormalize Q_exercised
-                'time_left': float(state[3] * eval_env.contract.maturity) if len(state) > 3 else 0.0,     # Denormalize time_to_maturity
-                'action': float(action_v.item()) if hasattr(action_v, 'item') else float(action_v)
-            }
-            
-            state, reward, terminated, truncated, info = eval_env.step(action_v)
-            
-            # Complete step info with results
-            step_info['q_actual'] = info.get('q_actual', 0.0)
-            step_info['reward'] = float(reward)
-            episode_step_data.append(step_info)
-            
-            disc_return += reward  # Reward already includes discounting
-            if info.get('q_actual', 0) > 1e-6:
-                exercise_count += 1
-                total_exercised += info['q_actual']
-            
-            step += 1
-            
-            if terminated or truncated:
-                break
-        
-        # Add this episode's step data to the collection
-        all_episodes_step_data.append(episode_step_data)
-        
-        # Calculate episode statistics
-        final_inventory = initial_inventory - total_exercised if initial_inventory > 0 else 0.0
-        avg_spot_price = np.mean(spot_prices) if spot_prices else 0.0
-        max_spot_price = np.max(spot_prices) if spot_prices else 0.0
-        min_spot_price = np.min(spot_prices) if spot_prices else 0.0
-        
-        # Log raw episode data if CSV file provided
-        if raw_episodes_csv is not None and training_episode is not None:
-            log_raw_evaluation_episode(
-                raw_episodes_csv, training_episode, 1, i, path_seed,
-                disc_return, step, total_exercised, exercise_count,
-                final_inventory, avg_spot_price, max_spot_price, min_spot_price
-            )
-        
-        discounted_returns.append(disc_return)
-        exercise_stats.append({
-            'total_exercised': total_exercised,
-            'exercise_count': exercise_count,
-            'steps': step
-        })
-    
-    # Log detailed step data for ALL episodes in this evaluation run
-    if evaluation_runs_dir is not None and training_episode is not None:
-        log_detailed_step_data(evaluation_runs_dir, training_episode, all_episodes_step_data)
-    
-    # Calculate statistics
-    option_price = np.mean(discounted_returns)
-    price_std = np.std(discounted_returns)
-    avg_exercised = np.mean([s['total_exercised'] for s in exercise_stats])
-    avg_exercises = np.mean([s['exercise_count'] for s in exercise_stats])
-    
-    return {
-        'option_price': option_price,
-        'price_std': price_std,
-        'confidence_95': 1.96 * price_std / np.sqrt(runs),
-        'avg_total_exercised': avg_exercised,
-        'avg_exercise_count': avg_exercises,
-        'all_returns': discounted_returns,
-        'n_runs': runs
-    }
+    # Redirect to pre-generated path evaluation
+    return evaluate_swing_option_price_pregenerated(
+        agent=agent,
+        eval_env=eval_env, 
+        runs=runs,
+        raw_episodes_csv=raw_episodes_csv,
+        training_episode=training_episode,
+        evaluation_runs_dir=evaluation_runs_dir,
+        eval_t=eval_t,
+        eval_S=eval_S,
+        eval_X=eval_X,
+        eval_Y=eval_Y
+    )
 
 
 def evaluate_with_pregenerated_paths(path, n_paths_eval=5, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
@@ -440,19 +361,23 @@ def evaluate_swing_option_price_pregenerated(agent, eval_env, runs=100, raw_epis
 
 
 
-def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None):
+def evaluate(path, n_paths_eval=5, capture=False, render=False, evaluation_csv=None, raw_episodes_csv=None, evaluation_runs_dir=None, eval_t=None, eval_S=None, eval_X=None, eval_Y=None):
     """
     Standard evaluation function adapted for swing options
     """
     if capture:
         # Return swing option pricing evaluation for final assessment
-        pricing_stats = evaluate_swing_option_price(agent, eval_env, runs=n_paths_eval, base_seed=args.seed)
+        pricing_stats = evaluate_swing_option_price(
+            agent, eval_env, runs=n_paths_eval, base_seed=args.seed,
+            eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y
+        )
         return pricing_stats['all_returns']
     else:
         # Standard evaluation for monitoring training progress
         pricing_stats = evaluate_swing_option_price(
             agent, eval_env, runs=n_paths_eval, base_seed=args.seed,
-            raw_episodes_csv=raw_episodes_csv, training_episode=path, evaluation_runs_dir=evaluation_runs_dir
+            raw_episodes_csv=raw_episodes_csv, training_episode=path, evaluation_runs_dir=evaluation_runs_dir,
+            eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y
         )
         avg_price = pricing_stats['option_price']
         
@@ -507,11 +432,16 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     print(f"\n{'='*60}")
     print(f"DATASET GENERATION")
     print(f"{'='*60}")
-    print(f"🎲 Generating Training Dataset:")
+    print(f"📊 FIXED DATASET APPROACH:")
+    print(f"   - Creating TRAIN dataset with seed={args.seed}")
+    print(f"   - Creating VALIDATION dataset with seed={args.seed + 1}")
+    print(f"   - No paths generated during training/evaluation")
+    print(f"   - Same validation set used for all evaluations")
+    print(f"\n🎲 Generating Training Dataset:")
     print(f"   - Seed: {args.seed}")
     print(f"   - Paths: {n_paths}")
     print(f"   - Purpose: RL Agent Training")
-    print(f"\n🎲 Generating Evaluation Dataset:")
+    print(f"\n🎲 Generating Validation Dataset:")
     print(f"   - Seed: {args.seed + 1}")
     print(f"   - Paths: {n_paths_eval}")  
     print(f"   - Purpose: RL Evaluation & LSM Benchmark")
@@ -644,10 +574,11 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         
         if should_evaluate:
             print(f"\n🔍 Starting evaluation at path {current_path} (n_paths_eval={n_paths_eval})...")
-            # Use pre-generated evaluation paths
+            print(f"   Using VALIDATION dataset (same paths used for all evaluations)")
+            # Use pre-generated validation paths (same for all evaluations)
             evaluate_with_pregenerated_paths(current_path, n_paths_eval, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, evaluation_runs_dir=evaluation_runs_dir, eval_t=eval_t, eval_S=eval_S, eval_X=eval_X, eval_Y=eval_Y)
 
-        # Use pre-generated training path for this episode
+        # Use pre-generated training path for this episode (cycling through TRAIN dataset)
         path_idx = (current_path - 1) % training_S.shape[0]  # Cycle through paths if needed
         train_env.set_pregenerated_path(training_t, training_S[path_idx], training_X[path_idx], training_Y[path_idx])
         
@@ -733,16 +664,16 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         # Log to CSV if file path provided
         if training_csv is not None:
             log_training_episode(training_csv, current_path, episode_return, path_steps, 
-                               total_steps, avg_100, paths_per_sec, steps_per_sec, total_elapsed)
+                               total_steps, avg_100, paths_per_second, steps_per_second, total_elapsed)
         
         writer.add_scalar("Average100", avg_100, current_path)
         writer.add_scalar("Episode_Return", episode_return, current_path)
-        writer.add_scalar("Paths_Per_Second", paths_per_sec, current_path)
-        writer.add_scalar("Steps_Per_Second", steps_per_sec, current_path)
+        writer.add_scalar("Paths_Per_Second", paths_per_second, current_path)
+        writer.add_scalar("Steps_Per_Second", steps_per_second, current_path)
         writer.add_scalar("Total_Steps", total_steps, current_path)
         writer.add_scalar("Path_Length", path_steps, current_path)
         
-        print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_sec:.1f} | Steps/sec = {steps_per_sec:.0f}')
+        print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_second:.1f} | Steps/sec = {steps_per_second:.0f}')
     
     # Return the evaluation paths and LSM benchmark for final evaluation
     return eval_t, eval_S, eval_X, eval_Y, None
@@ -951,7 +882,8 @@ if __name__ == "__main__":
     t0 = time.time()
     if saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(saved_model))
-        evaluate(path=None, capture=False, evaluation_csv=evaluation_csv, raw_episodes_csv=raw_episodes_csv, evaluation_runs_dir=evaluation_runs_dir)
+        print("WARNING: Pre-generated paths not available for saved model evaluation.")
+        # Skip evaluation for saved models since we don't have pre-generated paths
         eval_t, eval_S, eval_X, eval_Y = None, None, None, None  # No pre-generated paths for saved model
         lsm_price = None  # No LSM benchmark for saved model
     else:    
