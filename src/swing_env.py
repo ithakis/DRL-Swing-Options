@@ -16,7 +16,7 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
                                 q_exercised_total: float = 0.0, q_min: float = 0.0,
                                 is_terminal: bool = False) -> float:
     """
-    Standardized reward calculation for both RL and LSM methods
+    Standardized reward calculation for reinforcement learning
     
     Args:
         spot_price: Current spot price

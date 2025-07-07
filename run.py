@@ -14,7 +14,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
 from src.swing_env import SwingOptionEnv
-from src.longstaff_schwartz_pricer import use_same_paths_for_lsm_and_rl, generate_lsm_solution_csv
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
@@ -547,6 +546,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     print(f"   Evaluation paths: {eval_S.shape[0]} x {eval_S.shape[1]} steps")
     
     # Compute LSM benchmark using the same evaluation paths that will be used by RL
+    """
     print(f"\n🔍 Computing Longstaff-Schwartz (LSM) benchmark price...")
     lsm_start = time.time()
     try:
@@ -599,6 +599,7 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
     except Exception as e:
         print(f"⚠️ LSM benchmark computation failed: {e}")
         lsm_price = None
+    """
     
     print(f"\n{'='*60}")
     print(f"STARTING RL AGENT TRAINING")
@@ -732,19 +733,19 @@ def run(n_paths=10000, eval_every=1000, n_paths_eval=5, training_csv=None, evalu
         # Log to CSV if file path provided
         if training_csv is not None:
             log_training_episode(training_csv, current_path, episode_return, path_steps, 
-                               total_steps, avg_100, paths_per_second, steps_per_second, total_elapsed)
+                               total_steps, avg_100, paths_per_sec, steps_per_sec, total_elapsed)
         
         writer.add_scalar("Average100", avg_100, current_path)
         writer.add_scalar("Episode_Return", episode_return, current_path)
-        writer.add_scalar("Paths_Per_Second", paths_per_second, current_path)
-        writer.add_scalar("Steps_Per_Second", steps_per_second, current_path)
+        writer.add_scalar("Paths_Per_Second", paths_per_sec, current_path)
+        writer.add_scalar("Steps_Per_Second", steps_per_sec, current_path)
         writer.add_scalar("Total_Steps", total_steps, current_path)
         writer.add_scalar("Path_Length", path_steps, current_path)
         
-        print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_second:.1f} | Steps/sec = {steps_per_second:.0f}')
+        print(f'Path {current_path}/{n_paths} | Return = {episode_return:.3f} | Steps = {path_steps} | Paths/sec = {paths_per_sec:.1f} | Steps/sec = {steps_per_sec:.0f}')
     
     # Return the evaluation paths and LSM benchmark for final evaluation
-    return eval_t, eval_S, eval_X, eval_Y, lsm_price
+    return eval_t, eval_S, eval_X, eval_Y, None
             
 
 
