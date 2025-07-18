@@ -25,35 +25,6 @@ This implementation uses the **Hambly-Howison-Kluge (HHK) stochastic process** t
 
 The D4PG agent learns optimal exercise policies while the critic network provides swing option valuations through Monte Carlo simulation.
 
-## Traditional Methods for Comparison
-
-To validate our reinforcement learning approach, we also implement traditional pricing methods in `swing_option_pricing.py`:
-
-### Longstaff-Schwartz Monte Carlo (LSM)
-- **Backward induction** with regression-based continuation value estimation
-- Uses **polynomial basis functions** to approximate the optimal exercise boundary
-- Handles multiple exercise rights through state-dependent regression
-- Provides pricing **confidence intervals** and exercise probability analysis
-
-### Key Features of Traditional Implementation
-- **HHK Model Integration**: Seamless compatibility with existing spot price simulation
-- **Flexible Basis Functions**: Polynomial and Random Forest regression support  
-- **Comprehensive Analysis**: Parameter sensitivity, convergence studies, scenario analysis
-- **Validation Framework**: Cross-validation between RL and traditional methods
-
-This allows direct comparison between modern RL techniques and established financial engineering methods for swing option pricing.
-
-### LSM Benchmark Integration
-
-The LSM benchmark is **automatically computed** before RL training begins:
-
-- **Same Monte Carlo Paths**: LSM uses the exact same pre-generated HHK paths as the RL agent
-- **Fair Comparison**: Eliminates Monte Carlo noise differences between methods  
-- **Automatic Logging**: LSM benchmark results are logged to CSV files alongside RL results
-- **Performance Metrics**: Direct RL vs LSM comparison displayed in final evaluation
-
-This integration ensures that RL performance can be objectively measured against the established LSM benchmark using identical market scenarios.
-
 ## Algorithm Overview
 
 **D4PG (Distributional Deep Deterministic Policy Gradient)** extends DDPG by learning the full distribution over returns rather than just expected values. This is particularly valuable for swing option pricing where uncertainty quantification is crucial for risk management.
@@ -718,45 +689,4 @@ for K in strikes:
 print("Strike-Price Relationship:")
 for K, price in zip(strikes, prices):
     print(f"K={K}: {price:.4f}")
-```
-
-## References
-
-### Swing Options & Energy Derivatives
-- [Hambly, B., Howison, S., & Kluge, T. (2009). Modelling spikes and pricing swing options in electricity markets. Applied Mathematical Finance, 16(4), 316-341.](https://www.tandfonline.com/doi/abs/10.1080/14697680802596856)
-- [Carmona, R., & Touzi, N. (2008). Optimal multiple stopping and valuation of swing options. Mathematical Finance, 18(2), 239-268.](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9965.2007.00331.x)
-- [Longstaff, F. A., & Schwartz, E. S. (2001). Valuing American options by simulation: a simple least-squares approach. The Review of Financial Studies, 14(1), 113-147.](https://academic.oup.com/rfs/article-abstract/14/1/113/1599914)
-
-### Deep Reinforcement Learning
-- [Barth-Maron, G., et al. (2018). D4PG: Distributed Distributional Deep Deterministic Policy Gradient. ICLR 2018.](https://openreview.net/forum?id=SyZipzbCb)
-- [Vieillard, N., et al. (2020). Munchausen Reinforcement Learning. NeurIPS 2020.](https://arxiv.org/abs/2007.14430)
-- [Dabney, W., et al. (2018). Implicit Quantile Networks for Distributional Reinforcement Learning. ICML 2018.](https://arxiv.org/abs/1806.06923)
-- [Schaul, T., et al. (2016). Prioritized Experience Replay. ICLR 2016.](https://arxiv.org/abs/1511.05952)
-
-### Stochastic Processes in Finance
-- [Cont, R., & Tankov, P. (2004). Financial Modelling with Jump Processes. Chapman & Hall/CRC.](https://www.routledge.com/Financial-Modelling-with-Jump-Processes/Cont-Tankov/p/book/9781584884132)
-- [Bates, D. S. (1996). Jumps and stochastic volatility: Exchange rate processes implicit in Deutsche Mark options. The Review of Financial Studies, 9(1), 69-107.](https://academic.oup.com/rfs/article-abstract/9/1/69/1599914)
-
-### Mathematical Finance & Optimal Control
-- [Pham, H. (2009). Continuous-time Stochastic Control and Optimization with Financial Applications. Springer.](https://link.springer.com/book/10.1007/978-3-540-89500-8)
-- [Øksendal, B. (2003). Stochastic Differential Equations: An Introduction with Applications. Springer.](https://link.springer.com/book/10.1007/978-3-642-14394-6)
-
----
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@software{d4pg_swing_options,
-  title={D4PG-QR-FRM: Swing Option Pricing with Deep Reinforcement Learning},
-  author={[Your Name]},
-  year={2025},
-  url={https://github.com/[username]/D4PG-QR-FRM},
-  note={Implementation of distributional deep reinforcement learning for swing option pricing using the Hambly-Howison-Kluge stochastic process}
-}
 ```

@@ -43,7 +43,7 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
                                 is_terminal: bool = False, dt: Optional[float] = None, 
                                 r: Optional[float] = None) -> float:
     """
-    Standardized reward calculation for both RL and LSM methods
+    Standardized reward calculation for reinforcement learning
     
     Updated to match the swing option pricing formula:
     Per-step Payoff: q_t * (S_t - K)^+
