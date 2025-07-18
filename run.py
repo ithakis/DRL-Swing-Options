@@ -376,30 +376,6 @@ class LoggingManager:
 class EvaluationManager:
     """Manages evaluation functionality for swing option pricing"""
     
-<<<<<<< HEAD
-    # Also create LSM evaluation run for comparison (only for specific evaluation intervals)
-    if evaluation_runs_dir is not None and path is not None:
-        try:
-            from src.longstaff_schwartz_pricer import save_lsm_evaluation_run
-            print(f"   🔮 Generating LSM evaluation run for training episode {path}...")
-            lsm_eval_run_results = save_lsm_evaluation_run(
-                eval_t, eval_S, eval_X, eval_Y, 
-                eval_env.contract, evaluation_runs_dir, path, args.seed
-            )
-            print(f"   ✅ LSM evaluation run saved: {lsm_eval_run_results['csv_file']}")
-        except Exception as e:
-            print(f"   ⚠️ LSM evaluation run generation failed: {e}")
-    
-    # Log to CSV if file path provided
-    if evaluation_csv is not None and path is not None:
-        log_evaluation_run(evaluation_csv, path, 1, pricing_stats)
-    
-    if path is not None:
-        writer.add_scalar("Swing_Option_Price", avg_price, path)
-        writer.add_scalar("Price_Std", pricing_stats['price_std'], path)
-        writer.add_scalar("Avg_Total_Exercised", pricing_stats['avg_total_exercised'], path)
-        writer.add_scalar("Avg_Exercise_Count", pricing_stats['avg_exercise_count'], path)
-=======
     @staticmethod
     def evaluate_swing_option_price_pregenerated(agent, eval_env, runs: int = 100, 
                                                raw_episodes_csv: Optional[str] = None,
@@ -408,7 +384,6 @@ class EvaluationManager:
                                                eval_t=None, eval_S=None, eval_X=None, eval_Y=None) -> Dict[str, Any]:
         """
         Evaluate swing option price using pre-generated Monte Carlo paths
->>>>>>> 542078664d08d1a6cb92ea9fd2dd25c03a0c2057
         
         Args:
             agent: Trained D4PG agent
@@ -574,142 +549,14 @@ class EvaluationManager:
 class DatasetManager:
     """Manages dataset generation and pre-generated paths"""
     
-<<<<<<< HEAD
-    Params
-    ======
-        n_paths (int): total number of Monte Carlo paths/episodes to simulate
-        eval_every (int): evaluate every N paths
-        n_paths_eval (int): number of evaluation runs
-        training_csv (str): path to training CSV file for logging
-        evaluation_csv (str): path to evaluation CSV file for logging
-        raw_episodes_csv (str): path to raw episodes CSV file for logging
-        
-    Returns
-    =======
-        tuple: (eval_t, eval_S, eval_X, eval_Y) pre-generated evaluation paths
-    """
-    scores = []                        # list containing scores from each episode
-    scores_window = deque(maxlen=100)  # last 100 scores
-    total_steps = 0                    # total environment interactions across all paths
-    
-    # Pre-generate all training and evaluation paths using Sobol sequences
-    print(f"\n{'='*60}")
-    print(f"DATASET GENERATION")
-    print(f"{'='*60}")
-    print(f"🎲 Generating Training Dataset:")
-    print(f"   - Seed: {args.seed}")
-    print(f"   - Paths: {n_paths}")
-    print(f"   - Purpose: RL Agent Training")
-    print(f"\n🎲 Generating Evaluation Dataset:")
-    print(f"   - Seed: {args.seed + 1}")
-    print(f"   - Paths: {n_paths_eval}")  
-    print(f"   - Purpose: RL Evaluation & LSM Benchmark")
-    print(f"{'='*60}")
-    
-    pre_generation_start = time.time()
-    
-    # Generate training paths with base seed
-    from src.simulate_hhk_spot import simulate_hhk_spot
-    print(f"Generating training paths...")
-    training_t, training_S, training_X, training_Y = simulate_hhk_spot(
-        T=train_env.contract.maturity,
-        n_steps=train_env.contract.n_rights,
-        n_paths=n_paths,
-        seed=args.seed,
-        **train_env.hhk_params
-    )
-    
-    # Generate evaluation paths with seed+1 for different quasi-random sequence
-    print(f"Generating evaluation paths...")
-    eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
-        T=eval_env.contract.maturity,
-        n_steps=eval_env.contract.n_rights,
-        n_paths=n_paths_eval,
-        seed=args.seed + 1,
-        **eval_env.hhk_params
-    )
-    
-    pre_generation_time = time.time() - pre_generation_start
-    print(f"✅ Dataset generation completed in {pre_generation_time:.2f}s")
-    print(f"   Training paths: {training_S.shape[0]} x {training_S.shape[1]} steps")
-    print(f"   Evaluation paths: {eval_S.shape[0]} x {eval_S.shape[1]} steps")
-    
-    # Compute LSM benchmark using the same evaluation paths that will be used by RL
-    print(f"\n🔍 Computing Longstaff-Schwartz (LSM) benchmark price...")
-    lsm_start = time.time()
-    
-    # Generate detailed LSM solution CSV for comparison with RL (independent of benchmark computation)
-    print(f"\n📊 Generating LSM solution CSV for detailed comparison...")
-    lsm_csv_filename = f"logs/{run_name}/evaluation_runs/longstaff_schwartz_solution.csv"
-    try:
-        lsm_csv_results = generate_lsm_solution_csv(
-            eval_t, eval_S, eval_X, eval_Y, 
-            eval_env.contract, lsm_csv_filename, args.seed
-        )
-        print(f"✅ LSM solution CSV saved: {lsm_csv_filename}")
-    except Exception as e:
-        print(f"⚠️ LSM solution CSV generation failed: {e}")
-    
-    # Compute LSM benchmark for logging and comparison
-    try:
-        lsm_results = use_same_paths_for_lsm_and_rl(
-            eval_t,  # Time grid
-            eval_S,  # Spot price paths (same as RL will use)
-            eval_X,  # X process paths
-            eval_Y,  # Y process paths
-            eval_env.contract,  # SwingContract instance
-            random_seed=args.seed
-        )
-        lsm_price = lsm_results['lsm_option_value_same_paths']
-        lsm_time = time.time() - lsm_start
-        
-=======
     @staticmethod
     def generate_datasets(train_env, eval_env, n_paths: int, n_paths_eval: int, 
                          seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, 
                                           np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Generate training and evaluation datasets"""
->>>>>>> 542078664d08d1a6cb92ea9fd2dd25c03a0c2057
         print(f"\n{'='*60}")
         print(f"DATASET GENERATION")
         print(f"{'='*60}")
-<<<<<<< HEAD
-        print(f"LSM Option Price: {lsm_price:.6f}")
-        print(f"Standard Error: {lsm_results['lsm_std_error_same_paths']:.6f}")
-        print(f"95% Confidence Interval: [{lsm_results['lsm_confidence_interval_same_paths'][0]:.6f}, {lsm_results['lsm_confidence_interval_same_paths'][1]:.6f}]")
-        if 'lsm_expected_exercises_same_paths' in lsm_results:
-            print(f"Expected Exercises: {lsm_results['lsm_expected_exercises_same_paths']:.3f}")
-        print(f"Monte Carlo Paths: {eval_S.shape[0]}")
-        print(f"Computation Time: {lsm_time:.2f}s")
-        print(f"{'='*60}")
-        
-        # Log LSM benchmark to CSV for comparison
-        if evaluation_csv is not None:
-            # Create a dummy pricing_stats dict for LSM to use the same logging format
-            lsm_stats = {
-                'option_price': lsm_price,
-                'price_std': lsm_results['lsm_std_error_same_paths'],
-                'confidence_95': (lsm_results['lsm_confidence_interval_same_paths'][1] - 
-                                lsm_results['lsm_confidence_interval_same_paths'][0]) / 2,
-                'avg_total_exercised': lsm_results.get('lsm_expected_exercises_same_paths', 0.0),
-                'avg_exercise_count': lsm_results.get('lsm_expected_exercises_same_paths', 0.0),
-                'all_returns': [lsm_price],  # Single deterministic price
-                'n_runs': lsm_results['lsm_n_paths_same_paths']
-            }
-            log_evaluation_run(evaluation_csv, 0, "LSM_Benchmark", lsm_stats)
-        
-        # Also save LSM results in evaluation_runs folder in same format as RL eval runs
-        print(f"\n📊 Generating LSM evaluation run CSV for direct comparison with RL...")
-        from src.longstaff_schwartz_pricer import save_lsm_evaluation_run
-        try:
-            lsm_eval_run_results = save_lsm_evaluation_run(
-                eval_t, eval_S, eval_X, eval_Y, 
-                eval_env.contract, evaluation_runs_dir, 0, args.seed  # Use training_episode=0 for LSM benchmark
-            )
-            print(f"✅ LSM evaluation run CSV saved: {lsm_eval_run_results['csv_file']}")
-        except Exception as e:
-            print(f"⚠️ LSM evaluation run CSV generation failed: {e}")
-=======
         print(f"📊 FIXED DATASET APPROACH:")
         print(f"   - Creating TRAIN dataset with seed={seed}")
         print(f"   - Creating VALIDATION dataset with seed={seed + 1}")
@@ -737,7 +584,6 @@ class DatasetManager:
             seed=seed,
             **train_env.hhk_params
         )
->>>>>>> 542078664d08d1a6cb92ea9fd2dd25c03a0c2057
         
         # Generate evaluation paths with seed+1 for different quasi-random sequence
         print(f"Generating evaluation paths...")
