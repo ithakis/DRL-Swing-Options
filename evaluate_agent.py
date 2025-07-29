@@ -9,7 +9,7 @@ import numpy as np
 from src.agent import Agent
 
 
-def evaluate(n_paths_eval=5):
+def evaluate(n_paths_eval=512):
     """
     Makes an evaluation run 
     """

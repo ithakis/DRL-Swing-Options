@@ -27,6 +27,9 @@ from torch.utils.tensorboard import SummaryWriter
 from src.agent import Agent
 from src.swing_env import SwingOptionEnv
 
+# Import LSM pricer for benchmarking
+from src.lsm_swing_pricer import LSMSwingPricer
+
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
 
@@ -371,6 +374,27 @@ class LoggingManager:
                         round(step_info['q_actual'], 4),
                         round(step_info['reward'], 6)
                     ])
+    
+    @staticmethod
+    def save_lsm_benchmark_results(run_name: str, lsm_results: Dict[str, Any], logs_dir: str) -> str:
+        """Save LSM benchmark results to logs directory"""
+        run_logs_dir = os.path.join(logs_dir, run_name)
+        os.makedirs(run_logs_dir, exist_ok=True)
+        
+        lsm_file = os.path.join(run_logs_dir, f"{run_name}_lsm_benchmark.json")
+        with open(lsm_file, 'w') as f:
+            # Remove numpy arrays for JSON serialization
+            serializable_results = {
+                'lsm_option_price': float(lsm_results['lsm_option_price']),
+                'lsm_std_error': float(lsm_results['lsm_std_error']),
+                'lsm_confidence_95': float(lsm_results['lsm_confidence_95']),
+                'lsm_pricing_time': float(lsm_results['lsm_pricing_time']),
+                'lsm_paths_used': int(lsm_results['lsm_paths_used'])
+            }
+            json.dump(serializable_results, f, indent=2)
+        
+        print(f"LSM benchmark results saved to: {lsm_file}")
+        return lsm_file
 
 
 class EvaluationManager:
@@ -838,6 +862,96 @@ def run_training(agent, train_env, eval_env, writer, args: argparse.Namespace,
             )
 
 
+class LSMBenchmarkManager:
+    """Manages LSM benchmarking functionality"""
+    
+    @staticmethod
+    def convert_swing_contract_to_lsm(contract):
+        """Convert RL swing contract to LSM contract format - no conversion needed"""
+        return contract  # Already using SwingContract class
+    
+    @staticmethod
+    def convert_hhk_params_to_lsm(hhk_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert RL HHK parameters to LSM format - no conversion needed"""
+        return hhk_params  # Already using Dict format
+    
+    @staticmethod
+    def run_lsm_benchmark_with_pregenerated_paths(contract, hhk_params: Dict[str, Any], 
+                                                 eval_t, eval_S, eval_X, eval_Y, 
+                                                 n_paths_eval: int, seed: int) -> Dict[str, Any]:
+        """
+        Run LSM pricing using the same pre-generated paths as RL evaluation
+        
+        Args:
+            contract: RL swing contract
+            hhk_params: RL HHK parameters dictionary
+            eval_t, eval_S, eval_X, eval_Y: Pre-generated evaluation paths
+            n_paths_eval: Number of evaluation paths
+            seed: Random seed for LSM
+            
+        Returns:
+            Dict with LSM pricing results
+        """
+        print(f"\n{'='*60}")
+        print(f"LSM BENCHMARK PRICING")
+        print(f"{'='*60}")
+        print(f"Using same evaluation dataset as RL agent:")
+        print(f"   - Paths: {n_paths_eval}")
+        print(f"   - Steps: {eval_S.shape[1]} decision dates")
+        print(f"   - Same seed sequence as RL evaluation")
+        print(f"{'='*60}")
+        
+        # Convert parameters to LSM format
+        lsm_contract = LSMBenchmarkManager.convert_swing_contract_to_lsm(contract)
+        lsm_hhk_params = LSMBenchmarkManager.convert_hhk_params_to_lsm(hhk_params)
+        
+        # Create LSM pricer - we'll override its path generation
+        pricer = LSMSwingPricer(
+            contract=lsm_contract,
+            hhk_params=lsm_hhk_params,
+            n_paths=n_paths_eval,
+            poly_degree=3,
+            seed=seed
+        )
+        
+        # Price option using pre-generated paths
+        print("🔍 Running LSM pricing algorithm...")
+        lsm_start_time = time.time()
+        
+        # Use the new method to price with pre-generated paths
+        results = pricer.price_option_with_pregenerated_paths(
+            eval_t=eval_t,
+            eval_S=eval_S,
+            eval_X=eval_X,
+            eval_Y=eval_Y,
+            verbose=True
+        )
+        
+        lsm_time = time.time() - lsm_start_time
+        
+        # Print results
+        print(f"✅ LSM pricing completed in {lsm_time:.2f}s")
+        print(f"{'='*50}")
+        print(f"LSM BENCHMARK RESULTS")
+        print(f"{'='*50}")
+        print(f"Option Price: {results['option_price']:.6f}")
+        print(f"Standard Error: {results['option_std_error']:.6f}")
+        print(f"95% Confidence Interval: [{results['option_price'] - 1.96*results['option_std_error']:.6f}, {results['option_price'] + 1.96*results['option_std_error']:.6f}]")
+        print(f"Paths Used: {n_paths_eval}")
+        print(f"Decision Dates: {lsm_contract.n_rights}")
+        print(f"Contract Terms: Strike={lsm_contract.strike}, Q_max={lsm_contract.Q_max}")
+        print(f"{'='*50}")
+        
+        return {
+            'lsm_option_price': results['option_price'],
+            'lsm_std_error': results['option_std_error'],
+            'lsm_confidence_95': 1.96 * results['option_std_error'],
+            'lsm_pricing_time': lsm_time,
+            'lsm_paths_used': n_paths_eval,
+            'lsm_results': results
+        }
+
+
 def main():
     """Main execution function"""
     # Parse arguments and setup
@@ -915,6 +1029,18 @@ def main():
         # Generate datasets
         training_t, training_S, training_X, training_Y, eval_t, eval_S, eval_X, eval_Y = DatasetManager.generate_datasets(
             train_env, eval_env, args.n_paths, args.n_paths_eval, seed
+        )
+        
+        # Run LSM benchmark pricing using the same evaluation paths as RL agent
+        lsm_benchmark_results = LSMBenchmarkManager.run_lsm_benchmark_with_pregenerated_paths(
+            contract=contract, 
+            hhk_params=hhk_params,
+            eval_t=eval_t, 
+            eval_S=eval_S, 
+            eval_X=eval_X, 
+            eval_Y=eval_Y,
+            n_paths_eval=args.n_paths_eval,
+            seed=seed + 1  # Same seed as evaluation dataset
         )
         
         # Run training
