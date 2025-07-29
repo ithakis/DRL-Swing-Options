@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# LSM Swing Option Pricer Runner Script
-# Usage: bash runlsm.sh
-# 
-# This script runs the Least Squares Monte Carlo (LSM) pricer for swing options
-# using the same contract parameters as the RL training in run.sh for benchmarking
-
-# To increase accuracy, increase n_paths (computational time scales quadratically)
-# To speed up execution, decrease n_paths or n_scenarios
-
-# Monthly Swing Option LSM Pricing with same parameters as run.sh:
 args=( 
     # LSM Algorithm Parameters
     -n_paths=2048                  # Number of Monte Carlo paths (increase for accuracy)
@@ -38,4 +28,4 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python -m src.lsm_swing_pricer "${args[@]}" -name "LSM_MonthlySwing_1" -seed 1
+python -m src.lsm_swing_pricer "${args[@]}" -name "LSM_E1" -seed 1

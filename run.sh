@@ -7,7 +7,7 @@
 # Monthly Swing Option Baseline:
 args=( 
     # Training parameters
-    -n_paths=16384 # 4096 or 8192 or 16384
+    -n_paths=8192 # 4096 or 8192 or 16384
     -eval_every=1024
     -n_paths_eval=4096
     -munchausen=0

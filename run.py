@@ -878,7 +878,9 @@ class LSMBenchmarkManager:
     @staticmethod
     def run_lsm_benchmark_with_pregenerated_paths(contract, hhk_params: Dict[str, Any], 
                                                  eval_t, eval_S, eval_X, eval_Y, 
-                                                 n_paths_eval: int, seed: int) -> Dict[str, Any]:
+                                                 n_paths_eval: int, seed: int,
+                                                 evaluation_runs_dir: Optional[str] = None,
+                                                 run_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Run LSM pricing using the same pre-generated paths as RL evaluation
         
@@ -888,6 +890,8 @@ class LSMBenchmarkManager:
             eval_t, eval_S, eval_X, eval_Y: Pre-generated evaluation paths
             n_paths_eval: Number of evaluation paths
             seed: Random seed for LSM
+            evaluation_runs_dir: Directory to save evaluation run CSV data
+            run_name: Name of the run for file naming
             
         Returns:
             Dict with LSM pricing results
@@ -941,6 +945,18 @@ class LSMBenchmarkManager:
         print(f"Decision Dates: {lsm_contract.n_rights}")
         print(f"Contract Terms: Strike={lsm_contract.strike}, Q_max={lsm_contract.Q_max}")
         print(f"{'='*50}")
+        
+        # Simulate optimal strategy and save step-by-step data if requested
+        if evaluation_runs_dir and run_name:
+            print(f"\nSaving LSM step-by-step evaluation data...")
+            strategy_results = pricer.simulate_optimal_strategy(
+                results=results,
+                n_scenarios=n_paths_eval,  # Use full evaluation dataset
+                plot=False,
+                save_step_data=True,
+                evaluation_runs_dir=evaluation_runs_dir,
+                run_name=f"LSM_{run_name}"
+            )
         
         return {
             'lsm_option_price': results['option_price'],
@@ -1040,7 +1056,9 @@ def main():
             eval_X=eval_X, 
             eval_Y=eval_Y,
             n_paths_eval=args.n_paths_eval,
-            seed=seed + 1  # Same seed as evaluation dataset
+            seed=seed + 1,  # Same seed as evaluation dataset
+            evaluation_runs_dir=evaluation_runs_dir,
+            run_name=run_name
         )
         
         # Run training

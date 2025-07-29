@@ -154,7 +154,7 @@ class LSMSwingPricer:
             print(f"Rights: {self.contract.n_rights}, Q_max={self.contract.Q_max}")
             print(f"Paths: {self.n_paths}, Polynomial degree: {self.poly_degree}")
         
-        # Step 1: Simulate price paths
+        # Step 1: Discretize time and cumulative offtake levels
         t, S, X, Y = simulate_hhk_spot(
             T=self.contract.maturity,
             n_steps=self.contract.n_rights,
@@ -403,7 +403,10 @@ class LSMSwingPricer:
         self,
         results: Dict,
         n_scenarios: int = 10,
-        plot: bool = True
+        plot: bool = True,
+        save_step_data: bool = False,
+        evaluation_runs_dir: Optional[str] = None,
+        run_name: Optional[str] = None
     ) -> Dict:
         """
         Simulate optimal exercise strategy using forward induction
@@ -412,6 +415,9 @@ class LSMSwingPricer:
             results: Results from price_option()
             n_scenarios: Number of price scenarios to simulate
             plot: Whether to create plots
+            save_step_data: Whether to save detailed step-by-step data
+            evaluation_runs_dir: Directory to save evaluation runs data
+            run_name: Name of the run for file naming
         """
         print(f"Simulating optimal strategy for {n_scenarios} scenarios...")
         
@@ -425,6 +431,7 @@ class LSMSwingPricer:
         )
         
         strategies = []
+        all_episodes_step_data = []  # Store step data for CSV saving
         
         for scenario in range(n_scenarios):
             strategy = {
@@ -436,12 +443,14 @@ class LSMSwingPricer:
                 'total_payoff': 0.0
             }
             
+            episode_step_data = []  # Store step data for this episode
             q_cumulative = 0.0
             
             # Forward induction
             for t_idx in range(self.contract.n_rights):
                 remaining_steps = self.contract.n_rights - t_idx
                 S_current = S_test[scenario, t_idx]
+                time_left = self.contract.maturity * (remaining_steps / self.contract.n_rights)
                 
                 # Find current q_state
                 q_idx = np.argmin(np.abs(self.Q_grid - q_cumulative))
@@ -486,7 +495,22 @@ class LSMSwingPricer:
                 
                 # Execute action
                 payoff = self.payoff(S_current, action)
+                q_actual = action  # Actual quantity exercised
                 q_cumulative += action
+                
+                # Store step data for CSV export (matching RL agent format)
+                if save_step_data:
+                    step_info = {
+                        'step': t_idx,
+                        'spot_price': S_current,
+                        'q_remaining': self.contract.Q_max - q_cumulative + action,  # Before action
+                        'q_exercised': q_cumulative - action,  # Before action
+                        'time_left': time_left,
+                        'action': action,
+                        'q_actual': q_actual,
+                        'reward': payoff
+                    }
+                    episode_step_data.append(step_info)
                 
                 strategy['times'].append(t[t_idx])
                 strategy['spot_prices'].append(S_current)
@@ -496,6 +520,8 @@ class LSMSwingPricer:
                 strategy['total_payoff'] += payoff * self.contract.discount_factor**t_idx
             
             strategies.append(strategy)
+            if save_step_data:
+                all_episodes_step_data.append(episode_step_data)
         
         # Create plots if requested
         if plot:
@@ -519,6 +545,10 @@ class LSMSwingPricer:
         print(f"Mean Payoff: {strategy_results['mean_payoff']:.4f}")
         print(f"Payoff Std: {strategy_results['std_payoff']:.4f}")
         print(f"Mean Exercise Rate: {strategy_results['exercise_rates'][0]:.2f} / {self.contract.Q_max}")
+        
+        # Save step-by-step data to CSV if requested
+        if save_step_data and evaluation_runs_dir and run_name:
+            self.save_evaluation_run_csv(all_episodes_step_data, evaluation_runs_dir, run_name)
         
         return strategy_results
     
@@ -594,6 +624,40 @@ class LSMSwingPricer:
         
         plt.tight_layout()
         plt.show()
+    
+    def save_evaluation_run_csv(self, all_episodes_step_data: List[List[Dict]], 
+                              evaluation_runs_dir: str, run_name: str) -> None:
+        """Save detailed step-by-step data for all episodes to CSV (matching RL agent format)"""
+        import csv
+        import os
+        
+        # Create evaluation_runs directory if it doesn't exist
+        os.makedirs(evaluation_runs_dir, exist_ok=True)
+        
+        # Use run_name as filename (similar to how RL agent uses training episode number)
+        filename = f"eval_run_{run_name}.csv"
+        filepath = os.path.join(evaluation_runs_dir, filename)
+        
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['episode_idx', 'step', 'spot', 'q_remain', 'q_exerc', 
+                           'time_left', 'action', 'q_actual', 'reward'])
+            
+            for episode_idx, step_data in enumerate(all_episodes_step_data):
+                for step_info in step_data:
+                    writer.writerow([
+                        episode_idx,
+                        step_info['step'],
+                        round(step_info['spot_price'], 4),
+                        round(step_info['q_remaining'], 4), 
+                        round(step_info['q_exercised'], 4),
+                        round(step_info['time_left'], 4),
+                        round(step_info['action'], 6),
+                        round(step_info['q_actual'], 4),
+                        round(step_info['reward'], 6)
+                    ])
+        
+        print(f"Evaluation run data saved to: {filepath}")
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -694,16 +758,22 @@ def generate_run_name(name: Optional[str]) -> str:
     return name
 
 
-def save_results(run_name: str, results: Dict, strategy_results: Dict, args: argparse.Namespace) -> None:
+def save_results(run_name: str, results: Dict, strategy_results: Dict, args: argparse.Namespace) -> str:
     """Save LSM results to files"""
     import json
     import os
     
-    # Create logs directory if it doesn't exist
-    os.makedirs("logs", exist_ok=True)
+    # Create logs directory structure (same as RL agent)
+    logs_dir = "logs"
+    run_logs_dir = os.path.join(logs_dir, run_name)
+    evaluation_runs_dir = os.path.join(run_logs_dir, "evaluation_runs")
     
-    # Save parameters
-    params_file = f"logs/{run_name}_params.json"
+    os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(run_logs_dir, exist_ok=True)
+    os.makedirs(evaluation_runs_dir, exist_ok=True)
+    
+    # Save parameters (same format as RL)
+    params_file = os.path.join(run_logs_dir, f"{run_name}_parameters.json")
     with open(params_file, 'w') as f:
         json.dump(vars(args), f, indent=2)
     
@@ -729,6 +799,9 @@ def save_results(run_name: str, results: Dict, strategy_results: Dict, args: arg
     print(f"\nResults saved:")
     print(f"  Parameters: {params_file}")
     print(f"  Summary: {summary_file}")
+    print(f"  Evaluation runs directory: {evaluation_runs_dir}")
+    
+    return evaluation_runs_dir
 
 
 if __name__ == "__main__":
@@ -812,5 +885,16 @@ if __name__ == "__main__":
           f"({100*strategy_results['exercise_rates'][0]/args.Q_max:.1f}%)")
     print(f"Total Runtime: {total_time:.2f} seconds")
     
-    # Save results to files
-    save_results(run_name, results, strategy_results, args)
+    # Save results to files and get evaluation_runs_dir
+    evaluation_runs_dir = save_results(run_name, results, strategy_results, args)
+    
+    # Now simulate again with CSV saving enabled for detailed step data
+    print(f"\nSaving detailed step-by-step evaluation data...")
+    pricer.simulate_optimal_strategy(
+        results=results,
+        n_scenarios=args.n_scenarios,
+        plot=False,  # Don't create plots again
+        save_step_data=True,
+        evaluation_runs_dir=evaluation_runs_dir,
+        run_name=run_name
+    )
