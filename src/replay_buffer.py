@@ -370,8 +370,9 @@ class PrioritizedReplay(object):
         if self.iter_ == self.parallel_env:
             self.iter_ = 0
         assert state.ndim == next_state.ndim
-        state      = np.expand_dims(state, 0)
-        next_state = np.expand_dims(next_state, 0)
+        # Remove unnecessary expand_dims - states should maintain their original shape
+        # state      = np.expand_dims(state, 0)
+        # next_state = np.expand_dims(next_state, 0)
         action = torch.from_numpy(action).unsqueeze(0) if not torch.is_tensor(action) else action.unsqueeze(0)
 
         # n_step calc

@@ -137,9 +137,8 @@ class Agent():
             self.critic_local = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
             self.critic_target = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
         else:
-            self.critic_local = Critic(state_size, action_size, random_seed).to(device)
-            self.critic_target = Critic(state_size, action_size, random_seed).to(device)
-
+            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=256).to(device)
+            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=256).to(device)
         
         self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)
 
@@ -336,7 +335,7 @@ class Agent():
                 actions_next = self.actor_target(next_states)
                 Q_targets_next = self.critic_target(next_states, actions_next)
                 # Compute Q targets for current states (y_i)
-                Q_targets = rewards + (gamma**self.n_step * Q_targets_next * (1 - dones))
+                Q_targets = rewards + (gamma**self.n_step * Q_targets_next * (1 - dones.float()))
             else:
                 actions_next = self.actor_target(next_states)
                 q_t_n = self.critic_target(next_states, actions_next)
@@ -345,7 +344,7 @@ class Agent():
                 tau_log_pi_next = q_t_n - self.entropy_tau * logsum
                 
                 pi_target = F.softmax(q_t_n / self.entropy_tau, dim=1)
-                Q_target = (self.GAMMA**self.n_step * (pi_target * (q_t_n - tau_log_pi_next) * (1 - dones)))
+                Q_target = (self.GAMMA**self.n_step * (pi_target * (q_t_n - tau_log_pi_next) * (1 - dones.float())))
 
                 if self.distributional:
                     q_k_target, _ = self.critic_target(states, actions)
@@ -543,7 +542,7 @@ class Agent():
                     Q_targets_next, _ = self.critic_target(next_states, next_actions, self.N)
                     Q_targets_next = Q_targets_next.transpose(1,2)
                 # Compute Q targets for current states 
-                Q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step * Q_targets_next.to(self.device) * (1. - dones.unsqueeze(-1)))
+                Q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step * Q_targets_next.to(self.device) * (1. - dones.float().unsqueeze(-1)))
             else:
                 with torch.no_grad():
                     #### CHECK FOR THE SHAPES!!
@@ -560,7 +559,7 @@ class Agent():
                     
                     pi_target = F.softmax(q_t_n/self.entropy_tau, dim=1).unsqueeze(1)
                     # in the original paper for munchausen RL they summed over all actions - we only predict the best Qvalue so we will not sum over all actions
-                    Q_target = (self.GAMMA**self.n_step * (pi_target * (Q_targets_next-tau_log_pi_next)*(1 - dones.unsqueeze(-1)))).transpose(1,2)
+                    Q_target = (self.GAMMA**self.n_step * (pi_target * (Q_targets_next-tau_log_pi_next)*(1 - dones.float().unsqueeze(-1)))).transpose(1,2)
                     assert Q_target.shape == (self.BATCH_SIZE, self.action_size, self.N), "has shape: {}".format(Q_target.shape)
 
                     q_k_target, _ = self.critic_target(states, actions)

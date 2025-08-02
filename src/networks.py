@@ -211,11 +211,11 @@ class Actor(nn.Module):
         x = self.fc1(state)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after LayerNorm/ReLU block
         hidden_size = self.fc1[0].out_features  # Get hidden_size from Linear layer
-        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        assert x.dim() == 2 and x.size(1) == hidden_size, f"LayerNorm integration broke shape. Expected {hidden_size}, got {x.size(1)}. State.shape: {state.shape}"
         
         x = self.fc2(x)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after second LayerNorm/ReLU block
-        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        assert x.dim() == 2 and x.size(1) == hidden_size, f"LayerNorm integration broke shape. Expected {hidden_size}, got {x.size(1)}"
         
         return torch.tanh(self.fc3(x))
 

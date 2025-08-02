@@ -196,7 +196,7 @@ def theoretical_moments(
 
 
 def no_seasonal_function(t: float) -> float:
-    return 0.0  # zero seasonality as in the paper
+    return np.log(100.0) # 0.0  # zero seasonality as in the paper
 
 def simple_seasonal_function(t: float) -> float:
     # example seasonal function used by HHK in other paper.

@@ -20,6 +20,7 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from matplotlib import pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -543,7 +544,14 @@ def evaluate_swing_option(
 
     for i in range(n_paths):
         state, _ = eval_env.reset()
-
+        # if i == 0:         
+        #     print(f'State: Normalized Spot: {state[0]:.4f}, ' \
+        #       f'Exercised: {state[1]:.4f}, Remaining: {state[2]:.4f}, '\
+        #       f'Time to Maturity: {state[3]:.4f}, Normalized Time: {state[4]:.4f}, '\
+        #       f'X_t: {state[5]:.4f}, Y_t: {state[6]:.4f}, '\
+        #       f'Recent Volatility: {state[7]:.4f}, Days Since Exercise: {state[8]:.4f}\
+        #       ')
+        
         disc_return = 0.0
         total_exercised = 0.0
         exercise_count = 0
@@ -553,14 +561,13 @@ def evaluate_swing_option(
             # Get action from agent
             action = agent.act(np.expand_dims(state, axis=0))
             action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
-
+            
             state, reward, terminated, truncated, info = eval_env.step(action_v)
-
+            # print(f'action: {action_v}, reward: {reward:.4f}, spot_price: {info["spot_price"]:.4f}, ')
             disc_return += reward  # Reward already includes discounting
             if info.get("q_actual", 0) > 1e-6:
                 exercise_count += 1
                 total_exercised += info["q_actual"]
-
             step += 1
 
             if terminated or truncated:
@@ -570,6 +577,9 @@ def evaluate_swing_option(
         exercise_stats.append(
             {"total_exercised": total_exercised, "exercise_count": exercise_count, "steps": step}
         )
+
+    # reset the eval_env._episode_counter to -1 so future resets work correctly
+    eval_env._episode_counter = -1
 
     # Calculate statistics
     option_price = np.mean(discounted_returns)
@@ -586,7 +596,7 @@ def evaluate_swing_option(
 
         # Print detailed evaluation results
         print(f"\n{'=' * 50}")
-        print(f"EVALUATION RESULTS (Path {path})")
+        print(f"EVALUATION RESULTS (Episode {path})")
         print(f"{'=' * 50}")
         print(f"Option Price: {option_price:.3f} ± {confidence_95:.3f}")
         print(f"Price Std Dev: {price_std:.3f}")
@@ -615,6 +625,23 @@ def generate_datasets(
     train_t, train_S, train_X, train_Y = simulate_hhk_spot(
         **stochastic_process_params, n_paths=n_paths, seed=seed
     )
+    # # Plot 200 sample paths and the mean
+    # plt.figure(figsize=(12, 6))
+    # n_plot = min(200, train_S.shape[0])
+    # for i in range(n_plot):
+    #     plt.plot(train_t, train_S[i], color='lightgray', linewidth=0.5, alpha=0.7)
+    # plt.plot(train_t, np.mean(train_S, axis=0), label='Mean Training Spot Price', color='blue', linewidth=2)
+    # plt.title(
+    #     f"Training Spot Price Simulation\n"
+    #     f"S0={stochastic_process_params['S0']}, alpha={stochastic_process_params['alpha']}, "
+    #     f"sigma={stochastic_process_params['sigma']}, beta={stochastic_process_params['beta']}, "
+    #     f"lam={stochastic_process_params['lam']}, mu_J={stochastic_process_params['mu_J']}"
+    # )
+    # plt.xlabel('Time')
+    # plt.ylabel('Spot Price')
+    # plt.legend()
+    # plt.grid()
+    # plt.show()
 
     eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
         **stochastic_process_params, n_paths=n_paths_eval, seed=seed + 1

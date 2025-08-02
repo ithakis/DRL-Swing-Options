@@ -89,11 +89,9 @@ class SwingOptionEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Episode tracking
-        self._episode_counter = -1  # Will be incremented to 0 on first reset()
+        # Episode tracking - Will be incremented to 0 on first reset()
+        self._episode_counter = -1  # Episode counter starts at 0 (which equals path index 0)
         
-        # Episode state
-        self.reset()
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Take one step in the environment"""
@@ -215,7 +213,6 @@ class SwingOptionEnv(gym.Env):
             self.recent_volatility,  # Recent realized volatility
             days_since_exercise / self.contract.n_rights  # Normalized refraction time
         ], dtype=np.float32)
-        
         return state
     
     def _calculate_recent_volatility(self, current_idx: int, lookback: int = 10) -> float:
@@ -255,9 +252,8 @@ class SwingOptionEnv(gym.Env):
         self._episode_counter += 1
         
         # Use direct mapping: episode counter directly corresponds to path index
-        # Episode 1 -> path 0, Episode 2 -> path 1, etc.
+        # Episode 0 -> path 0, Episode 1 -> path 1, etc.
         path_idx = self._episode_counter
-        print(f'>>path_idx: {path_idx}')
         self.time_path = self.t[path_idx] if self.t.ndim > 1 else self.t
         self.spot_path = self.S[path_idx]
         self.X_path = self.X[path_idx] 
