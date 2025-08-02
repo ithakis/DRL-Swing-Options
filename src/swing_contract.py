@@ -99,28 +99,3 @@ class SwingContract:
     def denormalize_action(self, normalized_action: float) -> float:
         """Convert normalized action [0, 1] back to contract quantities"""
         return self.q_min + normalized_action * (self.q_max - self.q_min)
-
-
-# Default contract for testing (inspired by Hambly et al.)
-DEFAULT_CONTRACT = SwingContract(
-    q_min=0.0,
-    q_max=1.0,
-    Q_min=0.0,
-    Q_max=10.0,
-    strike=100.0,
-    maturity=1.0,
-    n_rights=250,  # Daily decisions for 1 year
-    r=0.05
-)
-
-# Contract with positive lower bound (breaks bang-bang)
-POSITIVE_MIN_CONTRACT = SwingContract(
-    q_min=0.2,  # Must exercise at least 0.2 when exercising
-    q_max=1.0,
-    Q_min=0.0,
-    Q_max=10.0,
-    strike=100.0,
-    maturity=1.0,
-    n_rights=250,
-    r=0.05
-)

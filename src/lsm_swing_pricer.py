@@ -14,7 +14,6 @@ Implementation follows the 4-step LSM algorithm:
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
-import matplotlib.pyplot as plt
 from typing import Tuple, Optional, Dict, List
 import warnings
 import argparse
@@ -30,20 +29,16 @@ except ImportError:
     # When run directly from src/ directory or as script
     from swing_contract import SwingContract
     from simulate_hhk_spot import simulate_hhk_spot
-# # Import existing classes from the codebase
-# try:
-#     # When imported as a module from outside src/
-#     from .swing_contract import SwingContract
-#     from .simulate_hhk_spot import simulate_hhk_spot
-# except ImportError:
-#     # When run directly from src/ directory
-#     from swing_contract import SwingContract
-#     from simulate_hhk_spot import simulate_hhk_spot
 
 
 class LSMSwingPricer:
     """Least Squares Monte Carlo swing option pricer"""
-    
+    pricer = LSMSwingPricer(
+            contract=swing_contract,
+            dataset=eval_ds,
+            n_paths=n_paths_eval, 
+            poly_degree=3, seed=seed+1
+        )
     def __init__(
         self,
         contract: SwingContract,
@@ -399,265 +394,32 @@ class LSMSwingPricer:
         
         return results
     
-    def simulate_optimal_strategy(
-        self,
-        results: Dict,
-        n_scenarios: int = 10,
-        plot: bool = True,
-        save_step_data: bool = False,
-        evaluation_runs_dir: Optional[str] = None,
-        run_name: Optional[str] = None
-    ) -> Dict:
-        """
-        Simulate optimal exercise strategy using forward induction
-        
-        Args:
-            results: Results from price_option()
-            n_scenarios: Number of price scenarios to simulate
-            plot: Whether to create plots
-            save_step_data: Whether to save detailed step-by-step data
-            evaluation_runs_dir: Directory to save evaluation runs data
-            run_name: Name of the run for file naming
-        """
-        print(f"Simulating optimal strategy for {n_scenarios} scenarios...")
-        
-        # Simulate new price paths for strategy testing
-        t, S_test, _, _ = simulate_hhk_spot(
-            T=self.contract.maturity,
-            n_steps=self.contract.n_rights,
-            n_paths=n_scenarios,
-            seed=self.seed + 1000 if self.seed else None,
-            **self.hhk_params
-        )
-        
-        strategies = []
-        all_episodes_step_data = []  # Store step data for CSV saving
-        
-        for scenario in range(n_scenarios):
-            strategy = {
-                'times': [],
-                'spot_prices': [],
-                'actions': [],
-                'cumulative_exercise': [],
-                'payoffs': [],
-                'total_payoff': 0.0
-            }
-            
-            episode_step_data = []  # Store step data for this episode
-            q_cumulative = 0.0
-            
-            # Forward induction
-            for t_idx in range(self.contract.n_rights):
-                remaining_steps = self.contract.n_rights - t_idx
-                S_current = S_test[scenario, t_idx]
-                time_left = self.contract.maturity * (remaining_steps / self.contract.n_rights)
-                
-                # Find current q_state
-                q_idx = np.argmin(np.abs(self.Q_grid - q_cumulative))
-                
-                # Get feasible actions
-                feasible_actions = self.get_feasible_actions(q_cumulative, remaining_steps)
-                
-                if len(feasible_actions) == 0:
-                    action = 0.0
-                else:
-                    # Choose action using regressor if available
-                    if (t_idx, q_idx) in results['regressors']:
-                        reg = results['regressors'][(t_idx, q_idx)]
-                        
-                        best_value = -np.inf
-                        best_action = 0.0
-                        
-                        for action_candidate in feasible_actions:
-                            immediate = self.payoff(S_current, action_candidate)
-                            
-                            if t_idx < self.contract.n_rights - 1:
-                                q_next = q_cumulative + action_candidate
-                                q_next_idx = np.argmin(np.abs(self.Q_grid - q_next))
-                                continuation = self.evaluate_continuation_value(reg, S_current)
-                            else:
-                                continuation = 0.0
-                            
-                            total_value = immediate + self.contract.discount_factor * continuation
-                            
-                            if total_value > best_value:
-                                best_value = total_value
-                                best_action = action_candidate
-                        
-                        action = best_action
-                    else:
-                        # Simple heuristic: exercise if in-the-money
-                        if S_current > self.contract.strike and self.contract.q_max in feasible_actions:
-                            action = self.contract.q_max
-                        else:
-                            action = 0.0
-                            action = 0.0
-                
-                # Execute action
-                payoff = self.payoff(S_current, action)
-                q_actual = action  # Actual quantity exercised
-                q_cumulative += action
-                
-                # Store step data for CSV export (matching RL agent format)
-                if save_step_data:
-                    step_info = {
-                        'step': t_idx,
-                        'spot_price': S_current,
-                        'q_remaining': self.contract.Q_max - q_cumulative + action,  # Before action
-                        'q_exercised': q_cumulative - action,  # Before action
-                        'time_left': time_left,
-                        'action': action,
-                        'q_actual': q_actual,
-                        'reward': payoff
-                    }
-                    episode_step_data.append(step_info)
-                
-                strategy['times'].append(t[t_idx])
-                strategy['spot_prices'].append(S_current)
-                strategy['actions'].append(action)
-                strategy['cumulative_exercise'].append(q_cumulative)
-                strategy['payoffs'].append(payoff)
-                strategy['total_payoff'] += payoff * self.contract.discount_factor**t_idx
-            
-            strategies.append(strategy)
-            if save_step_data:
-                all_episodes_step_data.append(episode_step_data)
-        
-        # Create plots if requested
-        if plot:
-            self.plot_strategies(strategies, S_test, t)
-        
-        # Calculate statistics
-        total_payoffs = [s['total_payoff'] for s in strategies]
-        
-        strategy_results = {
-            'strategies': strategies,
-            'mean_payoff': np.mean(total_payoffs),
-            'std_payoff': np.std(total_payoffs),
-            'exercise_rates': [
-                np.mean([s['cumulative_exercise'][-1] for s in strategies])
-            ],
-            'test_paths': S_test,
-            'time_grid': t
-        }
-        
-        print(f"Strategy Results:")
-        print(f"Mean Payoff: {strategy_results['mean_payoff']:.4f}")
-        print(f"Payoff Std: {strategy_results['std_payoff']:.4f}")
-        print(f"Mean Exercise Rate: {strategy_results['exercise_rates'][0]:.2f} / {self.contract.Q_max}")
-        
-        # Save step-by-step data to CSV if requested
-        if save_step_data and evaluation_runs_dir and run_name:
-            self.save_evaluation_run_csv(all_episodes_step_data, evaluation_runs_dir, run_name)
-        
-        return strategy_results
-    
-    def plot_strategies(self, strategies: List[Dict], S_paths: np.ndarray, t: np.ndarray):
-        """Plot optimal exercise strategies"""
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        
-        # Plot 1: Spot price paths and exercise decisions
-        ax = axes[0, 0]
-        for i, strategy in enumerate(strategies[:5]):  # Show first 5 scenarios
-            times = strategy['times']
-            spots = strategy['spot_prices']
-            actions = strategy['actions']
-            
-            ax.plot(times, spots, alpha=0.7, label=f'Scenario {i+1}')
-            
-            # Mark exercise times
-            exercise_times = [times[j] for j, a in enumerate(actions) if a > 0]
-            exercise_spots = [spots[j] for j, a in enumerate(actions) if a > 0]
-            if exercise_times:
-                ax.scatter(exercise_times, exercise_spots, color='red', s=50, alpha=0.8)
-        
-        ax.axhline(y=self.contract.strike, color='black', linestyle='--', label='Strike')
-        ax.set_title('Spot Prices and Exercise Decisions')
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Spot Price')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 2: Cumulative exercise
-        ax = axes[0, 1]
-        for i, strategy in enumerate(strategies[:5]):
-            ax.plot(strategy['times'], strategy['cumulative_exercise'], 
-                   alpha=0.7, label=f'Scenario {i+1}')
-        
-        ax.axhline(y=self.contract.Q_max, color='red', linestyle='--', label='Q_max')
-        ax.set_title('Cumulative Exercise')
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Cumulative Volume')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 3: Payoff distribution
-        ax = axes[1, 0]
-        total_payoffs = [s['total_payoff'] for s in strategies]
-        ax.hist(total_payoffs, bins=20, alpha=0.7, edgecolor='black')
-        ax.axvline(np.mean(total_payoffs), color='red', linestyle='--', 
-                  label=f'Mean: {np.mean(total_payoffs):.3f}')
-        ax.set_title('Payoff Distribution')
-        ax.set_xlabel('Total Payoff')
-        ax.set_ylabel('Frequency')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 4: Exercise timing
-        ax = axes[1, 1]
-        all_exercise_times = []
-        for strategy in strategies:
-            exercise_times = [t for t, a in zip(strategy['times'], strategy['actions']) if a > 0]
-            all_exercise_times.extend(exercise_times)
-        
-        if all_exercise_times:
-            ax.hist(all_exercise_times, bins=20, alpha=0.7, edgecolor='black')
-            ax.set_title('Exercise Timing Distribution')
-            ax.set_xlabel('Time')
-            ax.set_ylabel('Number of Exercises')
-            ax.grid(True, alpha=0.3)
-            ax.hist(all_exercise_times, bins=20, alpha=0.7, edgecolor='black')
-            ax.set_title('Exercise Timing Distribution')
-            ax.set_xlabel('Time')
-            ax.set_ylabel('Number of Exercises')
-            ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def save_evaluation_run_csv(self, all_episodes_step_data: List[List[Dict]], 
-                              evaluation_runs_dir: str, run_name: str) -> None:
-        """Save detailed step-by-step data for all episodes to CSV (matching RL agent format)"""
+    def save_results_csv(self, run_name: str, results: Dict) -> None:
+        """Save LSM pricing results to CSV file"""
         import csv
         import os
         
-        # Create evaluation_runs directory if it doesn't exist
-        os.makedirs(evaluation_runs_dir, exist_ok=True)
+        # Create logs directory if it doesn't exist
+        logs_dir = "logs"
+        os.makedirs(logs_dir, exist_ok=True)
         
-        # Use run_name as filename (similar to how RL agent uses training episode number)
-        filename = f"eval_run_{run_name}.csv"
-        filepath = os.path.join(evaluation_runs_dir, filename)
+        # Save results to CSV
+        filename = f"LSM_{run_name}_results.csv"
+        filepath = os.path.join(logs_dir, filename)
         
         with open(filepath, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['episode_idx', 'step', 'spot', 'q_remain', 'q_exerc', 
-                           'time_left', 'action', 'q_actual', 'reward'])
-            
-            for episode_idx, step_data in enumerate(all_episodes_step_data):
-                for step_info in step_data:
-                    writer.writerow([
-                        episode_idx,
-                        step_info['step'],
-                        round(step_info['spot_price'], 4),
-                        round(step_info['q_remaining'], 4), 
-                        round(step_info['q_exercised'], 4),
-                        round(step_info['time_left'], 4),
-                        round(step_info['action'], 6),
-                        round(step_info['q_actual'], 4),
-                        round(step_info['reward'], 6)
-                    ])
+            writer.writerow(['metric', 'value'])
+            writer.writerow(['option_price', round(results['option_price'], 6)])
+            writer.writerow(['option_std_error', round(results['option_std_error'], 6)])
+            writer.writerow(['ci_95_lower', round(results['confidence_interval_95'][0], 6)])
+            writer.writerow(['ci_95_upper', round(results['confidence_interval_95'][1], 6)])
+            writer.writerow(['paths_used', results['paths_used']])
+            writer.writerow(['final_spot_mean', round(results['final_spot_mean'], 4)])
+            writer.writerow(['final_spot_std', round(results['final_spot_std'], 4)])
+            writer.writerow(['intrinsic_value', round(results['intrinsic_value'], 6)])
         
-        print(f"Evaluation run data saved to: {filepath}")
+        print(f"Results saved to: {filepath}")
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -671,12 +433,6 @@ def create_parser() -> argparse.ArgumentParser:
                       help="Polynomial degree for continuation value regression (default: 3)")
     parser.add_argument("-seed", type=int, default=42, 
                       help="Random seed for reproducibility (default: 42)")
-    parser.add_argument("-n_scenarios", type=int, default=10, 
-                      help="Number of scenarios for optimal strategy simulation (default: 10)")
-    parser.add_argument("--plot", type=int, default=1, choices=[0,1], 
-                      help="Create plots for strategy analysis (default: 1)")
-    parser.add_argument("--verbose", type=int, default=1, choices=[0,1], 
-                      help="Print detailed output (default: 1)")
     parser.add_argument("-name", type=str, 
                       help="Name of the run (default: LSM_{timestamp})")
 
@@ -758,50 +514,51 @@ def generate_run_name(name: Optional[str]) -> str:
     return name
 
 
-def save_results(run_name: str, results: Dict, strategy_results: Dict, args: argparse.Namespace) -> str:
-    """Save LSM results to files"""
-    import json
-    import os
+def price_with_external_data(contract: SwingContract, eval_t, eval_S, eval_X, eval_Y, 
+                           run_name: str, poly_degree: int = 3) -> Dict:
+    """
+    Price swing option using externally provided paths (called from run.py)
     
-    # Create logs directory structure (same as RL agent)
-    logs_dir = "logs"
-    run_logs_dir = os.path.join(logs_dir, run_name)
-    evaluation_runs_dir = os.path.join(run_logs_dir, "evaluation_runs")
+    Args:
+        contract: Swing option contract specification
+        eval_t: Pre-generated time grid
+        eval_S: Pre-generated spot price paths
+        eval_X: Pre-generated X process paths  
+        eval_Y: Pre-generated Y process paths
+        run_name: Name for the run
+        poly_degree: Polynomial degree for regression
+        
+    Returns:
+        Dictionary with pricing results
+    """
+    print("=== LSM Swing Option Pricer ===")
+    print(f"Using pre-generated paths: {eval_S.shape[0]} scenarios")
     
-    os.makedirs(logs_dir, exist_ok=True)
-    os.makedirs(run_logs_dir, exist_ok=True)
-    os.makedirs(evaluation_runs_dir, exist_ok=True)
+    # Create dummy hhk_params (not used with pre-generated paths)
+    hhk_params = {}
     
-    # Save parameters (same format as RL)
-    params_file = os.path.join(run_logs_dir, f"{run_name}_parameters.json")
-    with open(params_file, 'w') as f:
-        json.dump(vars(args), f, indent=2)
+    # Initialize LSM pricer
+    pricer = LSMSwingPricer(
+        contract=contract,
+        hhk_params=hhk_params,
+        n_paths=eval_S.shape[0],
+        poly_degree=poly_degree,
+        seed=42
+    )
     
-    # Save results summary
-    summary_file = f"logs/{run_name}_results.json"
-    summary = {
-        'option_price': results['option_price'],
-        'option_std_error': results['option_std_error'],
-        'confidence_interval_95': results['confidence_interval_95'],
-        'paths_used': results['paths_used'],
-        'final_spot_mean': results['final_spot_mean'],
-        'final_spot_std': results['final_spot_std'],
-        'intrinsic_value': results['intrinsic_value'],
-        'mean_strategy_payoff': strategy_results['mean_payoff'],
-        'strategy_payoff_std': strategy_results['std_payoff'],
-        'mean_exercise_rate': strategy_results['exercise_rates'][0],
-        'exercise_utilization_pct': 100 * strategy_results['exercise_rates'][0] / args.Q_max
-    }
+    # Price the option using pre-generated paths
+    results = pricer.price_option_with_pregenerated_paths(
+        eval_t, eval_S, eval_X, eval_Y, verbose=False
+    )
     
-    with open(summary_file, 'w') as f:
-        json.dump(summary, f, indent=2)
+    # Print results
+    print(f"Option Price: {results['option_price']:.6f}")
+    print(f"95% CI: [{results['confidence_interval_95'][0]:.6f}, {results['confidence_interval_95'][1]:.6f}]")
     
-    print(f"\nResults saved:")
-    print(f"  Parameters: {params_file}")
-    print(f"  Summary: {summary_file}")
-    print(f"  Evaluation runs directory: {evaluation_runs_dir}")
+    # Save to CSV
+    pricer.save_results_csv(run_name, results)
     
-    return evaluation_runs_dir
+    return results
 
 
 if __name__ == "__main__":
@@ -825,22 +582,8 @@ if __name__ == "__main__":
     contract = create_contract(args)
     hhk_params = create_hhk_params(args)
     
-    if args.verbose:
-        print(f"\nContract Parameters:")
-        print(f"  Strike: {contract.strike}")
-        print(f"  Maturity: {contract.maturity} years")
-        print(f"  Rights: {contract.n_rights}")
-        print(f"  q_min/q_max: {contract.q_min}/{contract.q_max}")
-        print(f"  Q_min/Q_max: {contract.Q_min}/{contract.Q_max}")
-        print(f"  Risk-free rate: {contract.r}")
-        
-        print(f"\nHHK Process Parameters:")
-        print(f"  S0: {hhk_params['S0']}")
-        print(f"  Alpha: {hhk_params['alpha']}")
-        print(f"  Sigma: {hhk_params['sigma']}")
-        print(f"  Beta: {hhk_params['beta']}")
-        print(f"  Lambda: {hhk_params['lam']}")
-        print(f"  Mu_J: {hhk_params['mu_J']}")
+    print(f"\nContract: Strike={contract.strike}, Maturity={contract.maturity}, Rights={contract.n_rights}")
+    print(f"Volume limits: Q_min={contract.Q_min}, Q_max={contract.Q_max}")
     
     # Initialize LSM pricer
     start_time = time.time()
@@ -853,48 +596,16 @@ if __name__ == "__main__":
     )
     
     # Price the option
-    print(f"\n{'='*60}")
-    print("PRICING SWING OPTION")
-    print(f"{'='*60}")
-    
-    results = pricer.price_option(verbose=bool(args.verbose))
-    
-    # Simulate optimal strategies
-    print(f"\n{'='*60}")
-    print("SIMULATING OPTIMAL STRATEGIES")
-    print(f"{'='*60}")
-    
-    strategy_results = pricer.simulate_optimal_strategy(
-        results=results,
-        n_scenarios=args.n_scenarios,
-        plot=bool(args.plot)
-    )
+    print(f"\nPricing swing option...")
+    results = pricer.price_option(verbose=False)
     
     # Calculate total runtime
     total_time = time.time() - start_time
     
-    # Print final summary
-    print(f"\n{'='*60}")
-    print("FINAL SUMMARY")
-    print(f"{'='*60}")
-    print(f"Option Price: {results['option_price']:.4f} ± {results['option_std_error']:.4f}")
-    print(f"95% CI: [{results['confidence_interval_95'][0]:.4f}, {results['confidence_interval_95'][1]:.4f}]")
-    print(f"Mean Strategy Payoff: {strategy_results['mean_payoff']:.4f}")
-    print(f"Strategy Payoff Std: {strategy_results['std_payoff']:.4f}")
-    print(f"Contract Utilization: {strategy_results['exercise_rates'][0]:.1f}/{args.Q_max} " +
-          f"({100*strategy_results['exercise_rates'][0]/args.Q_max:.1f}%)")
-    print(f"Total Runtime: {total_time:.2f} seconds")
+    # Print results
+    print(f"\nOption Price: {results['option_price']:.6f}")
+    print(f"95% CI: [{results['confidence_interval_95'][0]:.6f}, {results['confidence_interval_95'][1]:.6f}]")
+    print(f"Runtime: {total_time:.2f} seconds")
     
-    # Save results to files and get evaluation_runs_dir
-    evaluation_runs_dir = save_results(run_name, results, strategy_results, args)
-    
-    # Now simulate again with CSV saving enabled for detailed step data
-    print(f"\nSaving detailed step-by-step evaluation data...")
-    pricer.simulate_optimal_strategy(
-        results=results,
-        n_scenarios=args.n_scenarios,
-        plot=False,  # Don't create plots again
-        save_step_data=True,
-        evaluation_runs_dir=evaluation_runs_dir,
-        run_name=run_name
-    )
+    # Save results to CSV
+    pricer.save_results_csv(run_name, results)

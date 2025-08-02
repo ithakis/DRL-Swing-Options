@@ -14,11 +14,11 @@ from torch.nn.utils import clip_grad_norm_
 try:
     # Try relative imports first (when called from run.py)
     from .networks import IQN, Actor, Critic
-    from .replay_buffer import CircularReplayBuffer, PrioritizedReplay, ReplayBuffer
+    from .replay_buffer import CircularReplayBuffer, PrioritizedReplay
 except ImportError:
     # Fall back to absolute imports (when called from notebook or directly)
     from networks import IQN, Actor, Critic
-    from replay_buffer import CircularReplayBuffer, PrioritizedReplay, ReplayBuffer
+    from replay_buffer import CircularReplayBuffer, PrioritizedReplay
 
 # TODO: Check for batch norm comparison! batch norm seems to have a big impact on final performance
 #       Also check if normal gaussian noise is enough. -> D4PG paper says there is no difference maybe chooseable parameter for the implementation
@@ -51,8 +51,7 @@ class Agent():
                       min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
                       speed_mode=True,        # NEW: Enable speed optimizations
                       use_compile=False,       # NEW: Enable torch.compile optimization (disabled by default)
-                      use_amp=False,           # NEW: Enable automatic mixed precision
-                      use_circular_buffer=True  # NEW: Use optimized circular array buffer instead of deque
+                      use_amp=False           # NEW: Enable automatic mixed precision
                       ):
         """Initialize an Agent object.
         
@@ -199,21 +198,17 @@ class Agent():
         if per:
             self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1, beta_paths=paths)
         else:
-            if use_circular_buffer:
-                self.memory = CircularReplayBuffer(
-                    buffer_size=BUFFER_SIZE,
-                    batch_size=BATCH_SIZE, 
-                    n_step=n_step,
-                    parallel_env=1,
-                    device=device,
-                    seed=random_seed,
-                    gamma=GAMMA,
-                    use_memmap=BUFFER_SIZE > 500000  # Use memory mapping for large buffers
-                )
-                print("✅ Using optimized CircularReplayBuffer")
-            else:
-                self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, n_step=n_step, parallel_env=1, device=device, seed=random_seed, gamma=GAMMA)
-                print("⚠️  Using legacy ReplayBuffer (consider enabling use_circular_buffer=True)")
+            self.memory = CircularReplayBuffer(
+                buffer_size=BUFFER_SIZE,
+                batch_size=BATCH_SIZE, 
+                n_step=n_step,
+                parallel_env=1,
+                device=device,
+                seed=random_seed,
+                gamma=GAMMA,
+                use_memmap=BUFFER_SIZE > 500000  # Use memory mapping for large buffers
+            )
+            print("✅ Using optimized CircularReplayBuffer")
         
         if distributional:
             self.learn = self.learn_distribution
@@ -228,13 +223,12 @@ class Agent():
         self.memory_cleanup_frequency = 1000
         self.memory_threshold_mb = 8000  # 8GB threshold
         self.step_counter = 0
-        self.use_circular_buffer = use_circular_buffer
         
         print("🚀 Performance optimizations enabled:")
         print(f"  - Memory monitoring: {self.performance_monitor}")
         print(f"  - Memory cleanup frequency: {self.memory_cleanup_frequency}")
         print(f"  - Memory threshold: {self.memory_threshold_mb} MB")
-        print(f"  - Circular buffer: {use_circular_buffer}")
+        print("  - Always using optimized CircularReplayBuffer (when PER=False)")
 
         
     def step(self, state, action, reward, next_state, done, timestamp, writer):

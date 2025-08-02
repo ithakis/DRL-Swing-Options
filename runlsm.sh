@@ -20,7 +20,7 @@ args=(
     --verbose=1                    # Print detailed output (set to 0 for quiet)
     
     # Monthly Swing Option Contract Parameters (matching run.sh exactly)
-    --strike=100.0              # At-the-money strike
+    --strike=1.0              # At-the-money strike
     --maturity=0.0833           # 1 month = 1/12 year
     --n_rights=22               # ~22 trading days in a month
     --q_min=0.0                 # No minimum exercise requirement per day
@@ -31,7 +31,7 @@ args=(
     --min_refraction_days=0     # No refraction period (can exercise daily)
     
     # Market Process Parameters (monthly calibration, exactly matching run.sh)
-    --S0=100.0                  # Initial spot price
+    --S0=1.0                  # Initial spot price
     --alpha=12.0                # Higher mean reversion for monthly timeframe
     --sigma=1.2                 # Moderate volatility for monthly period
     --beta=150.0                # Jump decay rate

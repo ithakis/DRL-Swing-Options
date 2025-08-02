@@ -3,13 +3,12 @@
 #  nohup "./run.sh" > .terminal_output.txt 2>&1 &
 #  tail -f .terminal_output.txt
 
-
 # Monthly Swing Option Baseline:
 args=( 
-    # Training parameters
-    -n_paths=8192 # 4096 or 8192 or 16384
+    # Training parameters - IMPROVED PATH GENERATION
+    -n_paths=1024 # Generates exactly 4096 unique training paths (no cycling)
     -eval_every=1024
-    -n_paths_eval=4096
+    -n_paths_eval=1024 # Generates exactly 4096 evaluation paths (shared between RL and LSM)
     -munchausen=0
     -nstep=5
     -learn_every=2
@@ -23,7 +22,6 @@ args=(
     -lr_a=2e-4 # from lr_a=3e-4
     -lr_c=2e-4 # from lr_c=3e-4
     --compile=0 # Disable JIT compilation for debugging
-    --use_circular_buffer=1   # Enable optimized circular array buffer
     -n_cores=2
     
     # Monthly Swing Option Contract Parameters
