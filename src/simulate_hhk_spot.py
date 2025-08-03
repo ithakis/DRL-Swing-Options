@@ -1,9 +1,11 @@
-import numpy as np
-from scipy.stats import qmc, norm, poisson, gamma
-from typing import Tuple, Callable, Optional, Union
-from tqdm import tqdm
+from typing import Callable, Optional, Tuple
+
 import bootstrapped.bootstrap as bs
 import bootstrapped.stats_functions as bs_stats
+import numpy as np
+from scipy.stats import norm, qmc
+from tqdm import tqdm
+
 
 def simulate_hhk_spot(
     S0: float,

@@ -6,7 +6,7 @@
 # Monthly Swing Option Baseline:
 args=( 
     # Training parameters - IMPROVED PATH GENERATION
-    -n_paths=32768 # 4096 or 8192 or 16384 or 32768
+    -n_paths=4096 # 4096 or 8192 or 16384 or 32768
     -eval_every=1024
     -n_paths_eval=4096 # Generates exactly 4096 evaluation paths (shared between RL and LSM)
     -munchausen=0
@@ -62,7 +62,7 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -name "MonthlySwing1" -seed 1
+python run.py "${args[@]}" -name "del" -seed 1
 # python run.py "${args[@]}" -name "Fig10_100_32k" -seed 1
 # python run.py "${args[@]}" -name "del" -seed 1
 # python run.py "${args[@]}" -name "MonthlySwing_Baseline2" -seed 12 &

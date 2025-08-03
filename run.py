@@ -31,6 +31,7 @@ from src.agent import Agent
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
 from src.swing_contract import SwingContract
 from src.swing_env import SwingOptionEnv
+from src.lsm_swing_pricer import price_swing_option_lsm
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
@@ -801,22 +802,19 @@ def run_training(
     # Initial evaluation of DRL agent without any training - if eval_every > 0
     if not args.eval_every == -1:
         evaluate_swing_option(
-            agent,
-            eval_env,
-            tensorboard_writer,
-            0,
+            agent=agent,
+            eval_env=eval_env,
+            writer=tensorboard_writer,
+            path=0,
         )
-    print('GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG')
     for current_path in range(1, args.n_paths + 1):
         # Initial evaluation before any training (only for eval_every > 0)
         if current_path == 1 and args.eval_every > 0 and not initial_eval_done:
-            print("\n🔍 Starting INITIAL evaluation before training (0 episodes completed)...")
-            print("   Using VALIDATION dataset (same paths used for all evaluations)")
             evaluate_swing_option(
-                agent,
-                eval_env,
-                tensorboard_writer,
-                0,
+                agent=agent,
+                eval_env=eval_env,
+                writer=tensorboard_writer,
+                path=current_path,
             )
             initial_eval_done = True
 
@@ -976,6 +974,19 @@ def main():
     eval_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds)
 
+    # Price with LSM - Benchmark
+    price_swing_option_lsm(
+        contract=swing_contract,
+        dataset=eval_ds,
+        poly_degree=3, seed=seed+1
+    )
+
+    print('\n\n\n\n' + '=' * 60)
+    ############################################################################################
+    ############################################################################################
+    ############################################################################################
+    # Run training
+
     # Setup device and cores
     device, device_str = EnvironmentManager.setup_device_and_cores(args)
 
@@ -1020,17 +1031,6 @@ def main():
         agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
         print("WARNING: Pre-generated paths not available for saved model evaluation.")
     else:
-        # # Price the swing option using LSM
-        # pricer = LSMSwingPricer(
-        #     contract=swing_contract,
-        #     dataset=eval_ds,
-        #     n_paths=n_paths_eval,
-        #     poly_degree=3, seed=seed+1
-        # )
-        # print('\n\n\n\n' + '=' * 60)
-        ############################################################################################
-        ############################################################################################
-        ############################################################################################
         # Run training
         run_training(
             agent=agent,
