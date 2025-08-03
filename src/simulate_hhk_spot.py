@@ -1,12 +1,9 @@
-"""
-Hambly-Howison-Kluge (HHK) Spot Price Simulation
-Based on "Modelling spikes and pricing swing options in electricity markets" 
-Hambly et al. (2009)
-"""
 import numpy as np
 from scipy.stats import qmc, norm, poisson, gamma
-from typing import Tuple, Callable, Optional
-
+from typing import Tuple, Callable, Optional, Union
+from tqdm import tqdm
+import bootstrapped.bootstrap as bs
+import bootstrapped.stats_functions as bs_stats
 
 def simulate_hhk_spot(
     S0: float,
@@ -22,182 +19,185 @@ def simulate_hhk_spot(
     seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Simulate spot prices using the Hambly–Howison–Kluge model with exponential jump sizes.
+    Hambly–Howison–Kluge spot model with antithetic variance reduction.
     
-    The model follows:
-    dX_t = -α X_t dt + σ dW_t
-    dY_t = -β Y_t dt + J_t dN_t  
-    S_t = exp(f(t) + X_t + Y_t)
-    
-    Where:
-    - X_t is mean-reverting Ornstein-Uhlenbeck process
-    - Y_t is mean-reverting jump process  
-    - N_t is Poisson process with intensity λ
-    - J_t are i.i.d. exponential(1/μ_J) jump sizes
-    - f(t) is deterministic seasonal function
-    
-    Args:
-        S0: Initial spot price
-        T: Time horizon in years
-        n_steps: Number of time steps
-        n_paths: Number of Monte Carlo paths
-        alpha: Mean reversion speed for X process
-        sigma: Volatility of X process
-        beta: Mean reversion speed for Y process (jump decay)
-        lam: Jump intensity (jumps per unit time)
-        mu_J: Mean jump size (scale parameter for exponential distribution)
-        f: Seasonal function f(t)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Tuple of (time_grid, spot_paths, X_paths, Y_paths)
-        - time_grid: (n_steps+1,) array of time points
-        - spot_paths: (n_paths, n_steps+1) array of spot prices
-        - X_paths: (n_paths, n_steps+1) array of X process values
-        - Y_paths: (n_paths, n_steps+1) array of Y process values
+    Note: Assumes n_paths is always even and always applies antithetic variance reduction.
+
+    Returns
+    -------
+    t : (n_steps+1,) ndarray     time grid
+    S : (n_paths, n_steps+1)     spot price paths
+    X : (n_paths, n_steps+1)     diffusive OU paths
+    Y : (n_paths, n_steps+1)     spike (jump‑OU) paths
     """
-    dt = T / n_steps
-    t = np.linspace(0.0, T, n_steps + 1)
+    rng = np.random.default_rng(seed)
+    dt  = T / n_steps
+    t   = np.linspace(0.0, T, n_steps + 1)
 
-    # Exact OU step statistics for X process
-    e_m = np.exp(-alpha * dt)
-    var_m = sigma**2 * (1.0 - e_m**2) / (2.0 * alpha)
-    
-    # Y process decay factor
-    e_y = np.exp(-beta * dt)
+    # ── Diffusive OU driver (Sobol) ───────────────────────────────────────────
+    if seed is not None: np.random.seed(seed)
+    sampler = qmc.Sobol(d=n_steps, scramble=True)
+    z_x     = norm.ppf(np.clip(sampler.random(n_paths), 1e-12, 1-1e-12))
 
-    # Generate quasi-random numbers using Sobol sequence
-    # For each time step we need: Z_X (Gaussian), U_Poisson, U_Gamma
-    dim_per_step = 3
-    sampler = qmc.Sobol(d=dim_per_step * n_steps, scramble=True)
-    if seed is not None:
-        np.random.seed(seed)
-    u = sampler.random(n_paths).reshape(n_paths, n_steps, dim_per_step).transpose(1, 0, 2)
+    e_m     = np.exp(-alpha * dt)
+    var_m   = sigma**2 * (1.0 - e_m**2) / (2.0 * alpha)
+    sqrt_vm = np.sqrt(var_m)
 
-    # Ensure no exactly 0 or 1 values for inverse transforms
-    eps = 1e-12
-    u = np.clip(u, eps, 1.0 - eps)
+    e_dt = np.exp(-beta * dt)                 # common factor in jump weight
 
-    # Transform uniform to required distributions
-    z_x = norm.ppf(u[:, :, 0])  # Gaussian innovations for X
-    n_jmp = poisson.ppf(u[:, :, 1], lam * dt).astype(int)  # Number of jumps per step
-    u_gam = u[:, :, 2]  # Uniform for jump size generation
+    # ── Allocate output arrays ────────────────────────────────────────────────
+    X = np.empty((n_paths, n_steps + 1), dtype=np.float64)
+    Y = np.zeros_like(X)
+    S = np.empty_like(X)
 
-    # Initialize state arrays
-    X = np.empty((n_paths, n_steps + 1))
-    Y = np.empty((n_paths, n_steps + 1))
-    S = np.empty((n_paths, n_steps + 1))
-    
-    # Initial conditions
-    X[:, 0] = np.log(S0) - f(0.0)  # X_0 such that S_0 = S0
-    Y[:, 0] = 0.0
+    X[:, 0] = np.log(S0) - f(0.0)   # ensure S starts at S0
     S[:, 0] = S0
 
-    # Simulate forward in time
-    for k in range(1, n_steps + 1):
-        # OU process for X: exact discretization
-        X[:, k] = e_m * X[:, k-1] + np.sqrt(var_m) * z_x[k-1]
+    # ── Pre‑draw Poisson counts ───────────────────────────────────────────────
+    counts = rng.poisson(lam * dt, size=(n_steps, n_paths // 2))
 
-        # Y process with mean-reverting jumps
-        n_k = n_jmp[k-1]  # Number of jumps in this step
+    # ── MAIN TIME LOOP – VECTORISED INSIDE ────────────────────────────────────        
+    for k in tqdm(range(1, n_steps + 1), leave=False, desc="Simulating"):
+
+        # --- diffusive OU -----------------------------------------------------
+        X[:, k] = e_m * X[:, k - 1] + sqrt_vm * z_x[:, k - 1]
+
+        # --- spike OU with antithetic variance reduction ----------------------
+        jump_inc = np.zeros(n_paths, dtype=np.float64)
         
-        # Sum of exponential jumps using gamma distribution property:
-        # Sum of n i.i.d. Exp(1/μ) ~ Gamma(n, μ)
-        jump_sum = np.where(
-            n_k > 0,
-            gamma.ppf(u_gam[k-1], a=n_k, scale=mu_J),
-            0.0
-        )
-        Y[:, k] = e_y * Y[:, k-1] + jump_sum
+        # Antithetic variance reduction for multiple paths
+        c_k = counts[k - 1]                       # (n_paths//2,)
+        pos_idx = np.nonzero(c_k)[0]              # indices with ≥1 jump
 
-        # Spot price
+        if pos_idx.size:                          # skip if no jumps
+            n_tot = c_k[pos_idx].sum()            # total #jumps this step
+            U = rng.uniform(0.0, dt, size=n_tot)  # arrival times
+            V = rng.random(n_tot)                 # uniforms for Exp marks
+            V_bar = 1.0 - V                       # antithetic uniforms
+
+            # exponential jump sizes (antithetic)
+            J1 = -mu_J * np.log(V)
+            J2 = -mu_J * np.log(V_bar)
+
+            decay = e_dt * np.exp(beta * U)       # e^{-β(dt-U)}
+
+            # map each draw to its pair id
+            pair_ids = np.repeat(pos_idx, c_k[pos_idx])
+
+            # accumulate contributions to each half‑pair
+            contrib1 = np.bincount(pair_ids, weights=J1 * decay,
+                                   minlength=n_paths // 2)
+            contrib2 = np.bincount(pair_ids, weights=J2 * decay,
+                                   minlength=n_paths // 2)
+
+            jump_inc[0::2] = contrib1             # original path
+            jump_inc[1::2] = contrib2             # antithetic path
+
+        Y[:, k] = np.exp(-beta * dt) * Y[:, k - 1] + jump_inc
+
+        # --- spot price -------------------------------------------------------
         S[:, k] = np.exp(f(t[k]) + X[:, k] + Y[:, k])
 
     return t, S, X, Y
 
-
-def default_seasonal_function(t: float) -> float:
+######################################################################################
+######################## Validation of the Stochastic Process ########################
+def bootstrap_moments(data: np.ndarray):
     """
-    Default seasonal function with annual cycle
-    
+    Bootstrap the empirical moments of a given dataset.
+
     Args:
-        t: Time in years
-        
+        data: 1D numpy array of data points.
+       
     Returns:
-        Seasonal component value
+        Tuple of (mean_results, std_results) where each result is a list
+        containing the value, lower bound, and upper bound of the statistic.
     """
-    return 0 #np.log(100.0) + 0.5 * np.cos(2 * np.pi * t)
+    # First Moment: Mean - E[X]
+    mean_results = bs.bootstrap(data, stat_func=bs_stats.mean, is_pivotal=False,
+                                iteration_batch_size=128, num_iterations=128*4*16, num_threads=-1)
+
+    # Second Moment: Std - Sqrt(Var[X])
+    std_results = bs.bootstrap(data, stat_func=bs_stats.std, is_pivotal=False,
+                               iteration_batch_size=128, num_iterations=128*4*16, num_threads=-1)
+
+    mean_results = [float(mean_results.value), float(mean_results.lower_bound), float(mean_results.upper_bound)]
+    std_results = [float(std_results.value), float(std_results.lower_bound), float(std_results.upper_bound)]
+    return mean_results, std_results
 
 
-# Default HHK parameters based on Hambly et al. (2009)
-DEFAULT_HHK_PARAMS = {
-    'S0': 100.0,
-    'alpha': 7.0,        # Fast mean reversion for normal variations  
-    'sigma': 1.4,        # Volatility of normal variations
-    'beta': 200.0,       # Very fast decay of spike component
-    'lam': 4.0,          # 4 spikes per year on average
-    'mu_J': 0.4,         # Average spike size (use 0.8 for bigger spikes)
-    'f': default_seasonal_function
-}
-
-
-def simulate_single_path(
+def theoretical_moments(
+    S0: float,
     T: float,
-    n_steps: int,
-    seed: Optional[int] = None,
-    **hhk_params
-) -> Tuple[np.ndarray, np.ndarray]:
+    alpha: float,
+    sigma: float,
+    beta: float,
+    lam: float,
+    mu_J: float,
+    f: Callable[[float], float],
+) -> Tuple[float, float, float, float, float, float]:
     """
-    Convenience function to simulate a single HHK path
-    
-    Args:
-        T: Time horizon in years
-        n_steps: Number of time steps
-        seed: Random seed
-        **hhk_params: HHK model parameters (uses defaults if not provided)
-        
-    Returns:
-        Tuple of (time_grid, spot_path)
+    Analytic moments at time T for the Hambly–Howison–Kluge spot model
+        S_t = exp( f(t) + X_t + Y_t ).
+
+    Parameters
+    ----------
+    S0      : initial spot  S_0
+    T       : horizon (years)
+    alpha   : mean-reversion speed of diffusive OU factor X
+    sigma   : volatility of X
+    beta    : mean-reversion speed of spike factor Y
+    lam     : Poisson intensity of jumps in Y
+    mu_J    : mean of exponential jump sizes  ( J ~ Exp(1/μ_J) )
+    f       : deterministic seasonal function  f(t)
+
+    Returns
+    -------
+    ( E[S_T] ,  Std[S_T] ,
+      E[X_T] ,  Std[X_T] ,
+      E[Y_T] ,  Std[Y_T] )
     """
-    params = DEFAULT_HHK_PARAMS.copy()
-    params.update(hhk_params)
-    
-    t, S, _, _ = simulate_hhk_spot(
-        T=T,
-        n_steps=n_steps, 
-        n_paths=1,
-        seed=seed,
-        **params
-    )
-    
-    return t, S[0]  # Return single path
+    # --- initial factor values consistent with S0 ----------------------------
+    Y0 = 0.0                                   # same convention as simulator
+    X0 = np.log(S0) - f(0.0) - Y0
+
+    # --- moments of X --------------------------------------------------------
+    mX = X0 * np.exp(-alpha * T)
+    vX = sigma**2 * (1.0 - np.exp(-2.0 * alpha * T)) / (2.0 * alpha)
+
+    # --- moments of Y --------------------------------------------------------
+    mY = Y0 * np.exp(-beta * T) + lam * mu_J / beta * (1.0 - np.exp(-beta * T))
+    vY = lam * mu_J**2 / beta * (1.0 - np.exp(-2.0 * beta * T))
+
+    sX = np.sqrt(vX)
+    sY = np.sqrt(vY)
+
+    # --- log-spot Z = f(T)+X_T+Y_T ------------------------------------------
+    fT = f(T)
+
+    #  E[exp(Z_T)]  &  E[exp(2 Z_T)]  via mgf (indep. X and Y):
+    #  M_X(θ) = exp(θ mX + ½ θ² vX)
+    #  M_Y(θ) = ((1 - θ μ_J e^{-βT}) / (1 - θ μ_J))^{λ/β} ,  θ < 1/μ_J
+    def _M(θ: float) -> float:
+        # guard domain for exponential jumps
+        if θ * mu_J >= 1.0:
+            raise ValueError(f"θ={θ} violates θ μ_J < 1 (μ_J={mu_J}).")
+        mx_part = np.exp(θ * mX + 0.5 * θ**2 * vX)
+        y_part  = ((1.0 - θ * mu_J * np.exp(-beta * T)) /
+                   (1.0 - θ * mu_J)) ** (lam / beta)
+        return np.exp(θ * fT) * mx_part * y_part
+
+    ES = _M(1.0)                      # 𝔼[S_T]
+    E2 = _M(2.0)                      # 𝔼[S_T²]
+    varS = E2 - ES**2
+    sS = np.sqrt(varS)
+
+    return ES, sS, mX, sX, mY, sY
 
 
-if __name__ == "__main__":
-    # Test simulation
-    import matplotlib.pyplot as plt
-    
-    # Simulate test paths
-    t, S, X, Y = simulate_hhk_spot(
-        S0=100.0,
-        T=2.0,
-        n_steps=730,
-        n_paths=1000,
-        seed=42,
-        **DEFAULT_HHK_PARAMS
-    )
-    
-    print(f"Simulated {S.shape[0]} paths over {t[-1]:.1f} years")
-    print(f"Final price statistics: mean={S[:,-1].mean():.2f}, std={S[:,-1].std():.2f}")
-    print(f"Price range: [{S.min():.2f}, {S.max():.2f}]")
-    
-    # Plot sample paths
-    plt.figure(figsize=(12, 4))
-    plt.plot(t, S[:50].T, alpha=0.3, color='blue')
-    plt.plot(t, S.mean(axis=0), 'r-', linewidth=2, label='Mean')
-    plt.xlabel('Time (years)')
-    plt.ylabel('Spot Price')
-    plt.title('HHK Spot Price Simulation')
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.show()
+def no_seasonal_function(t: float) -> float:
+    return 0.0  # zero seasonality as in the paper
+
+def simple_seasonal_function(t: float) -> float:
+    # example seasonal function used by HHK in other paper.
+    return np.log(100.0) + 0.5*np.sin(2.0 * np.pi * t)  
