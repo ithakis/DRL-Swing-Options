@@ -22,28 +22,10 @@ args=(
     -lr_a=2e-4 # from lr_a=3e-4
     -lr_c=2e-4 # from lr_c=3e-4
     --compile=0 # Disable JIT compilation for debugging
-    -n_cores=2
-    
-    # # Anual Swing Option Contract Parameters
-    # --strike=1.0              # K = 1   (paper works in relative price units)
-    # --maturity=1.0            # 1-year delivery period
-    # --n_rights=365            # daily decision opportunities (matches notebook n_steps)
-    # --q_min=0.0               # bang-bang: 0 or 1 each day
-    # --q_max=1.0
-    # --Q_min=0.0
-    # --Q_max=100.0             # up to 100 call rights
-    # --risk_free_rate=0.0      # r = 0 in the experiment
-    # --min_refraction_days=0
-    # # ── HHK spike-model parameters (Fig. 1 & 10, matches notebook) ───
-    # --S0=1.0                  # initial spot (matches strike scale)
-    # --alpha=7.0               # OU mean-reversion speed
-    # --sigma=1.4               # OU volatility
-    # --beta=200.0              # jump decay rate
-    # --lam=4.0                 # Poisson-jump intensity (4 spikes / yr)
-    # --mu_J=0.4                # mean jump size
+    -n_cores=4
 
     ################################################################################
-    # # Monthly Swing Option Contract Parameters
+    # Monthly Swing Option Contract Parameters
     --strike=1.0              # At-the-money strike
     --maturity=0.0833           # 1 month = 1/12 year
     --n_rights=22               # ~22 trading days in a month
