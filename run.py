@@ -14,27 +14,90 @@ import csv
 import json
 import multiprocessing as mp
 import os
+import shutil
 import time
 import warnings
 from collections import deque
-from datetime import datetime
+from queue import Queue
+from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-from matplotlib import pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
+from src.lsm_swing_pricer import price_swing_option_lsm
 
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
 from src.swing_contract import SwingContract
 from src.swing_env import SwingOptionEnv
-from src.lsm_swing_pricer import price_swing_option_lsm
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
+
+
+class AsyncCSVWriter:
+    """Asynchronous CSV writer to avoid blocking main execution"""
+
+    def __init__(self):
+        self.write_queue = Queue()
+        self.writer_thread = None
+        self.is_running = False
+
+    def start(self):
+        """Start the background writer thread"""
+        if not self.is_running:
+            self.is_running = True
+            self.writer_thread = Thread(target=self._write_worker, daemon=True)
+            self.writer_thread.start()
+
+    def stop(self):
+        """Stop the background writer thread"""
+        if self.is_running:
+            self.write_queue.put(None)  # Sentinel to stop thread
+            if self.writer_thread:
+                self.writer_thread.join(timeout=5.0)
+            self.is_running = False
+
+    def _write_worker(self):
+        """Background worker that processes the write queue"""
+        while True:
+            item = self.write_queue.get()
+            if item is None:  # Sentinel to stop
+                break
+
+            try:
+                filepath, data, headers = item
+
+                # Check if file exists to determine if we need headers
+                file_exists = os.path.exists(filepath)
+
+                with open(filepath, "a", newline="") as f:
+                    writer = csv.writer(f)
+
+                    # Write headers if file is new
+                    if not file_exists and headers:
+                        writer.writerow(headers)
+
+                    # Write data rows
+                    if isinstance(data[0], (list, tuple)):
+                        # Multiple rows
+                        writer.writerows(data)
+                    else:
+                        # Single row
+                        writer.writerow(data)
+
+            except Exception as e:
+                print(f"Error writing to CSV: {e}")
+            finally:
+                self.write_queue.task_done()
+
+    def write_csv(self, filepath: str, data, headers=None):
+        """Queue data to be written to CSV file"""
+        if self.is_running:
+            self.write_queue.put((filepath, data, headers))
 
 
 class ConfigManager:
@@ -202,14 +265,6 @@ class ConfigManager:
         )
 
         return parser
-
-    @staticmethod
-    def generate_run_name(name: Optional[str]) -> str:
-        """Generate run name with timestamp if not provided"""
-        if name is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            return f"SwingOption_{timestamp}"
-        return name
 
     @staticmethod
     def setup_pytorch_optimizations(args: argparse.Namespace) -> None:
@@ -524,15 +579,20 @@ def evaluate_swing_option(
     eval_env: SwingOptionEnv,
     writer: SummaryWriter,
     path: int,
+    evaluations_dir: str,
+    csv_writer: Optional[AsyncCSVWriter] = None,
 ) -> List[float]:
     """
     Evaluate swing option price using the evaluation environment dataset
+    Now includes detailed CSV logging for each path
 
     Args:
         agent: Trained D4PG agent
         eval_env: Swing option environment for evaluation (contains dataset)
         writer: TensorBoard writer for logging
         path: Current training path/episode number
+        evaluations_dir: Directory to save evaluation CSV files
+        csv_writer: AsyncCSVWriter instance for non-blocking CSV writes
 
     Returns:
         List[float]: List of all episode returns
@@ -542,42 +602,111 @@ def evaluate_swing_option(
 
     # Get number of paths from eval_env dataset
     n_paths = eval_env.S.shape[0]
+    
+    # Define state column names based on SwingOptionEnv._get_observation()
+            #     spot_price - self.contract.strike,  # Payoff
+            # self.q_exercised / self.contract.Q_max,  # Normalized cumulative exercise
+            # q_remaining / self.contract.Q_max,  # Normalized remaining capacity
+            # time_to_maturity / self.contract.maturity,  # Normalized time to maturity
+            # normalized_time,  # Progress through contract
+            # spot_price, # Spot Price
+            # X_t,  # Mean-reverting component
+            # Y_t,  # Jump component  
+            # # self.recent_volatility,  # Recent realized volatility
+            # days_since_exercise / self.contract.n_rights  # Normalized refraction time
+    state_columns = [
+        'Payoff',      # spot_price - strike
+        'q_exercised_norm',     # q_exercised / Q_max  
+        'q_remaining_norm',     # q_remaining / Q_max
+        'time_to_maturity_norm', # time_to_maturity / maturity
+        'normalized_time',      # current_step / n_rights
+        'spot',                 # S_t
+        'X_t',                  # Mean-reverting component
+        'Y_t',                  # Jump component
+        # 'recent_volatility',    # Recent realized volatility
+        'days_since_exercise_norm'  # days_since_exercise / n_rights
+    ]
+    
+    # CSV headers
+    csv_headers = ['path', 'time_step'] + state_columns + ['q_t', 'reward']
+    
+    # Prepare CSV file path
+    csv_filename = f"rl_episode_{path}.csv"
+    csv_filepath = os.path.join(evaluations_dir, csv_filename)
+
+    # Collect all path data for batch writing
+    all_path_data = []
 
     for i in range(n_paths):
         state, _ = eval_env.reset()
-        # if i == 0:         
-        #     print(f'State: Normalized Spot: {state[0]:.4f}, ' \
-        #       f'Exercised: {state[1]:.4f}, Remaining: {state[2]:.4f}, '\
-        #       f'Time to Maturity: {state[3]:.4f}, Normalized Time: {state[4]:.4f}, '\
-        #       f'X_t: {state[5]:.4f}, Y_t: {state[6]:.4f}, '\
-        #       f'Recent Volatility: {state[7]:.4f}, Days Since Exercise: {state[8]:.4f}\
-        #       ')
         
         disc_return = 0.0
         total_exercised = 0.0
         exercise_count = 0
         step = 0
+        
+        # Store path data for CSV
+        path_data = []
 
         while True:
             # Get action from agent
-            action = agent.act(np.expand_dims(state, axis=0))
+            action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
             action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
             
-            state, reward, terminated, truncated, info = eval_env.step(action_v)
-            # print(f'action: {action_v}, reward: {reward:.4f}, spot_price: {info["spot_price"]:.4f}, ')
+            # Step environment
+            next_state, reward, terminated, truncated, info = eval_env.step(action_v)
+            
+            # Store step data for CSV (with optimizations)
+            # Round values to reduce file size while preserving precision
+            step_row = [
+                i,  # path_n (int)
+                step,  # step (int)
+                round(state[0], 6),  # spot_price_norm
+                round(state[1], 6),  # q_exercised_norm  
+                round(state[2], 6),  # q_remaining_norm
+                round(state[3], 6),  # time_to_maturity_norm
+                round(state[4], 6),  # normalized_time
+                round(state[5], 6),  # X_t
+                round(state[6], 6),  # Y_t
+                round(state[7], 6),  # recent_volatility
+                round(state[8], 6),  # days_since_exercise_norm
+                round(info.get("q_actual", 0), 6),  # action (extract scalar from array and round)
+                round(reward, 6)   # reward
+            ]
+            path_data.append(step_row)
+            
+            # Update tracking variables
             disc_return += reward  # Reward already includes discounting
             if info.get("q_actual", 0) > 1e-6:
                 exercise_count += 1
                 total_exercised += info["q_actual"]
             step += 1
+            
+            state = next_state
 
             if terminated or truncated:
                 break
+        
+        # Add this path's data to the collection
+        all_path_data.extend(path_data)
 
         discounted_returns.append(disc_return)
         exercise_stats.append(
             {"total_exercised": total_exercised, "exercise_count": exercise_count, "steps": step}
         )
+
+    # Write all data to CSV asynchronously (non-blocking)
+    if csv_writer and all_path_data:
+        csv_writer.write_csv(csv_filepath, all_path_data, csv_headers)
+    elif all_path_data:
+        # Fallback: write synchronously if no async writer provided
+        try:
+            with open(csv_filepath, 'w', newline='') as f:
+                writer_csv = csv.writer(f)
+                writer_csv.writerow(csv_headers)
+                writer_csv.writerows(all_path_data)
+        except Exception as e:
+            print(f"Warning: Failed to write CSV file {csv_filepath}: {e}")
 
     # reset the eval_env._episode_counter to -1 so future resets work correctly
     eval_env._episode_counter = -1
@@ -606,6 +735,10 @@ def evaluate_swing_option(
         print(f"Evaluation Runs: {n_paths}")
         print(f"Min Return: {min(discounted_returns):.3f}")
         print(f"Max Return: {max(discounted_returns):.3f}")
+        if csv_writer:
+            print(f"CSV saved: {csv_filename} (async)")
+        else:
+            print(f"CSV saved: {csv_filename}")
         print(f"{'=' * 50}")
 
     return discounted_returns
@@ -626,6 +759,7 @@ def generate_datasets(
     train_t, train_S, train_X, train_Y = simulate_hhk_spot(
         **stochastic_process_params, n_paths=n_paths, seed=seed
     )
+    # print(f'>>>> shape of train_S: {train_S.shape}')
     # # Plot 200 sample paths and the mean
     # plt.figure(figsize=(12, 6))
     # n_plot = min(200, train_S.shape[0])
@@ -763,7 +897,8 @@ def run_training(
     args: argparse.Namespace,
     action_low: float,
     action_high: float,
-    # CSVLogger
+    evaluations_dir: str,
+    csv_writer: Optional[AsyncCSVWriter] = None,
 ) -> None:
     """
     Main training function for Deep Q-Learning for Swing Option Pricing
@@ -793,7 +928,6 @@ def run_training(
     start_time = time.time()
     episode_times = deque(maxlen=50)
     episode_steps = deque(maxlen=50)
-    initial_eval_done = False
 
     # eval_every should not be 0, either -1 or >0
     if args.eval_every == 0:
@@ -806,18 +940,10 @@ def run_training(
             eval_env=eval_env,
             writer=tensorboard_writer,
             path=0,
+            evaluations_dir=evaluations_dir,
+            csv_writer=csv_writer,
         )
     for current_path in range(1, args.n_paths + 1):
-        # Initial evaluation before any training (only for eval_every > 0)
-        if current_path == 1 and args.eval_every > 0 and not initial_eval_done:
-            evaluate_swing_option(
-                agent=agent,
-                eval_env=eval_env,
-                writer=tensorboard_writer,
-                path=current_path,
-            )
-            initial_eval_done = True
-
         # Use pre-generated training path for this episode (1:1 mapping, no cycling)
         path_idx = current_path - 1  # Direct mapping: episode i uses training path i
 
@@ -864,20 +990,6 @@ def run_training(
         scores.append(episode_return)
         avg_100 = float(np.mean(scores_window))
 
-        # Logging - Skip for now since CSVLogger is not implemented
-        # total_elapsed = time.time() - start_time
-        # LoggingManager.log_training_episode(
-        #     training_csv,
-        #     current_path,
-        #     episode_return,
-        #     path_steps,
-        #     total_steps,
-        #     avg_100,
-        #     paths_per_sec,
-        #     steps_per_sec,
-        #     total_elapsed,
-        # )
-
         # TensorBoard logging
         tensorboard_writer.add_scalar("Average100", avg_100, current_path)
         tensorboard_writer.add_scalar("Episode_Return", episode_return, current_path)
@@ -910,10 +1022,12 @@ def run_training(
             print(f"\n🔍 Starting evaluation after {current_path} episodes completed...")
             print("   Using VALIDATION dataset (same paths used for all evaluations)")
             evaluate_swing_option(
-                agent,
-                eval_env,
-                tensorboard_writer,
-                current_path,
+                agent=agent,
+                eval_env=eval_env,
+                writer=tensorboard_writer,
+                path=current_path,
+                evaluations_dir=evaluations_dir,
+                csv_writer=csv_writer,
             )
 
 
@@ -922,10 +1036,6 @@ def main():
     # Parse arguments and setup
     parser = ConfigManager.create_parser()
     args = parser.parse_args()
-
-    # Generate run name
-    run_name = ConfigManager.generate_run_name(args.name)
-    print(f"Run name: {run_name}")
 
     # Setup PyTorch optimizations
     ConfigManager.setup_pytorch_optimizations(args)
@@ -951,7 +1061,7 @@ def main():
     stochastic_process_params = {
         "S0": args.S0,
         "T": swing_contract.maturity,
-        "n_steps": swing_contract.n_rights,
+        "n_steps": swing_contract.n_rights - 1,  # Generate n_rights time points (0 to T)
         "alpha": args.alpha,
         "sigma": args.sigma,
         "beta": args.beta,
@@ -974,12 +1084,24 @@ def main():
     eval_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds)
 
-    # Price with LSM - Benchmark
-    price_swing_option_lsm(
+    ## Create Experiment Directory
+    exp_dir = 'logs/' + args.name # experiment dir
+    shutil.rmtree(exp_dir, ignore_errors=True) # Remove old experiment directory if it exists
+    os.makedirs(exp_dir) # create new experiment directory
+    # create "evaluations" subdirectory
+    os.makedirs(exp_dir + '/evaluations', exist_ok=True) # create new /evaluations subdirectory
+
+    # Price with Monte Carlo - LSM Benchmark
+    evaluations_dir = exp_dir + '/evaluations'
+    mean_lsm_price, (th5q_price,th95q_price) = price_swing_option_lsm(
         contract=swing_contract,
         dataset=eval_ds,
-        poly_degree=3, seed=seed+1
+        poly_degree=3, seed=seed+1,
+        csv_path=evaluations_dir + '/lsm.csv'
     )
+
+    # Price with Quantlib - Finite Differences Method
+    
 
     print('\n\n\n\n' + '=' * 60)
     ############################################################################################
@@ -991,7 +1113,12 @@ def main():
     device, device_str = EnvironmentManager.setup_device_and_cores(args)
 
     # Initialize TensorBoard writer
-    tensorboard_writer = SummaryWriter("runs/" + run_name)
+    tensorboard_writer = SummaryWriter("runs/" + args.name)
+    
+    # Initialize AsyncCSVWriter for non-blocking CSV logging
+    csv_writer = AsyncCSVWriter()
+    csv_writer.start()
+    print("✅ AsyncCSVWriter initialized for evaluation logging")
 
     # Get environment specs
     action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
@@ -1040,7 +1167,8 @@ def main():
             args=args,
             action_low=action_low,
             action_high=action_high,
-            # CSVLogger=CSVLogger
+            evaluations_dir=evaluations_dir,
+            csv_writer=csv_writer,
         )
 
     print("\n" + "=" * 60)
@@ -1049,13 +1177,31 @@ def main():
 
     t1 = time.time()
     eval_env.close()
+    
+    # Stop the CSV writer and wait for any pending writes
+    csv_writer.stop()
+    print("✅ AsyncCSVWriter stopped - all CSV files written")
+    
     TrainingManager.timer(t0, t1)
 
-    # Save trained model
-    torch.save(agent.actor_local.state_dict(), "runs/" + run_name + ".pth")
+    # Save trained model (handle compiled models)
+    try:
+        if hasattr(agent, '_actor_local_orig'):
+            # Use original uncompiled model if torch.compile was used
+            torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
+            print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
+        elif hasattr(agent.actor_local, 'state_dict'):
+            # No compilation was used, save the regular actor_local
+            torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
+            print(f"✅ Model saved to: runs/{args.name}.pth")
+        else:
+            print("⚠️ Could not save model: actor_local appears to be compiled and no original model found")
+            print("Consider disabling torch.compile (--compile 0) for model saving")
+    except Exception as e:
+        print(f"⚠️ Could not save model: {e}")
 
     # Save parameters
-    with open("runs/" + run_name + ".json", "w") as f:
+    with open("runs/" + args.name + ".json", "w") as f:
         json.dump(args.__dict__, f, indent=2)
 
 

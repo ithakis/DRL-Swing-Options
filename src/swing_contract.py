@@ -2,6 +2,7 @@
 Swing Option Contract Specifications
 """
 from dataclasses import dataclass
+
 import numpy as np
 
 
@@ -48,7 +49,7 @@ class SwingContract:
     @property
     def dt(self) -> float:
         """Time step between decision dates"""
-        return self.maturity / self.n_rights
+        return self.maturity / (self.n_rights - 1)
     
     @property
     def discount_factor(self) -> float:

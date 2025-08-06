@@ -57,6 +57,9 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
     """
     # Calculate immediate payoff: q_t * (S_t - K)^+
     payoff_per_unit = max(spot_price - strike, 0.0)
+    # Calculate immediate payoff: q_t * (S_t - K)
+    payoff_per_unit = spot_price - strike
+    
     immediate_payoff = q_actual * payoff_per_unit
     
     # Apply discrete discounting
@@ -227,21 +230,25 @@ class SwingOptionEnv(gym.Env):
         Y_t = self.Y_path[self.current_step]
         
         # Recent volatility
-        self.recent_volatility = self._calculate_recent_volatility(self.current_step)
+        # self.recent_volatility = self._calculate_recent_volatility(self.current_step)
         
         # Days since last exercise
         days_since_exercise = (self.current_step - self.last_exercise_step 
                               if self.last_exercise_step >= 0 else self.current_step)
         
+        # State:
+        # - Payoff
+
         state = np.array([
-            spot_price / self.contract.strike,  # Normalized by strike
+            spot_price - self.contract.strike,  # Payoff
             self.q_exercised / self.contract.Q_max,  # Normalized cumulative exercise
             q_remaining / self.contract.Q_max,  # Normalized remaining capacity
             time_to_maturity / self.contract.maturity,  # Normalized time to maturity
             normalized_time,  # Progress through contract
+            spot_price, # Spot Price
             X_t,  # Mean-reverting component
             Y_t,  # Jump component  
-            self.recent_volatility,  # Recent realized volatility
+            # self.recent_volatility,  # Recent realized volatility
             days_since_exercise / self.contract.n_rights  # Normalized refraction time
         ], dtype=np.float32)
         return state
@@ -297,6 +304,6 @@ class SwingOptionEnv(gym.Env):
         self.episode_return = 0.0
         
         # Calculate initial volatility
-        self.recent_volatility = self._calculate_recent_volatility(current_idx=0)
+        # self.recent_volatility = self._calculate_recent_volatility(current_idx=0)
         
         return self._get_observation(), {}
