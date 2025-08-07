@@ -150,7 +150,7 @@ class Actor(nn.Module):
             nn.ReLU(inplace=True)
         )
         self.fc3 = nn.Linear(hidden_size, action_size)
-        
+        # self.output_activation = nn.Sigmoid()
         # Initialize weights
         self.reset_parameters()
         

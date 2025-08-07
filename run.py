@@ -28,6 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
 from src.lsm_swing_pricer import price_swing_option_lsm
+from src.fdm_swing_pricer import price_swing_option_fdm
 
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
@@ -220,6 +221,18 @@ class ConfigManager:
             type=int,
             default=256,
             help="Number of nodes per neural network layer, default is 256",
+        )
+        parser.add_argument(
+            "-epsilon",
+            type=float,
+            default=0.3,
+            help="Initial epsilon for exploration noise (default: 0.3)",
+        )
+        parser.add_argument(
+            "-epsilon_decay",
+            type=float,
+            default=1.0,
+            help="Epsilon decay rate per episode (default: 1.0)",
         )
         parser.add_argument(
             "--max_replay_size",
@@ -944,6 +957,9 @@ def run_training(
             csv_writer=csv_writer,
         )
     for current_path in range(1, args.n_paths + 1):
+        # Fix 3: Update episode count in PER for proper beta annealing
+        agent.update_episode_count(current_path)
+        
         # Use pre-generated training path for this episode (1:1 mapping, no cycling)
         path_idx = current_path - 1  # Direct mapping: episode i uses training path i
 
@@ -1101,7 +1117,11 @@ def main():
     )
 
     # Price with Quantlib - Finite Differences Method
-    
+    fdm_price = price_swing_option_fdm(
+        contract=swing_contract,
+        stochastic_process_params=stochastic_process_params,
+        tGrid=25, xGrid=25, yGrid=50
+    )
 
     print('\n\n\n\n' + '=' * 60)
     ############################################################################################
@@ -1145,6 +1165,8 @@ def main():
         TAU=args.tau,
         LEARN_EVERY=args.learn_every,
         LEARN_NUMBER=args.learn_number,
+        epsilon=args.epsilon,
+        epsilon_decay=args.epsilon_decay,
         device=device_str,
         paths=args.n_paths,
         min_replay_size=args.min_replay_size,

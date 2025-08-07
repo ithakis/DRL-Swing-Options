@@ -44,8 +44,8 @@ class Agent():
                       WEIGHT_DECAY = 0,#1e-2        # L2 weight decay
                       LEARN_EVERY = 1,
                       LEARN_NUMBER = 1,
-                      EPSILON = 1.0,
-                      EPSILON_DECAY = 1,
+                      epsilon = .3,
+                      epsilon_decay = 1,
                       device = "cpu",
                       paths = 100000,
                       min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
@@ -92,7 +92,7 @@ class Agent():
         self.TAU = TAU
         self.LEARN_EVERY = LEARN_EVERY
         self.LEARN_NUMBER = LEARN_NUMBER
-        self.EPSILON_DECAY = EPSILON_DECAY
+        self.epsilon_decay = epsilon_decay
         self.device = device
         self.seed = random.seed(random_seed)
         self.use_amp = use_amp  # Store AMP setting
@@ -189,7 +189,7 @@ class Agent():
         self.noise_type = noise_type
         if noise_type == "ou":
             self.noise = OUNoise(action_size, random_seed)
-            self.epsilon = EPSILON
+            self.epsilon = epsilon
         else:
             self.epsilon = 0.3
         print("Use Noise: ", noise_type)
@@ -363,8 +363,8 @@ class Agent():
         if self.per:
             td_error = Q_targets - Q_expected
             critic_loss = (td_error.pow(2) * weights).mean()
-            # Pre-compute priorities for efficiency
-            priorities = torch.clamp(torch.abs(td_error), -1, 1).detach()
+            # Fix 2: Use positive-only clipping for priorities
+            priorities = torch.clamp(torch.abs(td_error), 1e-6, float('inf')).detach()
         else:
             critic_loss = F.mse_loss(Q_expected, Q_targets)
             priorities = None
@@ -418,7 +418,7 @@ class Agent():
             self.memory.update_priorities(idx, priorities_np)
             
         # ----------------------- update epsilon and noise ----------------------- #
-        self.epsilon *= self.EPSILON_DECAY
+        self.epsilon *= self.epsilon_decay
         
         if self.noise_type == "ou":
             self.noise.reset()
@@ -605,11 +605,14 @@ class Agent():
             self.soft_update(self.critic_local, self.critic_target)
             self.soft_update(self.actor_local, self.actor_target)                     
             if self.per and hasattr(self.memory, 'update_priorities'):
-                priorities = np.clip(abs(td_error.sum(dim=1).mean(dim=1,keepdim=True).data.cpu().numpy().flatten()), -1, 1)
+                # Fix 1: Correct priority calculation - single mean across both quantile dimensions
+                priorities = np.abs(td_error.mean(dim=(1,2)).data.cpu().numpy())
+                # Fix 2: Clip to positive values only (priorities should be non-negative)
+                priorities = np.clip(priorities, 1e-6, np.inf)
                 self.memory.update_priorities(idx, priorities)
             # ----------------------- update epsilon and noise ----------------------- #
             
-            self.epsilon *= self.EPSILON_DECAY
+            self.epsilon *= self.epsilon_decay
             
             if self.noise_type == "ou":
                 self.noise.reset()
@@ -643,6 +646,11 @@ class Agent():
         print(f"Total: {total_params:,} parameters ({trainable_params:,} trainable)")
         return total_params, trainable_params
     
+    def update_episode_count(self, episode_count):
+        """Update episode count for proper PER beta annealing."""
+        if self.per and hasattr(self.memory, 'set_episode_count'):
+            self.memory.set_episode_count(episode_count)
+
 class OUNoise:
     """Ornstein-Uhlenbeck process."""
 

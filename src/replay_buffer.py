@@ -220,6 +220,10 @@ class CircularReplayBuffer:
         )
         return total_bytes / (1024 * 1024)
 
+    def set_episode_count(self, episode_count):
+        """Set episode count (no-op for non-prioritized replay)."""
+        pass
+
 
 class CircularNStepBuffer:
     """Efficient circular buffer for n-step return calculation."""
@@ -286,7 +290,7 @@ class PrioritizedReplay(object):
         self.beta_start = beta_start
         self.beta_paths = beta_paths
         self.device = device
-        self.path = 1 #for beta calculation
+        self.episode_count = 0  # Fix 3: Track episodes instead of sampling calls
         self.batch_size = batch_size
         self.capacity = capacity
         
@@ -355,16 +359,20 @@ class PrioritizedReplay(object):
         
         return n_step_buffer[0][0], n_step_buffer[0][1], Return, n_step_buffer[-1][3], n_step_buffer[-1][4]
 
-    def beta_by_path(self, path_idx):
+    def beta_by_episode(self, episode_idx):
         """
-        Linearly increases beta from beta_start to 1 over time from 1 to beta_paths.
+        Fix 3: Linearly increases beta from beta_start to 1 over episodes instead of sampling calls.
         
         3.4 ANNEALING THE BIAS (Paper: PER)
         We therefore exploit the flexibility of annealing the amount of importance-sampling
         correction over time, by defining a schedule on the exponent 
         that reaches 1 only at the end of learning. In practice, we linearly anneal from its initial value 0 to 1
         """
-        return min(1.0, self.beta_start + path_idx * (1.0 - self.beta_start) / self.beta_paths)
+        return min(1.0, self.beta_start + episode_idx * (1.0 - self.beta_start) / self.beta_paths)
+    
+    def set_episode_count(self, episode_count):
+        """Set the current episode count for proper beta annealing."""
+        self.episode_count = episode_count
     
     def add(self, state, action, reward, next_state, done):
         if self.iter_ == self.parallel_env:
@@ -454,8 +462,7 @@ class PrioritizedReplay(object):
         indices = np.clip(indices, 0, self.size - 1)  # Safety clamp
         
         # Calculate importance sampling weights vectorized
-        beta = self.beta_by_path(self.path)
-        self.path += 1
+        beta = self.beta_by_episode(self.episode_count)
         
         # Vectorized weight calculation
         probs = self._prob_alpha_cache[indices] / total
