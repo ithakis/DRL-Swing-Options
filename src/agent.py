@@ -20,7 +20,7 @@ except ImportError:
     from networks import IQN, Actor, Critic
     from replay_buffer import CircularReplayBuffer, PrioritizedReplay
 
-# TODO: Check for batch norm comparison! batch norm seems to have a big impact on final performance
+# TODO: Check for batch norm comparison - batch norm seems to have a big impact on final performance
 #       Also check if normal gaussian noise is enough. -> D4PG paper says there is no difference maybe chooseable parameter for the implementation
 
 class Agent():
@@ -51,7 +51,10 @@ class Agent():
                       min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
                       speed_mode=True,        # NEW: Enable speed optimizations
                       use_compile=False,       # NEW: Enable torch.compile optimization (disabled by default)
-                      use_amp=False           # NEW: Enable automatic mixed precision
+                      use_amp=False,           # NEW: Enable automatic mixed precision
+                      per_alpha=0.6,
+                      per_beta_start=0.4,
+                      per_beta_frames=100000
                       ):
         """Initialize an Agent object.
         
@@ -195,7 +198,10 @@ class Agent():
         print("Use Noise: ", noise_type)
         # Replay memory
         if per:
-            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1, beta_paths=paths)
+            self.memory = PrioritizedReplay(
+                BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1,
+                alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames
+            )
         else:
             self.memory = CircularReplayBuffer(
                 buffer_size=BUFFER_SIZE,
@@ -647,9 +653,12 @@ class Agent():
         return total_params, trainable_params
     
     def update_episode_count(self, episode_count):
-        """Update episode count for proper PER beta annealing."""
-        if self.per and hasattr(self.memory, 'set_episode_count'):
-            self.memory.set_episode_count(episode_count)
+        """Update frame count for proper PER beta annealing."""
+        if self.per and hasattr(self.memory, 'set_frame_count'):
+            # Convert episode to approximate frame count for PER
+            # Assuming each episode has ~250 steps on average for swing options
+            frame_count = episode_count * 250
+            self.memory.set_frame_count(frame_count)
 
 class OUNoise:
     """Ornstein-Uhlenbeck process."""

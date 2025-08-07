@@ -223,6 +223,10 @@ class CircularReplayBuffer:
     def set_episode_count(self, episode_count):
         """Set episode count (no-op for non-prioritized replay)."""
         pass
+    
+    def set_frame_count(self, frame_count):
+        """Set frame count (no-op for non-prioritized replay)."""
+        pass
 
 
 class CircularNStepBuffer:
@@ -276,24 +280,26 @@ class CircularNStepBuffer:
 
 class PrioritizedReplay(object):
     """
-    High-Performance Proportional Prioritization with Numpy optimizations.
+    Prioritized Experience Replay (PER) following DeepMind's implementation principles.
     
-    Key optimizations:
-    - Circular numpy arrays instead of deque for O(1) operations
-    - Vectorized priority sampling using cumulative sums
-    - Pre-allocated memory pools to avoid repeated allocations
-    - Efficient importance sampling weight calculation
-    - SIMD-optimized operations where possible
+    This implementation follows the proportional prioritization approach from:
+    "PRIORITIZED EXPERIENCE REPLAY" by Schaul et al.
+    
+    Key features:
+    - Proportional priority sampling based on TD-error magnitude
+    - Importance sampling with annealing β parameter
+    - Efficient sum-tree-like sampling using numpy cumsum
+    - Compatible with D4PG swing option pricing framework
     """
-    def __init__(self, capacity, batch_size, device, seed, gamma=0.99, n_step=1, parallel_env=1, alpha=0.6, beta_start = 0.4, beta_paths=100000):
-        self.alpha = alpha
-        self.beta_start = beta_start
-        self.beta_paths = beta_paths
+    def __init__(self, capacity, batch_size, device, seed, gamma=0.99, n_step=1, parallel_env=1, alpha=0.6, beta_start=0.4, beta_frames=100000):
+        # PER hyperparameters following the paper
+        self.alpha = alpha  # Priority exponent (0=uniform, 1=proportional)
+        self.beta_start = beta_start  # Initial importance sampling weight
+        self.beta_frames = beta_frames  # Frames to anneal β to 1.0
         self.device = device
-        self.episode_count = 0  # Fix 3: Track episodes instead of sampling calls
+        self.frame_count = 0  # Track frames (not episodes) for proper β annealing
         self.batch_size = batch_size
         self.capacity = capacity
-        
         # Circular buffer implementation with numpy arrays
         self.pos = 0
         self.size = 0  # Current number of stored experiences
@@ -306,9 +312,10 @@ class PrioritizedReplay(object):
         self.next_states: Optional[np.ndarray] = None  
         self.dones = np.empty(capacity, dtype=np.bool_)
         
-        # Efficient priority storage with numpy
+        # Priority storage - following DeepMind's approach
         self.priorities = np.ones(capacity, dtype=np.float32)
         self.max_priority = 1.0
+        self.min_priority = 1e-6  # Minimum priority to avoid zero probabilities
         
         # Random state for reproducibility and efficiency
         self.rng = np.random.RandomState(seed)
@@ -322,13 +329,17 @@ class PrioritizedReplay(object):
         
         # Performance optimizations
         self._prob_alpha_cache: Optional[np.ndarray] = None
+        self._cumsum_cache: Optional[np.ndarray] = None  # Cache cumulative sum
         self._prob_sum_cache = None
         self._cache_valid = False
+        self._cumsum_valid = False  # Separate flag for cumsum cache
         
         print("🚀 High-Performance PrioritizedReplay initialized:")
         print(f"  - Capacity: {capacity:,}")
         print(f"  - Batch size: {batch_size}")
-        print(f"  - Alpha: {alpha}")
+        print(f"  - Alpha (priority exponent): {alpha}")
+        print(f"  - Beta start (IS weight): {beta_start}")
+        print(f"  - Beta frames: {beta_frames}")
         print(f"  - N-step: {n_step}")
 
     def _initialize_arrays(self, state: np.ndarray, action: np.ndarray) -> None:
@@ -349,6 +360,7 @@ class PrioritizedReplay(object):
         
         # Initialize probability cache
         self._prob_alpha_cache = np.empty(self.capacity, dtype=np.float32)
+        self._cumsum_cache = np.empty(self.capacity, dtype=np.float32)  # Pre-allocate cumsum cache
         
         print("✅ PER arrays initialized successfully")
 
@@ -359,20 +371,26 @@ class PrioritizedReplay(object):
         
         return n_step_buffer[0][0], n_step_buffer[0][1], Return, n_step_buffer[-1][3], n_step_buffer[-1][4]
 
-    def beta_by_episode(self, episode_idx):
+    def beta_by_frame(self, frame_idx):
         """
-        Fix 3: Linearly increases beta from beta_start to 1 over episodes instead of sampling calls.
+        Linearly anneals β from beta_start to 1.0 over frames (following Acme implementation).
         
-        3.4 ANNEALING THE BIAS (Paper: PER)
-        We therefore exploit the flexibility of annealing the amount of importance-sampling
-        correction over time, by defining a schedule on the exponent 
-        that reaches 1 only at the end of learning. In practice, we linearly anneal from its initial value 0 to 1
+        This follows the annealing schedule from the PER paper:
+        "We therefore exploit the flexibility of annealing the amount of importance-sampling
+        correction over time, by defining a schedule on the exponent β that reaches 1 only at 
+        the end of learning."
+        
+        Args:
+            frame_idx: Current frame/step count
+            
+        Returns:
+            Current β value for importance sampling weight calculation
         """
-        return min(1.0, self.beta_start + episode_idx * (1.0 - self.beta_start) / self.beta_paths)
+        return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / self.beta_frames)
     
-    def set_episode_count(self, episode_count):
-        """Set the current episode count for proper beta annealing."""
-        self.episode_count = episode_count
+    def set_frame_count(self, frame_count):
+        """Set the current frame count for proper β annealing."""
+        self.frame_count = frame_count
     
     def add(self, state, action, reward, next_state, done):
         if self.iter_ == self.parallel_env:
@@ -429,10 +447,14 @@ class PrioritizedReplay(object):
         
     def sample(self):
         """
-        High-performance vectorized sampling with probability caching.
+        Sample experiences with proportional prioritization following DeepMind's approach.
+        
+        This implements the proportional prioritization from the PER paper where
+        the probability of sampling transition i is: P(i) = p_i^α / Σ_k p_k^α
         
         Returns:
             Tuple of (states, actions, rewards, next_states, dones, indices, weights)
+            where weights are importance sampling weights for bias correction
         """
         if self.size == 0:
             return None
@@ -445,29 +467,51 @@ class PrioritizedReplay(object):
         assert self.actions is not None, "Actions array not initialized"
         assert self.next_states is not None, "Next states array not initialized"
         assert self._prob_alpha_cache is not None, "Probability cache not initialized"
-            
-        # Update probability cache if needed
-        if not self._cache_valid:
-            self._update_probability_cache()
+        assert self._cumsum_cache is not None, "Cumsum cache not initialized"
         
-        # Vectorized sampling using cumulative sum method (much faster than choice with probabilities)
-        cumsum = np.cumsum(self._prob_alpha_cache[:self.size])
-        total = cumsum[-1]
+        # Increment frame count for β annealing
+        self.frame_count += 1
+            
+        # Performance optimization: Update caches lazily and in batches
+        update_threshold = max(10, self.batch_size // 4)  # Update every few steps
+        
+        # Update probability cache if needed (expensive operation)
+        if not self._cache_valid or (hasattr(self, '_update_counter') and self._update_counter > update_threshold):
+            self._update_probability_cache()
+            self._update_counter = 0  # Reset counter
+        
+        # Update cumsum cache if needed (less expensive, but still cached)
+        if not self._cumsum_valid:
+            self._update_cumsum_cache()
+        
+        # Fast sampling using pre-computed cumsum
+        total = self._cumsum_cache[self.size - 1]
         
         # Generate random values for sampling
         random_vals = self.rng.uniform(0, total, self.batch_size)
         
         # Use searchsorted for O(log n) sampling instead of O(n)
-        indices = np.searchsorted(cumsum, random_vals)
+        indices = np.searchsorted(self._cumsum_cache[:self.size], random_vals)
         indices = np.clip(indices, 0, self.size - 1)  # Safety clamp
         
-        # Calculate importance sampling weights vectorized
-        beta = self.beta_by_episode(self.episode_count)
+        # Calculate importance sampling weights vectorized (optimized)
+        beta = self.beta_by_frame(self.frame_count)
         
-        # Vectorized weight calculation
-        probs = self._prob_alpha_cache[indices] / total
-        weights = (self.size * probs) ** (-beta)
-        weights = weights / weights.max()
+        # Fast weight calculation using pre-computed probabilities
+        if total > 0:  # Avoid division by zero
+            probs = self._prob_alpha_cache[indices] / total
+            # Optimized weight calculation - avoid double exponentiation when possible
+            if beta == 1.0:
+                # When beta=1, weights are just inverse probabilities normalized
+                weights = 1.0 / (self.size * probs)
+                weights = weights / weights.max()
+            else:
+                weights = (self.size * probs) ** (-beta)
+                weights = weights / weights.max()  # Normalize for stability
+        else:
+            # Fallback for edge case
+            weights = np.ones(self.batch_size, dtype=np.float32)
+        
         weights = weights.astype(np.float32)
         
         # Vectorized batch extraction
@@ -496,19 +540,45 @@ class PrioritizedReplay(object):
         """Update cached probability calculations for efficient sampling."""
         if self.size == 0:
             return
+        
+        # Ensure cache is initialized
+        if self._prob_alpha_cache is None:
+            self._prob_alpha_cache = np.empty(self.capacity, dtype=np.float32)
+        if self._cumsum_cache is None:
+            self._cumsum_cache = np.empty(self.capacity, dtype=np.float32)
             
         # Vectorized priority to probability conversion
         priorities_slice = self.priorities[:self.size]
-        self._prob_alpha_cache = priorities_slice ** self.alpha
+        self._prob_alpha_cache[:self.size] = priorities_slice ** self.alpha
         self._cache_valid = True
+        self._cumsum_valid = False  # Cumsum needs to be recalculated
+    
+    def _update_cumsum_cache(self):
+        """Update cached cumulative sum for ultra-fast sampling."""
+        if self.size == 0 or not self._cache_valid:
+            return
+        
+        # Ensure cache is initialized
+        if self._prob_alpha_cache is None or self._cumsum_cache is None:
+            return
+            
+        # Use in-place cumsum for better performance
+        np.cumsum(self._prob_alpha_cache[:self.size], out=self._cumsum_cache[:self.size])
+        self._cumsum_valid = True
     
     def update_priorities(self, batch_indices, batch_priorities):
         """
-        Vectorized priority updates for maximum performance.
+        Update priorities based on TD-error magnitudes following DeepMind's approach.
+        
+        This follows the priority update rule from the PER paper:
+        p_i = (|δ_i| + ε)^α
+        
+        Where δ_i is the TD-error and ε is a small positive constant to ensure
+        that transitions with zero TD-error still have a non-zero probability.
         
         Args:
-            batch_indices: Numpy array or list of indices
-            batch_priorities: Numpy array or list of new priorities
+            batch_indices: Indices of experiences to update
+            batch_priorities: New priority values (should be |TD-error| magnitudes)
         """
         # Convert to numpy arrays if needed
         if not isinstance(batch_indices, np.ndarray):
@@ -516,8 +586,11 @@ class PrioritizedReplay(object):
         if not isinstance(batch_priorities, np.ndarray):
             batch_priorities = np.array(batch_priorities, dtype=np.float32)
         
-        # Ensure priorities are positive and handle edge cases
-        batch_priorities = np.maximum(batch_priorities.flatten(), 1e-6)
+        # Ensure priorities are positive and add small epsilon (following DeepMind)
+        batch_priorities = np.maximum(batch_priorities.flatten(), self.min_priority)
+        
+        # Clip indices to valid range
+        batch_indices = np.clip(batch_indices, 0, self.size - 1)
         
         # Vectorized priority update (much faster than loop)
         self.priorities[batch_indices] = batch_priorities
@@ -529,6 +602,10 @@ class PrioritizedReplay(object):
         
         # Invalidate cache
         self._cache_valid = False
+        self._cumsum_valid = False  # Also invalidate cumsum cache
+        
+        # Performance optimization: Only recalculate cache every N updates
+        self._update_counter = getattr(self, '_update_counter', 0) + 1
 
     def __len__(self):
         """Return current number of experiences in buffer."""

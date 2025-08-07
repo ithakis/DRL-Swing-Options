@@ -5,27 +5,30 @@
 
 # Monthly Swing Option Baseline:
 args=( 
-    # Training parameters - IMPROVED PATH GENERATION
-    -n_paths=16384 # 4096 or 8192 or 16384 or 32768
+    -n_paths=65536
     -eval_every=1024
-    -n_paths_eval=4096 # Generates exactly 4096 evaluation paths (shared between RL and LSM)
+    -n_paths_eval=4096
     -munchausen=0
-    -nstep=5
-    --gamma=0.99
+    -nstep=10
+    --per_alpha=0.6
+    --per_beta_start=0.4
+    --per_beta_frames=100000
+    --gamma=0.9998
     -learn_every=2
+    -learn_number=1
     -iqn=0
-    -noise=gauss                  # Use Gaussian noise instead of OU noise
-    -epsilon=0.5                   # Default epsilon for exploration noise - gaussian noise
-    -epsilon_decay=1.0             # Default epsilon decay rate
+    -noise=gauss
+    -epsilon=0.3
+    -epsilon_decay=1.0
     -per=1
-    --min_replay_size=10000    # Increase from 1000 to 5000
-    --max_replay_size=1000000     # Increase from 1e5 to 1e6
-    -t=0.00001
+    --min_replay_size=10000
+    --max_replay_size=100000
+    -t=0.0000
     -bs=64
     -layer_size=128
-    -lr_a=1e-05 # from lr_a=3e-4
-    -lr_c=2e-4 # from lr_c=3e-4
-    --compile=0 # Disable JIT compilation for debugging
+    -lr_a=1e-05
+    -lr_c=1e-4
+    --compile=0
     -n_cores=2
     
     ################################################################################
@@ -48,7 +51,7 @@ args=(
     --lam=6.0                   # Jump intensity (6 jumps per year average)
     --mu_J=0.3                  # Mean jump size (30%)
 )
-python run.py "${args[@]}" -name "MonthlySwing24" -seed 1
-# python run.py "${args[@]}" -name "MonthlySwing2" -seed 2 &
+# python run.py "${args[@]}" -name "MonthlySwing28_wLargeNetwork_64k_wPER_2" -seed 1 &
+python run.py "${args[@]}" -name "MonthlySwing28_wLargeNetwork_64k_wPER_1" -seed 2
 # python run.py "${args[@]}" -name "MonthlySwing3" -seed 3 &
 # python run.py "${args[@]}" -name "MonthlySwing4" -seed 4

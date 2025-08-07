@@ -27,6 +27,7 @@ def price_swing_option_lsm(
     n_bootstrap: int = 1000,
     seed: Optional[int] = None,
     csv_path: str = "swing_option_lsm_paths.csv",
+    _print_results: bool = False,
 ) -> Tuple[float, Tuple[float, float]]:
     """Price swing option using the Longstaff–Schwartz method.
 
@@ -115,7 +116,7 @@ def price_swing_option_lsm(
                 "q_t": q,
                 "payoff": pay,
             })
-    print(f'csv_path: {csv_path}')
+    if _print_results: print(f'csv_path: {csv_path}')
     pd.DataFrame(records).to_csv(csv_path, index=False)
 
     price_estimate = path_payoffs.mean()
@@ -126,8 +127,9 @@ def price_swing_option_lsm(
         boot_means[b] = path_payoffs[idx].mean()
     ci_low, ci_high = np.percentile(boot_means, [2.5, 97.5])
 
-    print(
-        f"Swing option price: {price_estimate:.4f}\n"
-        f"95% CI: [{ci_low:.4f}, {ci_high:.4f}]"
-    )
+    if _print_results: 
+        print(
+            f"Swing option price: {price_estimate:.4f}\n"
+            f"95% CI: [{ci_low:.4f}, {ci_high:.4f}]"
+        )
     return price_estimate, (ci_low, ci_high)

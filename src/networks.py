@@ -138,18 +138,23 @@ class Actor(nn.Module):
         # Set seed for reproducibility
         torch.manual_seed(seed)
         
-        # Network architecture with LayerNorm
+        # Network architecture with LayerNorm - 3 layers with 256 neurons each
         self.fc1 = nn.Sequential(
-            nn.Linear(state_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(state_size, 256, bias=True),
+            nn.LayerNorm(256),  # dont use BatchNorm1d, bad with RL
             nn.ReLU(inplace=True)
         )
         self.fc2 = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(256, 256, bias=True),
+            nn.LayerNorm(256), # dont use BatchNorm1d, bad with RL
             nn.ReLU(inplace=True)
         )
-        self.fc3 = nn.Linear(hidden_size, action_size)
+        self.fc3 = nn.Sequential(
+            nn.Linear(256, 256, bias=True),
+            nn.LayerNorm(256), # dont use BatchNorm1d, bad with RL
+            nn.ReLU(inplace=True)
+        )
+        self.fc4 = nn.Linear(256, action_size)
         # self.output_activation = nn.Sigmoid()
         # Initialize weights
         self.reset_parameters()
@@ -169,15 +174,15 @@ class Actor(nn.Module):
         """
         # Orthogonal initialization for hidden layers with ReLU gain
         # Only initialize Linear layers, not LayerNorm
-        linear_layers = [self.fc1[0], self.fc2[0]]  # index 0 = Linear
+        linear_layers = [self.fc1[0], self.fc2[0], self.fc3[0]]  # index 0 = Linear
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
                 torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
                 torch.nn.init.zeros_(layer.bias)
         
         # Small uniform initialization for final layer (actor output)
-        torch.nn.init.uniform_(self.fc3.weight, -3e-3, 3e-3)
-        torch.nn.init.zeros_(self.fc3.bias)
+        torch.nn.init.uniform_(self.fc4.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.fc4.bias)
     
     def compile_for_performance(self) -> None:
         """Compile the model for better performance in PyTorch 2.x.
@@ -210,14 +215,18 @@ class Actor(nn.Module):
         """
         x = self.fc1(state)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after LayerNorm/ReLU block
-        hidden_size = self.fc1[0].out_features  # Get hidden_size from Linear layer
+        hidden_size = 256  # All hidden layers have 256 neurons
         assert x.dim() == 2 and x.size(1) == hidden_size, f"LayerNorm integration broke shape. Expected {hidden_size}, got {x.size(1)}. State.shape: {state.shape}"
         
         x = self.fc2(x)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after second LayerNorm/ReLU block
         assert x.dim() == 2 and x.size(1) == hidden_size, f"LayerNorm integration broke shape. Expected {hidden_size}, got {x.size(1)}"
         
-        return torch.tanh(self.fc3(x))
+        x = self.fc3(x)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after third LayerNorm/ReLU block
+        assert x.dim() == 2 and x.size(1) == hidden_size, f"LayerNorm integration broke shape. Expected {hidden_size}, got {x.size(1)}"
+        
+        return torch.tanh(self.fc4(x))
 
 
 class Critic(nn.Module):
@@ -254,18 +263,23 @@ class Critic(nn.Module):
         # Set seed for reproducibility
         torch.manual_seed(seed)
         
-        # Network architecture with LayerNorm
+        # Network architecture with LayerNorm - 512, 512, 256 neurons
         self.fcs1 = nn.Sequential(
-            nn.Linear(state_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(state_size, 512, bias=True),
+            nn.LayerNorm(512), # dont use BatchNorm1d, bad with RL
             nn.ReLU(inplace=True)
         )
         self.fc2 = nn.Sequential(
-            nn.Linear(hidden_size + action_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(512 + action_size, 512, bias=True),
+            nn.LayerNorm(512), # dont use BatchNorm1d, bad with RL
             nn.ReLU(inplace=True)
         )
-        self.fc3 = nn.Linear(hidden_size, 1)
+        self.fc3 = nn.Sequential(
+            nn.Linear(512, 256, bias=True),
+            nn.LayerNorm(256), # dont use BatchNorm1d, bad with RL
+            nn.ReLU(inplace=True)
+        )
+        self.fc4 = nn.Linear(256, 1)
         
         # Initialize weights
         self.reset_parameters()
@@ -285,7 +299,7 @@ class Critic(nn.Module):
         """
         # Orthogonal initialization for hidden layers with ReLU gain
         # Only initialize Linear layers, not LayerNorm
-        linear_layers = [self.fcs1[0], self.fc2[0]]  # index 0 = Linear
+        linear_layers = [self.fcs1[0], self.fc2[0], self.fc3[0]]  # index 0 = Linear
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
                 torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
@@ -293,8 +307,8 @@ class Critic(nn.Module):
         
         # Initialize final layer to produce neutral Q-values
         # Small uniform initialization for the final critic layer
-        torch.nn.init.uniform_(self.fc3.weight, -3e-3, 3e-3)
-        torch.nn.init.zeros_(self.fc3.bias)
+        torch.nn.init.uniform_(self.fc4.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.fc4.bias)
 
     def compile_for_performance(self) -> None:
         """Compile the model for better performance in PyTorch 2.x.
@@ -328,15 +342,18 @@ class Critic(nn.Module):
         """
         xs = self.fcs1(state)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after LayerNorm/ReLU block
-        hidden_size = self.fcs1[0].out_features  # Get hidden_size from Linear layer
-        assert xs.dim() == 2 and xs.size(1) == hidden_size, "LayerNorm integration broke shape"
+        assert xs.dim() == 2 and xs.size(1) == 512, "LayerNorm integration broke shape - expected 512 neurons"
         
         x = torch.cat((xs, action), dim=1)
         x = self.fc2(x)  # Linear -> LayerNorm -> ReLU already included
         # Unit-test guard: verify shape after second LayerNorm/ReLU block
-        assert x.dim() == 2 and x.size(1) == hidden_size, "LayerNorm integration broke shape"
+        assert x.dim() == 2 and x.size(1) == 512, "LayerNorm integration broke shape - expected 512 neurons"
         
-        return self.fc3(x)
+        x = self.fc3(x)  # Linear -> LayerNorm -> ReLU already included
+        # Unit-test guard: verify shape after third LayerNorm/ReLU block
+        assert x.dim() == 2 and x.size(1) == 256, "LayerNorm integration broke shape - expected 256 neurons"
+        
+        return self.fc4(x)
 
 
 class IQN(nn.Module):

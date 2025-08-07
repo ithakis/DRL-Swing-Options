@@ -27,8 +27,8 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
-from src.lsm_swing_pricer import price_swing_option_lsm
 from src.fdm_swing_pricer import price_swing_option_fdm
+from src.lsm_swing_pricer import price_swing_option_lsm
 
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
@@ -170,6 +170,10 @@ class ConfigManager:
             "--device", type=str, default="cpu", help="Select training device [gpu/cpu], default = cpu"
         )
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
+        # PER hyperparameters
+        parser.add_argument("--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)")
+        parser.add_argument("--per_beta_start", type=float, default=0.4, help="PER: initial importance sampling weight beta_start (default: 0.4)")
+        parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
         parser.add_argument(
             "-per",
             type=int,
@@ -1115,15 +1119,16 @@ def main():
         poly_degree=3, seed=seed+1,
         csv_path=evaluations_dir + '/lsm.csv'
     )
-
+    print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")
     # Price with Quantlib - Finite Differences Method
     fdm_price = price_swing_option_fdm(
         contract=swing_contract,
         stochastic_process_params=stochastic_process_params,
         tGrid=25, xGrid=25, yGrid=50
     )
-
+    print(f"Quantlib's Finite Differences Method Price: {fdm_price:.4f}")
     print('\n\n\n\n' + '=' * 60)
+
     ############################################################################################
     ############################################################################################
     ############################################################################################
@@ -1146,10 +1151,9 @@ def main():
     state_size = train_env.observation_space.shape[0]   # pyright: ignore[reportOptionalSubscript]
     action_size = train_env.action_space.shape[0]       # pyright: ignore[reportOptionalSubscript]
 
-    # Create agent
     agent = Agent(
-        state_size=state_size,
-        action_size=action_size,
+        state_size=train_env.observation_space.shape[0],
+        action_size=train_env.action_space.shape[0],
         n_step=args.nstep,
         per=args.per,
         munchausen=args.munchausen,
@@ -1157,23 +1161,27 @@ def main():
         noise_type=args.noise,
         random_seed=seed,
         hidden_size=args.layer_size,
+        BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
-        BUFFER_SIZE=int(args.max_replay_size),
         GAMMA=args.gamma,
+        TAU=1e-3,
         LR_ACTOR=args.lr_a,
         LR_CRITIC=args.lr_c,
-        TAU=args.tau,
+        WEIGHT_DECAY=0,
         LEARN_EVERY=args.learn_every,
         LEARN_NUMBER=args.learn_number,
         epsilon=args.epsilon,
         epsilon_decay=args.epsilon_decay,
-        device=device_str,
+        device=device,
         paths=args.n_paths,
         min_replay_size=args.min_replay_size,
-        use_compile=bool(args.compile),
+        speed_mode=True,
+        use_compile=args.compile,
+        use_amp=False,
+        per_alpha=args.per_alpha,
+        per_beta_start=args.per_beta_start,
+        per_beta_frames=args.per_beta_frames
     )
-
-    # Training execution
     t0 = time.time()
 
     if args.saved_model is not None:

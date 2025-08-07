@@ -690,3 +690,27 @@ print("Strike-Price Relationship:")
 for K, price in zip(strikes, prices):
     print(f"K={K}: {price:.4f}")
 ```
+
+## PER Hyperparameters: Description and Tuning Guidance
+
+The following hyperparameters control the behavior of Prioritized Experience Replay (PER) in this framework. They can be set via command-line arguments (e.g., `--per_alpha`, `--per_beta_start`, `--per_beta_frames`) or in `run.sh`.
+
+| Hyperparameter      | Description                                                                 | Recommended Range | Tuning Guidance & Effects                                                                 |
+|--------------------|-----------------------------------------------------------------------------|-------------------|------------------------------------------------------------------------------------------|
+| `--per_alpha`      | Priority exponent α. Controls how much prioritization is used (0=uniform, 1=full PER). | 0.4 – 0.8         | Higher values focus more on high-TD-error samples. Too high can cause overfitting or instability. Start with 0.6. Lower for more uniform sampling if learning is unstable. |
+| `--per_beta_start` | Initial importance sampling correction β. Compensates for bias from prioritization. | 0.2 – 0.6         | Higher values correct bias more aggressively. Start with 0.4. If overfitting, increase β. If learning is slow, decrease β. β will anneal to 1.0 over training. |
+| `--per_beta_frames`| Number of frames (steps) over which β is annealed from `per_beta_start` to 1.0. | 50,000 – 500,000  | Larger values anneal β more slowly, which can help with long training runs. For short runs, use smaller values. |
+
+### Tuning Recommendations
+- **If learning is unstable or overfits:** Lower `per_alpha` (e.g., 0.4–0.5) and/or increase `per_beta_start` (e.g., 0.5–0.6).
+- **If learning is too slow or agent is not exploiting important experiences:** Increase `per_alpha` (e.g., 0.7–0.8).
+- **For very long training runs:** Increase `per_beta_frames` to anneal β more slowly.
+- **For short experiments:** Decrease `per_beta_frames` so β reaches 1.0 sooner.
+- **Always monitor**: Option price convergence, loss curves, and buffer utilization when tuning these parameters.
+
+**Default values:**
+- `--per_alpha=0.6`
+- `--per_beta_start=0.4`
+- `--per_beta_frames=100000`
+
+These settings provide a good balance for most swing option pricing tasks. Adjust as needed for your specific contract complexity and training duration.
