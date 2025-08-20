@@ -1,706 +1,335 @@
 import copy
-
-# Performance monitoring imports
-import gc
 import random
+from typing import Tuple
 
 import numpy as np
-import psutil
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 
 try:
-    # Try relative imports first (when called from run.py)
     from .networks import IQN, Actor, Critic
     from .replay_buffer import CircularReplayBuffer, PrioritizedReplay
 except ImportError:
-    # Fall back to absolute imports (when called from notebook or directly)
     from networks import IQN, Actor, Critic
     from replay_buffer import CircularReplayBuffer, PrioritizedReplay
 
-# TODO: Check for batch norm comparison - batch norm seems to have a big impact on final performance
-#       Also check if normal gaussian noise is enough. -> D4PG paper says there is no difference maybe chooseable parameter for the implementation
 
-class Agent():
-    """Interacts with and learns from the environment."""
-    
-    def __init__(self, state_size,
-                      action_size,
-                      n_step,
-                      per, 
-                      munchausen,
-                      distributional,
-                      noise_type,
-                      random_seed,
-                      hidden_size,
-                      BUFFER_SIZE = int(1e6),  # replay buffer size
-                      BATCH_SIZE = 128,        # minibatch size
-                      GAMMA = 0.99,            # discount factor
-                      TAU = 1e-3,              # for soft update of target parameters
-                      LR_ACTOR = 1e-4,         # learning rate of the actor 
-                      LR_CRITIC = 1e-4,        # learning rate of the critic
-                      WEIGHT_DECAY = 0,#1e-2        # L2 weight decay
-                      LEARN_EVERY = 1,
-                      LEARN_NUMBER = 1,
-                      epsilon = .3,
-                      epsilon_decay = 1,
-                      device = "cpu",
-                      paths = 100000,
-                      min_replay_size=None,     # NEW: Minimum replay buffer size before learning starts
-                      speed_mode=True,        # NEW: Enable speed optimizations
-                      use_compile=False,       # NEW: Enable torch.compile optimization (disabled by default)
-                      use_amp=False,           # NEW: Enable automatic mixed precision
-                      per_alpha=0.6,
-                      per_beta_start=0.4,
-                      per_beta_frames=100000
-                      ):
-        """Initialize an Agent object.
-        
-        Params
-        ======
-            state_size (int): dimension of each state
-            action_size (int): dimension of each action
-            random_seed (int): random seed
-        """
-        # Convert device string to torch device object if needed
+class Agent:
+    """Stable Agent implementation with diagnostics."""
+    def __init__(self, state_size, action_size, n_step, per, munchausen, distributional, noise_type, random_seed, hidden_size,
+                 BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=1e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
+                 WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
+                 device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
+                 final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7, **kwargs):
+        # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
-            if device.lower() == "cuda" or device.lower() == "gpu":
-                if torch.cuda.is_available():
-                    device = torch.device("cuda")
-                else:
-                    device = torch.device("cpu")
-            else:
-                device = torch.device("cpu")
-        
-        # CPU-specific optimizations
-        if device.type == 'cpu':
-            # Enable optimized CPU kernels if available
-            if hasattr(torch.backends, 'mkl'):
-                torch.backends.mkl.enabled = True
-            if hasattr(torch.backends, 'mkldnn'):
-                torch.backends.mkldnn.enabled = True
-            
-            
+            device = torch.device('cuda' if device.lower() in ('cuda', 'gpu') and torch.cuda.is_available() else 'cpu')
+        self.device = device
         self.state_size = state_size
         self.action_size = action_size
-        self.BUFFER_SIZE = BUFFER_SIZE
-        self.BATCH_SIZE = BATCH_SIZE
         self.per = per
         self.munchausen = munchausen
-        self.n_step = n_step
         self.distributional = distributional
         self.GAMMA = GAMMA
-        self.TAU = TAU
+        self.t = t
+        self.n_step = n_step
+        self.BUFFER_SIZE = BUFFER_SIZE
+        self.BATCH_SIZE = BATCH_SIZE
         self.LEARN_EVERY = LEARN_EVERY
         self.LEARN_NUMBER = LEARN_NUMBER
+        self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
-        self.device = device
-        self.seed = random.seed(random_seed)
-        self.use_amp = use_amp  # Store AMP setting
-        
-        # Initialize minimum replay size - use buffer size as fallback if None
-        if min_replay_size is None:
-            self.min_replay_size = BUFFER_SIZE
-        else:
-            self.min_replay_size = min_replay_size
-        
-        print(f"🔄 Minimum replay buffer size set to {self.min_replay_size:,} samples before learning starts")
-        
-        # Initialize AMP scaler if requested
-        if self.use_amp and device.type == 'cuda':
-            from torch.cuda.amp import GradScaler
-            self.scaler = GradScaler()
-            print("✅ Automatic Mixed Precision (AMP) enabled")
-        else:
-            self.scaler = None
-            if self.use_amp:
-                print("⚠️ AMP requested but not available (GPU required)")
-        # distributional Values
-        self.N = 32
-        self.entropy_coeff = 0.001
-        # munchausen values
-        self.entropy_tau = 0.03
-        self.lo = -1
-        self.alpha = 0.9
-        
-        self.eta = torch.tensor([.1], dtype=torch.float32).to(device)
-        
-        print("Using: ", device)
-        
-        # Actor Network (w/ Target Network)
+        random.seed(random_seed)
+        torch.manual_seed(random_seed)
+
+        self.min_replay_size = min_replay_size or BATCH_SIZE * 10
+
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-
         self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
 
-        # Critic Network (w/ Target Network)
-        if self.distributional:
+        if distributional:
+            self.N = 32
             self.critic_local = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
             self.critic_target = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
         else:
-            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=256).to(device)
-            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=256).to(device)
-        
+            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
+            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
         self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)
 
-        print("Actor: \n", self.actor_local)
-        print("\nCritic: \n", self.critic_local)
+        self.entropy_tau = 0.03
+        self.lo = -1.0
+        self.alpha = 0.9
 
-        # Apply torch.compile with optimized settings
-        if use_compile and hasattr(torch, 'compile'):
-            print("Compiling models with torch.compile...")
-            try:
-                # Store original networks before compilation
-                self._actor_local_orig = self.actor_local
-                self._actor_target_orig = self.actor_target
-                self._critic_local_orig = self.critic_local
-                self._critic_target_orig = self.critic_target
-                
-                # Use appropriate compile mode based on device and network size
-                if device.type == 'cpu':
-                    # For CPU and small networks, use 'default' mode for faster compilation
-                    # with minimal overhead while still getting some optimization benefits
-                    compile_mode = 'default'
-                    dynamic_setting = True  # Allow dynamic shapes to reduce recompilation
-                    print("🚀 Using CPU-optimized torch.compile settings (mode: default, dynamic: True)")
-                else:
-                    # For GPU, use reduce-overhead mode for better balance
-                    compile_mode = 'reduce-overhead'
-                    dynamic_setting = True
-                    print("🚀 Using GPU-optimized torch.compile settings (mode: reduce-overhead, dynamic: True)")
-                    
-                # torch.compile mode explanation:
-                # - 'default': Balanced compilation time vs runtime performance (best for small networks)
-                # - 'reduce-overhead': Optimizes for frequent model calls (good for RL)  
-                # - 'max-autotune': Maximum optimization but high compilation overhead (GPU + large models)
-                # - dynamic=True: Reduces recompilation when input shapes vary
-
-                self.actor_local = torch.compile(self.actor_local, mode=compile_mode, dynamic=dynamic_setting)
-                self.actor_target = torch.compile(self.actor_target, mode=compile_mode, dynamic=dynamic_setting)
-                self.critic_local = torch.compile(self.critic_local, mode=compile_mode, dynamic=dynamic_setting)
-                self.critic_target = torch.compile(self.critic_target, mode=compile_mode, dynamic=dynamic_setting)
-                print(f"✅ All models successfully compiled with torch.compile (mode: {compile_mode}, dynamic: {dynamic_setting})")
-                
-            except Exception as e:
-                print(f"⚠️ torch.compile failed: {e}")
-                print("Falling back to non-compiled models")
-        elif use_compile:
-            print("⚠️ torch.compile not available in this PyTorch version")
-        # Noise process
-        self.noise_type = noise_type
-        if noise_type == "ou":
-            self.noise = OUNoise(action_size, random_seed)
-            self.epsilon = epsilon
-        else:
-            self.epsilon = 0.3
-        print("Use Noise: ", noise_type)
-        # Replay memory
         if per:
-            self.memory = PrioritizedReplay(
-                BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step, parallel_env=1,
-                alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames
-            )
+            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step,
+                                            parallel_env=1, alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames)
         else:
-            self.memory = CircularReplayBuffer(
-                buffer_size=BUFFER_SIZE,
-                batch_size=BATCH_SIZE, 
-                n_step=n_step,
-                parallel_env=1,
-                device=device,
-                seed=random_seed,
-                gamma=GAMMA,
-                use_memmap=BUFFER_SIZE > 500000  # Use memory mapping for large buffers
-            )
-            print("✅ Using optimized CircularReplayBuffer")
-        
-        if distributional:
-            self.learn = self.learn_distribution
-        else:
-            self.learn = self.learn_
+            self.memory = CircularReplayBuffer(buffer_size=BUFFER_SIZE, batch_size=BATCH_SIZE, n_step=n_step, parallel_env=1,
+                                                device=device, seed=random_seed, gamma=GAMMA, use_memmap=BUFFER_SIZE > 500000)
 
-        print("Using PER: ", per)    
-        print("Using Munchausen RL: ", munchausen)
-        
-        # Performance optimization settings
-        self.performance_monitor = True
-        self.memory_cleanup_frequency = 1000
-        self.memory_threshold_mb = 8000  # 8GB threshold
+        self.final_lr_fraction = final_lr_fraction
+        self.total_episodes = total_episodes or 10000
+        self.warmup_frac = warmup_frac
+        self.min_lr = min_lr
+        warmup_episodes = int(self.total_episodes * warmup_frac)
+
+        def lr_lambda(step: int, init_lr: float):
+            if final_lr_fraction >= 1.0:
+                return 1.0
+            if step < warmup_episodes:
+                return (step + 1) / max(1, warmup_episodes)
+            decay_steps = step - warmup_episodes
+            total_decay = max(1, self.total_episodes - warmup_episodes)
+            frac = final_lr_fraction ** (decay_steps / total_decay)
+            return max(min_lr / init_lr, frac)
+
+        if final_lr_fraction < 1.0:
+            self.actor_scheduler = optim.lr_scheduler.LambdaLR(self.actor_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_ACTOR))
+            self.critic_scheduler = optim.lr_scheduler.LambdaLR(self.critic_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_CRITIC))
+        else:
+            self.actor_scheduler = None
+            self.critic_scheduler = None
+
+        self.learn = self.learn_distribution if distributional else self.learn_
         self.step_counter = 0
-        
-        print("🚀 Performance optimizations enabled:")
-        print(f"  - Memory monitoring: {self.performance_monitor}")
-        print(f"  - Memory cleanup frequency: {self.memory_cleanup_frequency}")
-        print(f"  - Memory threshold: {self.memory_threshold_mb} MB")
-        print("  - Always using optimized CircularReplayBuffer (when PER=False)")
+        self._last_td_percentiles = None
+        self._last_target_drift = None
+        self._last_iqn_spread = None
+        self.noise = OUNoise(action_size, random_seed) if noise_type == 'ou' else None
+        self._episode_count = 0
 
-        
-    def step(self, state, action, reward, next_state, done, timestamp, writer):
-        """Save experience in replay memory, and use random sample from buffer to learn."""
-        self.step_counter += 1
-        
-        # Save experience / reward
-        self.memory.add(state, action, reward, next_state, done)
+    def update_episode_count(self, episode: int):
+        """Update internal episode counter (used for PER beta annealing in caller)."""
+        self._episode_count = episode
 
-        # Performance monitoring
-        perf_info = self.monitor_performance()
-        
-        # Memory cleanup and optimization
-        self.cleanup_memory()
-        self.optimize_memory_usage()
+    def step_lr_schedulers(self, episode: int):
+        if self.actor_scheduler:
+            self.actor_scheduler.step()
+        if self.critic_scheduler:
+            self.critic_scheduler.step()
 
-        # Learn only after minimum replay size is reached and we have enough samples
-        buffer_has_min_samples = len(self.memory) >= self.min_replay_size
-        buffer_has_batch_samples = len(self.memory) > self.BATCH_SIZE
-        
-        if buffer_has_min_samples and buffer_has_batch_samples and timestamp % self.LEARN_EVERY == 0:
-            losses = None
-            for _ in range(self.LEARN_NUMBER):
-                experiences = self.memory.sample()
-                losses = self.learn(experiences, self.GAMMA)
-            
-            # Log losses if computed
-            if losses is not None:
-                writer.add_scalar("Critic_loss", losses[0], timestamp)
-                writer.add_scalar("Actor_loss", losses[1], timestamp)
-            
-            # Log performance metrics
-            if perf_info:
-                writer.add_scalar("Performance/Memory_MB", perf_info['memory_mb'], timestamp)
-                writer.add_scalar("Performance/Buffer_Fill_Ratio", perf_info['buffer_fill_ratio'], timestamp)
-                
-        elif not buffer_has_min_samples:
-            # Log initial collection progress
-            collection_progress = len(self.memory) / self.min_replay_size * 100
-            if timestamp % 1000 == 0:  # Log every 1000 steps during initial collection
-                writer.add_scalar("Collection_Progress", collection_progress, timestamp)
-                print(f"\r🔄 Collecting samples: {collection_progress:.1f}% ({len(self.memory):,}/{self.min_replay_size:,} samples)", end="")
-
-    def act(self, state, add_noise=True):
-        """Returns actions for given state as per current policy."""
-        state = torch.from_numpy(state).float().to(self.device, non_blocking=True)
-
-        assert state.shape == (state.shape[0], self.state_size), "shape: {}".format(state.shape)
-        
-        # Handle both compiled and non-compiled models
-        if hasattr(self, '_actor_local_orig'):
-            # Use original network for eval/train mode switching
-            actor_network = self._actor_local_orig
-        else:
-            actor_network = self.actor_local
-            
-        # More efficient inference with torch.no_grad()
-        actor_network.eval()
+    def act(self, state: np.ndarray, add_noise: bool = True):
+        state_t = torch.from_numpy(state).float().to(self.device)
+        self.actor_local.eval()
         with torch.no_grad():
-            action = self.actor_local(state).cpu().numpy()
-        actor_network.train()
-        
-        if add_noise:
-            if self.noise_type == "ou":
-                action += self.noise.sample() * self.epsilon
-            else:
-                # More efficient noise generation
-                noise = np.random.normal(0, self.epsilon, size=action.shape)
-                action += noise
-                
+            action = self.actor_local(state_t).cpu().numpy()
+        self.actor_local.train()
+        if add_noise and self.noise is not None:
+            action += self.noise.sample() * self.epsilon
+        elif add_noise and self.noise is None:
+            action += np.random.normal(0, self.epsilon, size=action.shape)
         return action
 
-    def reset(self):
-        self.noise.reset()
+    def step(self, state, action, reward, next_state, done, timestamp, writer):
+        self.step_counter += 1
+        self.memory.add(state, action, reward, next_state, done)
+        if len(self.memory) < self.min_replay_size or len(self.memory) <= self.BATCH_SIZE:
+            if timestamp % 1000 == 0:
+                writer.add_scalar("Collection_Progress", len(self.memory) / self.min_replay_size * 100, timestamp)
+            return
+        if timestamp % self.LEARN_EVERY != 0:
+            return
+        last_batch = None
+        losses = None
+        for _ in range(self.LEARN_NUMBER):
+            last_batch = self.memory.sample()
+            losses = self.learn(last_batch, self.GAMMA)
+        if losses:
+            writer.add_scalar("Critic_loss", losses[0], timestamp)
+            writer.add_scalar("Actor_loss", losses[1], timestamp)
+        if last_batch:
+            self._log_batch_diagnostics(last_batch, timestamp, writer)
+        if self.per and hasattr(self.memory, 'get_priority_stats') and timestamp % (self.LEARN_EVERY * 20) == 0:
+            for k, v in self.memory.get_priority_stats().items():
+                writer.add_scalar(f"PER/{k}", v, timestamp)
 
-    def learn_(self, experiences, gamma):
-        """Update policy and value parameters using given batch of experience tuples.
-        Q_targets = r + γ * critic_target(next_state, actor_target(next_state))
-        where:
-            actor_target(state) -> action
-            critic_target(state, action) -> Q-value
-
-        Params
-        ======
-            experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
-            gamma (float): discount factor
-        """
+    def learn_(self, experiences, gamma) -> Tuple[float, float]:
         states, actions, rewards, next_states, dones, idx, weights = experiences
-
-        # Optimized tensor operations - avoid redundant device transfers
-        if not states.is_cuda and self.device.type == 'cuda':
-            states = states.to(self.device, non_blocking=True)
-            actions = actions.to(self.device, non_blocking=True)
-            rewards = rewards.to(self.device, non_blocking=True)
-            next_states = next_states.to(self.device, non_blocking=True)
-            dones = dones.to(self.device, non_blocking=True)
-            if weights is not None:
-                weights = weights.to(self.device, non_blocking=True)
-        
-        # ---------------------------- update critic ---------------------------- #
-        # Use context manager for better performance and memory management
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        rewards = rewards.to(self.device)
+        next_states = next_states.to(self.device)
+        dones = dones.to(self.device)
+        if weights is not None:
+            weights = weights.to(self.device)
         with torch.no_grad():
+            next_actions = self.actor_target(next_states)
+            q_next = self.critic_target(next_states, next_actions)
             if not self.munchausen:
-                # Get predicted next-state actions and Q values from target models
-                actions_next = self.actor_target(next_states)
-                Q_targets_next = self.critic_target(next_states, actions_next)
-                # Compute Q targets for current states (y_i)
-                Q_targets = rewards + (gamma**self.n_step * Q_targets_next * (1 - dones.float()))
+                q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
             else:
-                actions_next = self.actor_target(next_states)
-                q_t_n = self.critic_target(next_states, actions_next)
-                # calculate log-pi - more efficient computation
-                logsum = torch.logsumexp(q_t_n / self.entropy_tau, 1, keepdim=True)
-                tau_log_pi_next = q_t_n - self.entropy_tau * logsum
-                
-                pi_target = F.softmax(q_t_n / self.entropy_tau, dim=1)
-                Q_target = (self.GAMMA**self.n_step * (pi_target * (q_t_n - tau_log_pi_next) * (1 - dones.float())))
-
-                if self.distributional:
-                    q_k_target, _ = self.critic_target(states, actions)
-                    q_k_target = q_k_target.mean(dim=1, keepdim=True)
-                else:
-                    q_k_target = self.critic_target(states, actions)
-                    
-                tau_log_pik = q_k_target - self.entropy_tau * torch.logsumexp(q_k_target / self.entropy_tau, 1, keepdim=True)
-                # calc munchausen reward with more efficient clamping
-                munchausen_reward = rewards + self.alpha * torch.clamp(tau_log_pik, min=self.lo, max=0)
-                Q_targets = munchausen_reward + Q_target
-
-        # Compute critic loss - more efficient forward pass
-        Q_expected = self.critic_local(states, actions)
-        
+                logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
+                tau_log_pi_next = q_next - self.entropy_tau * logsum
+                pi = F.softmax(q_next / self.entropy_tau, dim=1)
+                q_target = rewards + (self.GAMMA ** self.n_step) * (pi * (q_next - tau_log_pi_next) * (1 - dones.float()))
+        q_expected = self.critic_local(states, actions)
         if self.per:
-            td_error = Q_targets - Q_expected
-            critic_loss = (td_error.pow(2) * weights).mean()
-            # Fix 2: Use positive-only clipping for priorities
-            priorities = torch.clamp(torch.abs(td_error), 1e-6, float('inf')).detach()
+            td = q_target - q_expected
+            critic_loss = (td.pow(2) * weights).mean()
+            with torch.no_grad():
+                abs_td = td.abs().flatten()
+                if abs_td.numel() > 10:
+                    self._last_td_percentiles = (
+                        torch.quantile(abs_td, 0.5).item(),
+                        torch.quantile(abs_td, 0.9).item(),
+                        torch.quantile(abs_td, 0.99).item()
+                    )
+            priorities = td.abs().detach().clamp_min(1e-6)
         else:
-            critic_loss = F.mse_loss(Q_expected, Q_targets)
+            critic_loss = F.mse_loss(q_expected, q_target)
             priorities = None
-            
-        # Optimize critic with improved gradient handling
-        self.critic_optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
-        
-        # Use AMP if available for faster training
-        if self.scaler is not None:
-            with torch.cuda.amp.autocast():
-                critic_loss_scaled = self.scaler.scale(critic_loss)
-            critic_loss_scaled.backward()
-            self.scaler.unscale_(self.critic_optimizer)
-            # Use original network for gradient clipping if compiled
-            critic_params = self._critic_local_orig.parameters() if hasattr(self, '_critic_local_orig') else self.critic_local.parameters()
-            clip_grad_norm_(critic_params, 1.0)
-            self.scaler.step(self.critic_optimizer)
-            self.scaler.update()
-        else:
-            critic_loss.backward()
-            critic_params = self._critic_local_orig.parameters() if hasattr(self, '_critic_local_orig') else self.critic_local.parameters()
-            clip_grad_norm_(critic_params, 1.0)
-            self.critic_optimizer.step()
-
-        # ---------------------------- update actor ---------------------------- #
-        # Compute actor loss with shared forward pass
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        clip_grad_norm_(self.critic_local.parameters(), 1.0)
+        self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
         actor_loss = -self.critic_local(states, actions_pred).mean()
-        
-        # Optimize actor
-        self.actor_optimizer.zero_grad(set_to_none=True)
-        
-        if self.scaler is not None:
-            with torch.cuda.amp.autocast():
-                actor_loss_scaled = self.scaler.scale(actor_loss)
-            actor_loss_scaled.backward()
-            self.scaler.unscale_(self.actor_optimizer)
-            self.scaler.step(self.actor_optimizer)
-            self.scaler.update()
-        else:
-            actor_loss.backward()
-            self.actor_optimizer.step()
-
-        # ----------------------- update target networks ----------------------- #
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        clip_grad_norm_(self.actor_local.parameters(), 1.0)
+        self.actor_optimizer.step()
+        if self.step_counter % 200 == 0:
+            with torch.no_grad():
+                tgt_q = self.critic_target(states, self.actor_target(states))
+                self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
         self.soft_update(self.actor_local, self.actor_target)
-        
-        # Update priorities efficiently
         if self.per and priorities is not None and hasattr(self.memory, 'update_priorities'):
-            priorities_np = priorities.cpu().numpy().flatten()
-            self.memory.update_priorities(idx, priorities_np)
-            
-        # ----------------------- update epsilon and noise ----------------------- #
+            self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
         self.epsilon *= self.epsilon_decay
-        
-        if self.noise_type == "ou":
+        if self.noise is not None:
             self.noise.reset()
-            
-        # Return detached losses for logging
-        return critic_loss.detach().cpu().item(), actor_loss.detach().cpu().item()
+        return critic_loss.item(), actor_loss.item()
 
-    
-    
-    
-    def monitor_performance(self):
-        """Monitor memory usage and performance metrics."""
-        if not self.performance_monitor:
-            return {}
-            
-        # Get memory usage
-        memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-        
-        # Get buffer-specific metrics
-        buffer_memory_mb = 0.0
-        if hasattr(self.memory, 'get_memory_usage'):
-            try:
-                buffer_memory_mb = self.memory.get_memory_usage()
-            except (AttributeError, TypeError):
-                pass  # Older buffer implementations don't have this method
-        
-        return {
-            'memory_mb': memory_mb,
-            'buffer_size': len(self.memory),
-            'buffer_fill_ratio': len(self.memory) / self.BUFFER_SIZE,
-            'buffer_memory_mb': buffer_memory_mb
-        }
-    
-    def cleanup_memory(self, force=False):
-        """Perform memory cleanup operations."""
-        if not force and self.step_counter % self.memory_cleanup_frequency != 0:
-            return
-            
-        # Get current memory usage
-        memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-        
-        # Perform cleanup if memory usage is high
-        if memory_mb > self.memory_threshold_mb or force:
-            print(f"🧹 Memory cleanup: {memory_mb:.1f} MB -> ", end="")
-            
-            # Garbage collection
-            gc.collect()
-            
-            # CUDA cache cleanup if available
-            if self.device.type == 'cuda':
-                torch.cuda.empty_cache()
-            
-            # Check memory after cleanup
-            new_memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-            print(f"{new_memory_mb:.1f} MB (saved {memory_mb - new_memory_mb:.1f} MB)")
-            
-            # Reset compiled models if memory is still high
-            if new_memory_mb > self.memory_threshold_mb * 1.2 and hasattr(self, '_actor_local_orig'):
-                print("🔄 Resetting compiled models to prevent memory bloat...")
-                self._reset_compiled_models()
-    
-    def _reset_compiled_models(self):
-        """Reset compiled models to prevent memory accumulation."""
-        try:
-            # Restore original models
-            self.actor_local = self._actor_local_orig
-            self.actor_target = self._actor_target_orig
-            self.critic_local = self._critic_local_orig
-            self.critic_target = self._critic_target_orig
-            
-            # Recompile with fresh state
-            if hasattr(torch, 'compile'):
-                compile_mode = 'default' if self.device.type == 'cpu' else 'reduce-overhead'
-                self.actor_local = torch.compile(self.actor_local, mode=compile_mode, dynamic=True)
-                self.actor_target = torch.compile(self.actor_target, mode=compile_mode, dynamic=True)
-                self.critic_local = torch.compile(self.critic_local, mode=compile_mode, dynamic=True)
-                self.critic_target = torch.compile(self.critic_target, mode=compile_mode, dynamic=True)
-                print("✅ Models recompiled successfully")
-        except Exception as e:
-            print(f"⚠️ Model reset failed: {e}")
-
-    def soft_update(self, local_model, target_model):
-        """Soft update model parameters with improved efficiency.
-        θ_target = τ*θ_local + (1 - τ)*θ_target
-
-        Params
-        ======
-            local_model: PyTorch model (weights will be copied from)
-            target_model: PyTorch model (weights will be copied to)
-            tau (float): interpolation parameter 
-        """
-        # More efficient soft update using torch operations
+    def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
+        states, actions, rewards, next_states, dones, idx, weights = experiences
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        rewards = rewards.to(self.device)
+        next_states = next_states.to(self.device)
+        dones = dones.to(self.device)
+        if weights is not None:
+            weights = weights.to(self.device)
         with torch.no_grad():
-            for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-                # Use in-place operations for better memory efficiency
-                target_param.data.mul_(1.0 - self.TAU)
-                target_param.data.add_(local_param.data, alpha=self.TAU)
-
-
-    def learn_distribution(self, experiences, gamma):
-            """Update policy and value parameters using given batch of experience tuples.
-            Q_targets = r + γ * critic_target(next_state, actor_target(next_state))
-            where:
-                actor_target(state) -> action
-                critic_target(state, action) -> Q-value
-
-            Params
-            ======
-                experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
-                gamma (float): discount factor
-            """
-            states, actions, rewards, next_states, dones, idx, weights = experiences
-
-            # ---------------------------- update critic ---------------------------- #
-            # Get predicted next-state actions and Q values from target models
-
-            # Get max predicted Q values (for next states) from target model
+            next_actions = self.actor_target(next_states)
+            qt_next, _ = self.critic_target(next_states, next_actions, self.N)
+            qt_next = qt_next.transpose(1, 2)
             if not self.munchausen:
-                with torch.no_grad():
-                    next_actions = self.actor_local(next_states)
-                    Q_targets_next, _ = self.critic_target(next_states, next_actions, self.N)
-                    Q_targets_next = Q_targets_next.transpose(1,2)
-                # Compute Q targets for current states 
-                Q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step * Q_targets_next.to(self.device) * (1. - dones.float().unsqueeze(-1)))
+                q_targets = rewards.unsqueeze(-1) + (self.GAMMA ** self.n_step) * qt_next * (1 - dones.float().unsqueeze(-1))
             else:
-                with torch.no_grad():
-                    #### CHECK FOR THE SHAPES!!
-                    actions_next = self.actor_target(next_states.to(self.device))
-                    Q_targets_next, _ = self.critic_target(next_states.to(self.device), actions_next.to(self.device), self.N)
+                q_mean = qt_next.mean(-1)
+                logsum = torch.logsumexp(q_mean / self.entropy_tau, dim=1, keepdim=True)
+                tau_log_pi_next = (q_mean - self.entropy_tau * logsum).unsqueeze(1)
+                pi_target = F.softmax(q_mean / self.entropy_tau, dim=1).unsqueeze(1)
+                q_targets = rewards.unsqueeze(-1) + (self.GAMMA ** self.n_step) * (pi_target * (qt_next - tau_log_pi_next) * (1 - dones.float().unsqueeze(-1)))
+        q_expected, taus = self.critic_local(states, actions, self.N)
+        td_error = q_targets - q_expected
+        huber = calculate_huber_loss(td_error, 1.0)
+        quantile_loss = (torch.abs(taus - (td_error.detach() < 0).float()) * huber).sum(dim=1).mean(dim=1)
+        if self.per:
+            critic_loss = (quantile_loss.unsqueeze(1) * weights).mean()
+        else:
+            critic_loss = quantile_loss.mean()
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        clip_grad_norm_(self.critic_local.parameters(), 1.0)
+        self.critic_optimizer.step()
 
-                    q_t_n = Q_targets_next.mean(1)
-                    # calculate log-pi - in the paper they subtracted the max_Q value from the Q to ensure stability since we only predict the max value we dont do that
-                    # this might cause some instability (?) needs to be tested
-                    logsum = torch.logsumexp(\
-                        q_t_n /self.entropy_tau, 1).unsqueeze(-1) #logsum trick
-                    assert logsum.shape == (self.BATCH_SIZE, 1), "log pi next has wrong shape: {}".format(logsum.shape)
-                    tau_log_pi_next = (q_t_n  - self.entropy_tau*logsum).unsqueeze(1)
-                    
-                    pi_target = F.softmax(q_t_n/self.entropy_tau, dim=1).unsqueeze(1)
-                    # in the original paper for munchausen RL they summed over all actions - we only predict the best Qvalue so we will not sum over all actions
-                    Q_target = (self.GAMMA**self.n_step * (pi_target * (Q_targets_next-tau_log_pi_next)*(1 - dones.float().unsqueeze(-1)))).transpose(1,2)
-                    assert Q_target.shape == (self.BATCH_SIZE, self.action_size, self.N), "has shape: {}".format(Q_target.shape)
+        actions_pred = self.actor_local(states)
+        q_pred, _ = self.critic_local(states, actions_pred, self.N)
+        actor_loss = -q_pred.mean()
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        clip_grad_norm_(self.actor_local.parameters(), 1.0)
+        self.actor_optimizer.step()
+        if self.per and hasattr(self.memory, 'update_priorities'):
+            pr = td_error.mean(dim=(1, 2)).abs().clamp_min(1e-6).detach().cpu().numpy()
+            self.memory.update_priorities(idx, pr)
+        with torch.no_grad():
+            flat = q_targets.view(q_targets.size(0), -1)
+            q10 = torch.quantile(flat, 0.1, dim=1).mean().item()
+            q50 = torch.quantile(flat, 0.5, dim=1).mean().item()
+            q90 = torch.quantile(flat, 0.9, dim=1).mean().item()
+            self._last_iqn_spread = (q10, q50, q90, (q90 - q10))
+        if self.step_counter % 200 == 0:
+            with torch.no_grad():
+                tgt_q, _ = self.critic_target(states, self.actor_target(states), self.N)
+                self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
+        self.soft_update(self.critic_local, self.critic_target)
+        self.soft_update(self.actor_local, self.actor_target)
+        self.epsilon *= self.epsilon_decay
+        if self.noise is not None:
+            self.noise.reset()
+        return critic_loss.item(), actor_loss.item()
 
-                    q_k_target, _ = self.critic_target(states, actions)
-                    q_k_target = q_k_target.mean(dim=1)  # shape: [batch_size, 1]
-                    tau_log_pik = q_k_target - self.entropy_tau * torch.logsumexp(q_k_target/self.entropy_tau, 1, keepdim=True)
-                    assert tau_log_pik.shape == (self.BATCH_SIZE, 1), f"shape instead is {tau_log_pik.shape}"
-                    # calc munchausen reward:
-                    munchausen_reward = (rewards + self.alpha*torch.clamp(tau_log_pik, min=self.lo, max=0)).unsqueeze(-1)
-                    assert munchausen_reward.shape == (self.BATCH_SIZE, self.action_size, 1)
-                    # Compute Q targets for current states 
-                    Q_targets = munchausen_reward + Q_target
-            # Get expected Q values from local model
-            Q_expected, taus = self.critic_local(states, actions, self.N)
-            assert Q_targets.shape == (self.BATCH_SIZE, 1, self.N)
-            assert Q_expected.shape == (self.BATCH_SIZE, self.N, 1)
-    
-            # Quantile Huber loss
-            td_error = Q_targets - Q_expected
-            assert td_error.shape == (self.BATCH_SIZE, self.N, self.N), "wrong td error shape"
-            huber_l = calculate_huber_loss(td_error, 1.0)
-            quantil_l = abs(taus -(td_error.detach() < 0).float()) * huber_l / 1.0
-            
-            if self.per:
-                critic_loss = (quantil_l.sum(dim=1).mean(dim=1, keepdim=True)*weights.to(self.device)).mean()
-            else:
-                critic_loss = quantil_l.sum(dim=1).mean(dim=1).mean()
-            # Minimize the loss
-            self.critic_optimizer.zero_grad(set_to_none=True)
-            critic_loss.backward()
-            clip_grad_norm_(self.critic_local.parameters(), 1.0)
-            self.critic_optimizer.step()
+    def soft_update(self, local, target):
+        with torch.no_grad():
+            for tp, lp in zip(target.parameters(), local.parameters()):
+                tp.data.mul_(1 - self.t)
+                tp.data.add_(lp.data, alpha=self.t)
 
-            # ---------------------------- update actor ---------------------------- #
-            # Compute actor loss
-            actions_pred = self.actor_local(states)
-            actor_loss = -self.critic_local.get_qvalues(states, actions_pred).mean()
-            # Minimize the loss
-            self.actor_optimizer.zero_grad(set_to_none=True)
-            actor_loss.backward()
-            self.actor_optimizer.step()
+    def _log_batch_diagnostics(self, batch, ts, writer):
+        states, actions, rewards, next_states, dones, idx, weights = batch
+        if torch.is_tensor(actions):
+            with torch.no_grad():
+                at_low = (actions <= -0.99).float().mean().item()
+                at_high = (actions >= 0.99).float().mean().item()
+                var_mean = actions.var(dim=0).mean().item() if actions.numel() > 1 else 0.0
+            writer.add_scalar("Policy/Actions_at_lower_pct", at_low, ts)
+            writer.add_scalar("Policy/Actions_at_upper_pct", at_high, ts)
+            writer.add_scalar("Policy/Action_variance_mean", var_mean, ts)
+        if self._last_td_percentiles and self.step_counter % 50 == 0:
+            p50, p90, p99 = self._last_td_percentiles
+            writer.add_scalar("TD_Error/p50", p50, ts)
+            writer.add_scalar("TD_Error/p90", p90, ts)
+            writer.add_scalar("TD_Error/p99", p99, ts)
+        if self._last_target_drift and self.step_counter % 200 == 0:
+            writer.add_scalar("Stability/Target_drift", self._last_target_drift, ts)
+        if self.distributional and self._last_iqn_spread and self.step_counter % 200 == 0:
+            q10, q50, q90, spread = self._last_iqn_spread
+            writer.add_scalar("IQN/q10", q10, ts)
+            writer.add_scalar("IQN/q50", q50, ts)
+            writer.add_scalar("IQN/q90", q90, ts)
+            writer.add_scalar("IQN/q90_minus_q10", spread, ts)
 
-            # ----------------------- update target networks ----------------------- #
-            self.soft_update(self.critic_local, self.critic_target)
-            self.soft_update(self.actor_local, self.actor_target)                     
-            if self.per and hasattr(self.memory, 'update_priorities'):
-                # Fix 1: Correct priority calculation - single mean across both quantile dimensions
-                priorities = np.abs(td_error.mean(dim=(1,2)).data.cpu().numpy())
-                # Fix 2: Clip to positive values only (priorities should be non-negative)
-                priorities = np.clip(priorities, 1e-6, np.inf)
-                self.memory.update_priorities(idx, priorities)
-            # ----------------------- update epsilon and noise ----------------------- #
-            
-            self.epsilon *= self.epsilon_decay
-            
-            if self.noise_type == "ou":
-                self.noise.reset()
-            return critic_loss.detach().cpu().item(), actor_loss.detach().cpu().item()
+    def reset(self):
+        if self.noise is not None:
+            self.noise.reset()
 
-        
-
-    def optimize_memory_usage(self):
-        """Optimize memory usage inspired by the other D4PG implementation."""
-        if hasattr(self, 'performance_monitor') and self.performance_monitor:
-            # Force garbage collection periodically
-            if self.step_counter % self.memory_cleanup_frequency == 0:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-    
-    def get_network_info(self):
-        """Get network parameter information for debugging."""
-        total_params = 0
-        trainable_params = 0
-        
-        for name, network in [('actor', self.actor_local), ('critic', self.critic_local)]:
-            if hasattr(network, 'parameters'):
-                params = sum(p.numel() for p in network.parameters())
-                trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
-                total_params += params
-                trainable_params += trainable
-                print(f"{name.capitalize()}: {params:,} parameters ({trainable:,} trainable)")
-        
-        print(f"Total: {total_params:,} parameters ({trainable_params:,} trainable)")
-        return total_params, trainable_params
-    
-    def update_episode_count(self, episode_count):
-        """Update frame count for proper PER beta annealing."""
-        if self.per and hasattr(self.memory, 'set_frame_count'):
-            # Convert episode to approximate frame count for PER
-            # Assuming each episode has ~250 steps on average for swing options
-            frame_count = episode_count * 250
-            self.memory.set_frame_count(frame_count)
 
 class OUNoise:
-    """Ornstein-Uhlenbeck process."""
-
-    def __init__(self, size, seed, mu=0., theta=0.15, sigma=0.2):
-        """Initialize parameters and noise process."""
+    def __init__(self, size, seed, mu=0.0, theta=0.15, sigma=0.2):
         self.mu = mu * np.ones(size)
         self.theta = theta
         self.sigma = sigma
-        self.seed = random.seed(seed)
+        random.seed(seed)
         self.reset()
 
     def reset(self):
-        """Reset the internal state (= noise) to mean (mu)."""
         self.state = copy.copy(self.mu)
 
     def sample(self):
-        """Update internal state and return it as a noise sample."""
         x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
+        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
         self.state = x + dx
         return self.state
 
-def calc_fraction_loss(FZ_,FZ, taus, weights=None):
-    """calculate the loss for the fraction proposal network """
-    
+
+def calculate_huber_loss(td_errors, k=1.0):
+    return torch.where(td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k))
+
+
+def calc_fraction_loss(FZ_, FZ, taus, weights=None):
     gradients1 = FZ - FZ_[:, :-1]
-    gradients2 = FZ - FZ_[:, 1:] 
+    gradients2 = FZ - FZ_[:, 1:]
     flag_1 = FZ > torch.cat([FZ_[:, :1], FZ[:, :-1]], dim=1)
     flag_2 = FZ < torch.cat([FZ[:, 1:], FZ_[:, -1:]], dim=1)
-    gradients = (torch.where(flag_1, gradients1, - gradients1) + torch.where(flag_2, gradients2, -gradients2)).view(taus.shape[0], 31)
-    assert not gradients.requires_grad
+    gradients = (torch.where(flag_1, gradients1, -gradients1) + torch.where(flag_2, gradients2, -gradients2)).view(taus.shape[0], 31)
     if weights is not None:
-        loss = ((gradients * taus[:, 1:-1]).sum(dim=1)*weights).mean()
+        loss = ((gradients * taus[:, 1:-1]).sum(dim=1) * weights).mean()
     else:
         loss = (gradients * taus[:, 1:-1]).sum(dim=1).mean()
-    return loss 
-    
-def calculate_huber_loss(td_errors, k=1.0):
-    """
-    Calculate huber loss element-wisely depending on kappa k.
-    """
-    loss = torch.where(td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k))
-    assert loss.shape == (td_errors.shape[0], 32, 32), "huber loss has wrong shape"
     return loss

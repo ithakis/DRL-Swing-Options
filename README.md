@@ -1,4 +1,387 @@
-# D4PG-QR-FRM: Swing Option Pricing with Deep Reinforcement Learning
+<div align="center">
+
+# D4PG-QR-FRM
+### Deep Distributional Deterministic Policy Gradients for Swing Option Pricing & Research Toolkit
+
+<sup>Comprehensive research-oriented codebase for valuing constrained multi-exercise (swing) options under a jump–mean-reverting energy process using modern deep reinforcement learning.</sup>
+
+</div>
+
+---
+
+## 1. Executive Summary
+
+This repository implements a **research-grade experimental framework** for pricing and analyzing **swing options** using Deep Reinforcement Learning (DRL), centered on a modular (but currently partially stubbed) implementation of **D4PG + optional Implicit Quantile Networks (IQN)** with **Prioritized Experience Replay (PER)**, **Munchausen regularization**, **N‑step bootstrapping**, and **Monte Carlo evaluation**.  
+
+It also provides:  
+* Deterministic/controlled stochastic path generation via a **Hambly–Howison–Kluge (HHK) two-factor (OU + jump) process**  
+* Classical benchmark pricers: **Least-Squares Monte Carlo (LSM)** (`lsm_swing_pricer.py`) and (placeholder) **Finite-Difference (FDM)** (`fdm_swing_pricer.py`)  
+* Rich experiment automation via shell launchers (`run.sh`, `runv3.sh`)  
+* Structured logging (`logs/`, `runs/`), hyperparameter persistence (`.json`), episodic evaluation CSVs, and TensorBoard summaries  
+* A curated suite of **Jupyter notebooks** for validation, quantitative analysis, diagnostics, and paper figure generation  
+
+> NOTE: Some core source modules (`agent.py`, `networks.py`, `replay_buffer.py`, `swing_env.py`, `run.py`) still contain placeholders / unfinished sections (e.g., empty `if` branches, missing method bodies). They require completion before end‑to‑end training will run. This README documents intended architecture to guide both human and AI contributors.
+
+---
+
+## 2. Mathematical & Financial Context
+
+### 2.1 Contract Structure
+A swing option grants the right to repeatedly exercise a quantity \( q_t \in [q_{\min}, q_{\max}] \) over \( N = n\_rights \) discrete times subject to a **global cap** \( Q_{\max} \) (and optionally a minimum \( Q_{\min} \)) and optional refraction constraints (minimum time between positive exercises).  
+
+### 2.2 Payoff Mechanics
+Per decision time \( t \):  
+\[ \text{payoff}_t = q_t \,(S_t - K)^+ \]
+Discounted path PV:  
+\[ P_{\text{path}} = \sum_{t=1}^N e^{-r t \Delta t}\, q_t (S_t-K)^+ \]
+Monte Carlo estimator (risk–neutral):  
+\[ V_0 = \frac{1}{M} \sum_{i=1}^M P_{\text{path}, i}. \]
+
+### 2.3 Underlying Spot (HHK Model – stylized)
+Two-factor with mean-reversion and spikes:
+```
+dX_t = -α X_t dt + σ dW_t                (diffusive mean-reverting factor)
+dY_t = -β Y_t dt + J_t dN_t              (jump/spike factor)
+S_t  = f(t) * exp(X_t + Y_t)  or  exp(f(t) + X_t + Y_t)
+```
+Seasonality (e.g., deterministic sinusoid) is embedded in \( f(t) \).  
+Jump sizes \( J_t \) may be log-normal / exponential; intensity \( λ \).  
+
+---
+
+## 3. Repository Structure & File Roles
+
+```
+D4PG-QR-FRM/
+├── run.py                 # MAIN orchestrator (currently incomplete – arg parse, training loop stubs)
+├── run.sh                 # Batch launcher (baseline monthly config across seeds)
+├── runv3.sh               # Alternative launcher variant (different hyperparams)
+├── evaluate_agent.py      # Legacy evaluation utility (Gym classic style) – not yet adapted to swing env
+├── src/
+│   ├── agent.py           # Agent class (D4PG core – MANY placeholders to fill)
+│   ├── networks.py        # Actor / Critic / IQN definitions (incomplete bodies)
+│   ├── replay_buffer.py   # Circular + Prioritized replay (several method stubs)
+│   ├── swing_env.py       # Gymnasium environment for swing option (partially stubbed)
+│   ├── swing_contract.py  # Contract dataclass (complete; validation + helpers)
+│   ├── simulate_hhk_spot.py # HHK stochastic path generation (not shown here; assumed functional)
+│   ├── lsm_swing_pricer.py  # Complete Longstaff–Schwartz (benchmark) implementation
+│   ├── fdm_swing_pricer.py  # FDM placeholder (extend for PDE benchmarking)
+│   └── MultiPro.py        # (Likely) multi-process or vector env utility (not yet documented)
+├── logs/                  # Evaluation & diagnostics CSVs (per run → nested episodes/evaluations)
+├── runs/                  # Saved models (.pth), hyperparameter JSON, TensorBoard event files
+├── HyperparameterTuning/  # Aggregated sweeps (CSV summaries, correlations)
+├── Experiment Configs/    # Shell scripts (annual/monthly configurations)
+├── Jupyter Notebooks/     # Research notebooks (see Section 10) 
+├── _Longstaff-Schwartz Swing Options/  # Explanatory markdown & methodology notes
+└── README.md              # (This document)
+```
+
+### Status Legend
+| File | Status | Action Needed |
+|------|--------|---------------|
+| `swing_contract.py` | Complete | None |
+| `lsm_swing_pricer.py` | Complete | Optional enhancements (variance reduction, basis diagnostics) |
+| `agent.py` | Incomplete | Fill empty branches (actor/critic setup, PER integration, learning steps) |
+| `networks.py` | Incomplete | Implement forward passes, weight init, `compile_for_performance()` |
+| `replay_buffer.py` | Incomplete | Implement add/sample logic; finalize PER sampling weights |
+| `swing_env.py` | Incomplete | Finish `step`, `reset`, observation builder & feasibility logic |
+| `run.py` | Incomplete | Implement argument parsing, dataset gen, training loop hooks |
+| `fdm_swing_pricer.py` | (Assumed placeholder) | Implement PDE/FDM scheme or remove reference |
+
+---
+
+## 4. Experiment Launch Flow (Entry Points)
+
+1. **Shell Script (`run.sh` / `runv3.sh`)** defines an `args` bash array of CLI switches.  
+2. Invokes `python run.py ${args[@]} -name <RunLabel> -seed <seed>` for each seed.  
+3. `run.py` (when completed) should:  
+     * Parse args → create `SwingContract` & stochastic process config  
+     * Generate training & evaluation datasets via `simulate_hhk_spot`  
+     * Construct `SwingOptionEnv` for train/eval (share eval dataset)  
+     * Instantiate `Agent` (with PER / IQN / Munchausen toggles)  
+     * Loop over **paths** (episodes), each simulating a full contract  
+     * Periodically call evaluation routine → produce pricing CSV + TensorBoard scalars  
+     * Persist model weights and hyperparameter JSON in `runs/`  
+
+---
+
+## 5. Core Components (Intended Design)
+
+### 5.1 Environment (`swing_env.py`)
+State vector (intended, final shape = 9):
+```
+[ (S_t - K),  q_exercised_norm,  q_remaining_norm,
+    time_to_maturity_norm,  progress_norm,
+    S_t,  X_t,  Y_t,  days_since_last_exercise_norm ]
+```
+Action: scalar in [0,1] → denormalized to [q_min, q_max].  
+Reward function (financial discounting): \( (df)^{t+1} q_t (S_t-K)^+ \) or with max^+ depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
+Terminate when: maturity reached OR \( Q\_\text{exercised} ≥ Q_{\max} \).  
+
+### 5.2 Agent (`agent.py`)
+Implements D4PG style updates:  
+* Actor: deterministic policy \( a = \mu(s) \)  
+* Critic: either standard Q-network or distributional IQN (quantile embedding + cosine basis)  
+* Target networks: soft updated by \( \tau \)  
+* Replay: uniform circular or prioritized variant  
+* N‑step return aggregation prior to storage  
+* Optional Munchausen reward shaping / log-policy augmentation (currently placeholder; policy log‑prob needs action distribution assumption—e.g., squashed Gaussian—for continuous domain)  
+
+### 5.3 Replay (`replay_buffer.py`)
+Two classes:  
+* `CircularReplayBuffer`: Pre-allocated numpy arrays for O(1) indexing  
+* `PrioritizedReplay`: Proportional priorities with importance weights (alpha/beta annealing)  
+
+### 5.4 Networks (`networks.py`)
+* `Actor`: 3×256 + LayerNorm + ReLU, final tanh / linear (currently no output activation).  
+* `Critic`: (Structure TBD; typical: concat state+action then MLP).  
+* `IQN`: Quantile embedding using cosine features with optional dueling head.  
+* Weight initialization policy: orthogonal by default.  
+* `make_compilable()` wrapper for optional `torch.compile` acceleration.  
+
+### 5.5 Benchmark Pricers
+* **LSM** (`lsm_swing_pricer.py`): Complete baseline using polynomial regression of continuation values across remaining rights. Produces CSV of exercise events.  
+* **FDM** (`fdm_swing_pricer.py`): Placeholder to implement finite-difference PDE grid for low-dimensional simplified contracts (e.g., drop jumps).  
+
+---
+
+## 6. Command-Line Arguments (Observed from Shell Scripts)
+
+| Flag | Meaning | Notes |
+|------|---------|-------|
+| `-n_paths` | Training episodes (Monte Carlo paths) | Each path = full contract trajectory |
+| `-eval_every` | Evaluation frequency (paths) | Triggers pricing evaluation routine |
+| `-n_paths_eval` | # paths in each evaluation batch | Larger → tighter CI, higher cost |
+| `-munchausen` | 1/0 enable Munchausen RL | Requires policy log-prob definition |
+| `-nstep` | N for N-step returns | Affects bootstrapping horizon |
+| `--per_alpha` | PER α exponent | 0=uniform, 1=full priority |
+| `--per_beta_start` | PER β initial | Anneals to 1 over `--per_beta_frames` |
+| `--per_beta_frames` | Anneal length (frames) | Frame=sampled transition or step |
+| `--gamma` | Discount factor | Close to 1 for long horizon |
+| `-learn_every` | Env steps between learn calls | Throttle update cadence |
+| `-learn_number` | Gradient steps per learn event | >1 for aggressive learning |
+| `-iqn` | 1/0 distributional critic | Enables quantile regression loss |
+| `-noise` | Exploration noise type | `gauss` or `ou` (Ornstein-Uhlenbeck) |
+| `-epsilon` | Initial epsilon (random action prob) | Blended with noise process |
+| `-epsilon_decay` | Per-episode decay factor | 1.0 = no decay |
+| `-per` | 1/0 enable PER buffer | Must implement priority updates |
+| `--min_replay_size` | Warm-up size before learning | Stabilizes early updates |
+| `--max_replay_size` | Capacity (circular overwrite) | Memory vs diversity trade-off |
+| `-t` | Target soft update τ | Usually 1e-3–5e-4 |
+| `-bs` | Batch size | Affects stability & memory |
+| `-layer_size` | Hidden layer width | Networks currently hard-coded to 256 in stub; align later |
+| `-lr_a` | Actor LR | Decayed via scheduler logic (placeholders) |
+| `-lr_c` | Critic LR | Ditto |
+| `--final_lr_fraction` | Scheduler final / initial ratio | Exponential λ design needed |
+| `--warmup_frac` | Warm-up episode fraction | For linear or cosine ramps |
+| `--min_lr` | LR floor | Prevent vanishing updates |
+| `--compile` | 1/0 torch.compile() | Experimental acceleration |
+| `-n_cores` | CPU cores (multiprocessing) | For dataset generation if parallelized |
+| Contract Flags | `--strike --maturity --n_rights --q_min --q_max --Q_min --Q_max --risk_free_rate --min_refraction_days` | Map directly to `SwingContract` |
+| HHK Flags | `--S0 --alpha --sigma --beta --lam --mu_J` | Feed into `simulate_hhk_spot` |
+| Meta | `-name` | Run label (directory & JSON naming) |
+| Meta | `-seed` | Seed for reproducibility |
+
+> When finishing `run.py`, ensure **argparser** sets sensible defaults and persists the full namespace to `<runs>/<RunName>.json` for scientific reproducibility.
+
+---
+
+## 7. Data & Logging Conventions
+
+### 7.1 Directories
+| Path | Purpose |
+|------|---------|
+| `runs/` | Model checkpoints (`.pth`), hyperparameter JSON, TensorBoard events |
+| `logs/<RunName>/evaluations/` | Per-evaluation CSVs (e.g., `rl_episode_XXXX.csv`) |
+| `HyperparameterTuning/` | Summaries of grid / random search sweeps |
+| `Experiment Configs/` | Ready-made shell presets (annual/monthly) |
+| `Jupyter Notebooks/` | Analysis & validation notebooks |
+
+### 7.2 Suggested CSV Schema (Evaluation)
+Columns (from comments in `run.py` stub & env design):
+```
+path, time_step, Payoff, q_exercised_norm, q_remaining_norm,
+time_to_maturity_norm, normalized_time, spot, X_t, Y_t,
+days_since_exercise_norm, q_t, reward
+```
+Use consistent headers so notebooks can auto-load.
+
+### 7.3 TensorBoard Scalars (Design Targets)
+| Tag | Meaning |
+|-----|---------|
+| `pricing/option_price` | Mean discounted return over evaluation set |
+| `pricing/price_std` | Std dev of evaluation returns |
+| `pricing/confidence_95` | 95% CI half-width |
+| `exercise/avg_exercised_quantity` | Mean total exercised per path |
+| `exercise/avg_exercise_count` | # of non-zero exercise decisions |
+| `loss/actor` | Latest actor loss |
+| `loss/critic` | Critic (or quantile) loss |
+| `diagnostics/td_percentiles` | Distribution drift metrics |
+
+---
+
+## 8. Research Workflow Recommendations
+
+1. **Benchmark Baseline**: Run LSM pricer for chosen contract → establishes non-RL reference price & CI.
+2. **Train RL Agent**: Start with smaller `n_paths` (e.g., 2048) to verify pipeline, then scale.
+3. **Stability Checks**: Track price convergence plateaus and PER priority distribution.
+4. **Sensitivity**: Vary `--gamma`, `-nstep`, PER α, β schedule, and IQN toggle.
+5. **Stress Testing**: Increase jump intensity `--lam` and volatility `--sigma` to assess robustness.
+6. **Ablations**: Disable features (PER, Munchausen, IQN) one at a time to quantify marginal benefit.
+7. **Reproduce**: Fix `-seed` sets (e.g., {1,2,3,4,5}) and aggregate across seeds.
+8. **Statistical Reporting**: Provide price mean ± CI, exercise histogram, learning curve half-life.
+
+---
+
+## 9. Reproducibility & Determinism
+Set all seeds (Python `random`, NumPy, PyTorch, environment). Avoid nondeterministic CuDNN if using GPU:  
+```python
+torch.use_deterministic_algorithms(True)
+torch.backends.cudnn.benchmark = False
+```
+Persist full configuration JSON; include git commit hash in future (add field).  
+
+---
+
+## 10. Jupyter Notebooks Overview
+
+| Notebook | Purpose |
+|----------|---------|
+| `Quantitative_Analysis.ipynb` | Aggregate quantitative metrics; cross-run comparisons, correlations. |
+| `Swing_Option_Quantitative_Analysis.ipynb` | Contract-specific sensitivity (strike, volume caps). |
+| `Swing_Option_Valuation.ipynb` | End-to-end valuation workflows combining RL & LSM. |
+| `TensorBoard_Metrics_Analysis.ipynb` | Post-process TensorBoard event logs into statistical panels. |
+| `TensorboardResults_Analysis.ipynb` | Legacy/alternative metrics extraction & plotting. |
+| `Validation 1: Stochastic Process: 2FactorOUwJumps.ipynb` | Validates HHK dynamics: distribution, autocorrelation, jump frequency. |
+| `Validation 2: Quantlib Pricing.ipynb` | Cross-check simpler derivatives vs QuantLib (sanity baseline). |
+| `Validation 3: LSM Pricing.ipynb` | Verifies LSM convergence & confidence intervals. |
+| `Validation 4: Evaluation Results.ipynb` | Collates RL evaluation CSV outputs & pricing trajectories. |
+| `lsm_validation_analysis.csv` | Data artifact feeding LSM validation figures. |
+
+> Maintain consistent column names & units across CSV producers to avoid notebook drift.
+
+---
+
+## 11. Extensibility Guide (AI / Human Developers)
+
+| Goal | High-Level Steps |
+|------|------------------|
+| Add new payoff feature | Extend state in `swing_env.py`; update observation space; adjust notebooks. |
+| Implement FDM pricer | Build spatial price grid; apply implicit/Crank–Nicolson; impose volume & refraction via augmented state (dimension blow-up) or simplified variant. |
+| Add risk metrics | Track distribution quantiles from IQN; log CVaR / VaR in TensorBoard. |
+| Switch to GPU | Ensure tensors moved to `device`; finalize missing `to(self.device)` placements. |
+| Integrate mixed precision | Wrap learn steps with `torch.autocast` and GradScaler. |
+| Replace PER with reservoir | Implement new buffer class; keep interface (`sample`, `add`). |
+| Support continuous seasonal curve calibration | Accept seasonal parameters or function handle in CLI; propagate to `simulate_hhk_spot`. |
+| Add ONNX export | Implement `export_policy()` serializing actor for deployment. |
+
+### Implementation Checklist for Completing Stubs
+1. Fill `if isinstance(device, str):` block in `Agent.__init__` (resolve to `torch.device`).  
+2. Implement actor/critic creation for both distributional and non-distributional branches.  
+3. Add PER memory initialization vs uniform (choose class based on `per` flag).  
+4. Complete `learn_` and `learn_distribution` (compute TD / quantile huber loss, update priorities).  
+5. Finalize `act`: pass state through actor; apply exploration (epsilon vs noise).  
+6. Implement soft update function.  
+7. In `replay_buffer.py` implement `add`, `_add_to_buffer`, `sample`, PER probability updates, memory usage methods.  
+8. In `swing_env.py` finish `_get_feasible_action`, `_get_observation`, `reset`, and ensure reward uses `(S-K)^+`.  
+9. Implement argument parser + dataset generation in `run.py` (connect to `simulate_hhk_spot`).  
+10. Add evaluation writer & CSV batching (Async writer skeleton exists).  
+
+---
+
+## 12. Hyperparameter Tuning Guidance
+
+### 12.1 Key Interactions
+| Parameter | Interaction Insight |
+|-----------|---------------------|
+| `gamma` & `nstep` | Larger `nstep` needs slightly smaller `gamma` to avoid bias accumulation. |
+| PER α & β schedule | Higher α magnifies outliers → increase β sooner for unbiased pricing. |
+| Batch size & LR | Larger batch permits slightly higher LR; monitor critic loss variance. |
+| Tau & Compile | Very small τ with compiled models may slow adaptation; test 5e-4–1e-3. |
+
+### 12.2 Suggested Starting Grid
+```
+gamma ∈ {0.995, 0.999, 0.9998}
+nstep ∈ {3,5,7}
+per_alpha ∈ {0.5,0.6,0.7}
+batch_size ∈ {64,128}
+iqn ∈ {0,1}
+```
+Record (price_mean, price_CI, convergence_episodes, wallclock_hours).
+
+---
+
+## 13. Validation & Benchmarks
+| Benchmark | Purpose | Target |
+|-----------|---------|--------|
+| LSM vs RL price | Sanity; RL should not underperform LSM significantly after convergence | Δ < 5–10% |
+| Exercise profile distribution | Compare frequency histogram vs LSM path decisions | Similar shape |
+| Sensitivity to strike | Monotonic decreasing price curve | Check convexity |
+| Seed variance | Std of final price across seeds | Acceptably low (< CI width) |
+
+---
+
+## 14. Known Limitations / TODO
+* Incomplete core methods (see Section 11 checklist).  
+* Reward function currently includes an uncommented line computing `(S - K)` **without** positive part; remove or guard to enforce payoff positivity.  
+* `evaluate_agent.py` references classic gym env creation (`gym.make(parameters.env)`) – not aligned with custom swing environment pipeline yet.  
+* No explicit unit tests – recommend adding `tests/` with fixtures for contract feasibility, LSM correctness, and replay buffer sampling invariants.  
+* No dependency manifest (e.g., `requirements.txt`) – should be generated for reproducibility.  
+* Absent license file – add (e.g., MIT) for academic sharing.  
+
+---
+
+## 15. Reproducible Paper Appendix (Suggested Text Snippet)
+> We trained a D4PG-based agent (with/without IQN & PER) to optimize the exercise policy of a monthly swing gas contract under a two-factor HHK process with jumps. Each training episode corresponds to one Monte Carlo path (22 daily decision rights). Pricing estimates were computed from out-of-sample evaluation sets every `eval_every` episodes. Confidence intervals use nonparametric bootstrap of per-path discounted payoffs.
+
+---
+
+## 16. Citation
+If you use this codebase in academic work:
+```
+@misc{d4pg_swing_rl,
+    title  = {D4PG-QR-FRM: A Deep Reinforcement Learning Framework for Swing Option Pricing},
+    author = {<Your Name>},
+    year   = {2025},
+    url    = {https://github.com/ithakis/D4PG-QR-FRM}
+}
+```
+
+---
+
+## 17. Support & Contribution Guidelines
+1. Open an Issue describing bug / enhancement.  
+2. Fork & create feature branch (`feat/<topic>`).  
+3. Add or update notebooks if results interpretation changes.  
+4. Ensure README section references remain accurate (update Section indices if adding large sections).  
+
+---
+
+## 18. Quick Start (Once Stubs Are Completed)
+```bash
+git clone https://github.com/ithakis/D4PG-QR-FRM.git
+cd D4PG-QR-FRM
+python -m venv .venv && source .venv/bin/activate  # or conda create -n swing_pricing python=3.11
+pip install torch numpy pandas gymnasium matplotlib seaborn tensorboard tqdm
+
+# Baseline monthly contract training (single seed)
+python run.py -n_paths=4096 -eval_every=512 -n_paths_eval=1024 -munchausen=0 -nstep=5 -per=1 -iqn=0 -noise=gauss \
+    -epsilon=0.3 -epsilon_decay=0.9999 --per_alpha=0.6 --per_beta_start=0.4 --per_beta_frames=100000 \
+    --gamma=0.9995 -learn_every=2 -learn_number=1 -bs=64 -layer_size=128 -lr_a=3e-4 -lr_c=3e-4 -t=1e-3 \
+    --strike=1.0 --maturity=0.0833 --n_rights=22 --q_min=0.0 --q_max=2.0 --Q_min=0.0 --Q_max=20.0 \
+    --risk_free_rate=0.05 --S0=1.0 --alpha=12.0 --sigma=1.2 --beta=150.0 --lam=6.0 --mu_J=0.3 -seed=1 -name="MonthlySwing_Test"
+
+tensorboard --logdir runs
+```
+
+---
+
+## 19. Final Notes
+This README intentionally **over-documents** design intent to empower *AI coding agents* and *future researchers* to safely extend or refactor unfinished components without semantic drift. Always reconcile code changes with the architectural blueprint above.
+
+---
+
+*Status:* Documentation current as of 2025-08-20. Update this line upon substantive architectural change.
 
 ## Overview
 

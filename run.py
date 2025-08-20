@@ -239,6 +239,24 @@ class ConfigManager:
             help="Epsilon decay rate per episode (default: 1.0)",
         )
         parser.add_argument(
+            "--final_lr_fraction",
+            type=float,
+            default=1.0,
+            help="Final learning rate as fraction of initial LR (1.0=no decay, 0.1=decay to 10%)",
+        )
+        parser.add_argument(
+            "--warmup_frac",
+            type=float,
+            default=0.05,
+            help="Fraction of total episodes for LR warm-up (default: 0.05 = 5%)",
+        )
+        parser.add_argument(
+            "--min_lr",
+            type=float,
+            default=1e-7,
+            help="Minimum learning rate floor (default: 1e-7)",
+        )
+        parser.add_argument(
             "--max_replay_size",
             type=int,
             default=int(1e5),
@@ -252,7 +270,7 @@ class ConfigManager:
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
-            "-t", "--tau", type=float, default=1e-3, help="Softupdate factor tau, default is 1e-3"
+            "-t", "--t", type=float, default=1e-3, help="Softupdate factor t, default is 1e-3"
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
 
@@ -996,6 +1014,9 @@ def run_training(
             if done:
                 break
 
+        # Step learning rate schedulers at the end of each episode
+        agent.step_lr_schedulers(current_path)
+
         # Calculate performance metrics
         paths_per_sec, steps_per_sec = TrainingManager.calculate_performance_metrics(
             episode_times, episode_steps, start_time, path_steps
@@ -1017,6 +1038,11 @@ def run_training(
         tensorboard_writer.add_scalar("Steps_Per_Second", steps_per_sec, current_path)
         tensorboard_writer.add_scalar("Total_Steps", total_steps, current_path)
         tensorboard_writer.add_scalar("Path_Length", path_steps, current_path)
+        
+        # Log learning rates for monitoring decay
+        if agent.actor_scheduler is not None:
+            tensorboard_writer.add_scalar("Learning_Rate/Actor", agent.actor_optimizer.param_groups[0]['lr'], current_path)
+            tensorboard_writer.add_scalar("Learning_Rate/Critic", agent.critic_optimizer.param_groups[0]['lr'], current_path)
 
         print(
             f"Path {current_path}/{args.n_paths} | Return = {episode_return:.3f} | "
@@ -1164,7 +1190,7 @@ def main():
         BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
         GAMMA=args.gamma,
-        TAU=1e-3,
+        t=args.t,
         LR_ACTOR=args.lr_a,
         LR_CRITIC=args.lr_c,
         WEIGHT_DECAY=0,
@@ -1180,7 +1206,11 @@ def main():
         use_amp=False,
         per_alpha=args.per_alpha,
         per_beta_start=args.per_beta_start,
-        per_beta_frames=args.per_beta_frames
+        per_beta_frames=args.per_beta_frames,
+        final_lr_fraction=args.final_lr_fraction,
+        total_episodes=args.n_paths,
+        warmup_frac=args.warmup_frac,
+        min_lr=args.min_lr
     )
     t0 = time.time()
 

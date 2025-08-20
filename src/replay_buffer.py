@@ -228,6 +228,22 @@ class CircularReplayBuffer:
         """Set frame count (no-op for non-prioritized replay)."""
         pass
 
+    # Compatibility stubs so agent diagnostic code can call PER-like helpers safely
+    def get_priority_stats(self):
+        return {
+            'priority_entropy': 0.0,
+            'priority_max': 0.0,
+            'priority_min': 0.0,
+            'priority_mean': 0.0,
+            'priority_std': 0.0
+        }
+
+    def sample_priority_values(self, k: int = 0):  # returns empty array
+        return np.array([], dtype=np.float32)
+
+    def update_priorities(self, *args, **kwargs):  # no-op
+        return None
+
 
 class CircularNStepBuffer:
     """Efficient circular buffer for n-step return calculation."""
@@ -627,3 +643,53 @@ class PrioritizedReplay(object):
         )
         
         return total_bytes / (1024 * 1024)
+
+    # --- Added diagnostics helpers ---
+    def get_priority_stats(self):
+        """Return lightweight PER diagnostics for logging.
+
+        Returns:
+            dict with entropy, max, min, mean, std over current priorities^alpha distribution.
+        """
+        if self.size == 0:
+            return {
+                'priority_entropy': 0.0,
+                'priority_max': 0.0,
+                'priority_min': 0.0,
+                'priority_mean': 0.0,
+                'priority_std': 0.0
+            }
+        # Use only filled slice
+        pr = self.priorities[:self.size]
+        # Convert to probability distribution consistent with sampling (p^alpha normalized)
+        pa = pr ** self.alpha
+        s = pa.sum()
+        if s <= 0:
+            entropy = 0.0
+            pa_mean = 0.0
+            pa_std = 0.0
+        else:
+            p = pa / s
+            # Shannon entropy
+            # Add small epsilon to avoid log(0)
+            entropy = float(-(p * (np.log(p + 1e-12))).sum())
+            pa_mean = float(pr.mean())
+            pa_std = float(pr.std())
+        return {
+            'priority_entropy': entropy,
+            'priority_max': float(pr.max()),
+            'priority_min': float(pr.min()),
+            'priority_mean': pa_mean,
+            'priority_std': pa_std
+        }
+
+    def sample_priority_values(self, k: int = 512):
+        """Return a down-sampled set of raw priorities for histogram logging (cheap).
+        Args:
+            k: number of samples (capped at buffer size)
+        """
+        if self.size == 0:
+            return np.array([], dtype=np.float32)
+        k = min(k, self.size)
+        idx = self.rng.choice(self.size, size=k, replace=False)
+        return self.priorities[idx].astype(np.float32)

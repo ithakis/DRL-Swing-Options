@@ -116,7 +116,7 @@ def price_swing_option_lsm(
                 "q_t": q,
                 "payoff": pay,
             })
-    if _print_results: print(f'csv_path: {csv_path}')
+    # if _print_results: print(f'csv_path: {csv_path}')
     pd.DataFrame(records).to_csv(csv_path, index=False)
 
     price_estimate = path_payoffs.mean()
