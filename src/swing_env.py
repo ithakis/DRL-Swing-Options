@@ -58,7 +58,7 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
     # Calculate immediate payoff: q_t * (S_t - K)^+
     payoff_per_unit = max(spot_price - strike, 0.0)
     # Calculate immediate payoff: q_t * (S_t - K)
-    payoff_per_unit = spot_price - strike
+    # payoff_per_unit = spot_price - strike
     
     immediate_payoff = q_actual * payoff_per_unit
     

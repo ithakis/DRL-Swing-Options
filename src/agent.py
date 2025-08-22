@@ -281,6 +281,15 @@ class Agent:
             writer.add_scalar("Policy/Actions_at_lower_pct", at_low, ts)
             writer.add_scalar("Policy/Actions_at_upper_pct", at_high, ts)
             writer.add_scalar("Policy/Action_variance_mean", var_mean, ts)
+        # N-step debug metrics: ensure bootstrap is masked when any terminal occurs
+        try:
+            with torch.no_grad():
+                dmean = dones.float().mean().item()
+                bmask_mean = (1 - dones.float()).mean().item()
+            writer.add_scalar("nstep/done_mean", dmean, ts)
+            writer.add_scalar("nstep/bootstrap_mask_mean", bmask_mean, ts)
+        except Exception:
+            pass
         if self._last_td_percentiles and self.step_counter % 50 == 0:
             p50, p90, p99 = self._last_td_percentiles
             writer.add_scalar("TD_Error/p50", p50, ts)

@@ -1,0 +1,7 @@
+Run: SwingOption_BaseCase Seed: 1 
+Final price: 1.838 (±0.078 @95% CI; Price_Std=2.532, n_paths_eval=4096).
+Stability/Target_drift is persistently high: mean 0.586 (min 0.162, max 1.074); last 0.533 → targets moving too fast → risk of value overestimation.
+TD_Error/p99 spikes (max 16.29; last 10.81) with Critic_loss mean 1.28, std 0.64 → high gradient noise; bigger/steadier batches likely needed.
+Policy not saturating: Policy/Actions_at_upper_pct=0.172, ..._lower_pct=0.0 → exploration level acceptable; no ε change indicated.
+PER shows heavy tails but not collapse: PER/priority_max=21.1 vs priority_mean=0.92 (↑ ratio), while priority_entropy increases to 11.17 → monitor but no immediate α/β tweak.
+
