@@ -1,7 +1,8 @@
 #!/bin/bash
 # Trial: stronger target smoothing + calmer critic + more data per update.
 args=(
-    -n_paths=8192              # Training episodes (paths)
+    # 8192 * 4 = 32768 training episodes total (32k)
+    -n_paths=32768              # Training episodes (paths)
     -eval_every=1024           # Evaluation frequency (in episodes)
     -n_paths_eval=4096         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0              # Disable Munchausen RL (no entropy bonus in reward)
@@ -50,7 +51,12 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_13" -seed 13 &
-python run.py "${args[@]}" -name "SwingOption_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption2_32k_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption2_32k_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption2_32k_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption2_32k_14" -seed 14
+
+python run.py "${args[@]}" -name "SwingOption2_32k_15" -seed 15 &
+python run.py "${args[@]}" -name "SwingOption2_32k_16" -seed 16 &
+python run.py "${args[@]}" -name "SwingOption2_32k_17" -seed 17 &
+python run.py "${args[@]}" -name "SwingOption2_32k_18" -seed 18

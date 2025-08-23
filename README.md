@@ -22,6 +22,24 @@ It also provides:
 
 > NOTE: Some core source modules (`agent.py`, `networks.py`, `replay_buffer.py`, `swing_env.py`, `run.py`) still contain placeholders / unfinished sections (e.g., empty `if` branches, missing method bodies). They require completion before end‑to‑end training will run. This README documents intended architecture to guide both human and AI contributors.
 
+## 1.1 Current best-performing monthly configuration (and results)
+
+The monthly HHK swing contract used in `run.sh` has a configuration that consistently produces strong pricing and exercise-behavior results in out-of-sample evaluations:
+
+- Training episodes (paths): 32,768; Evaluation every 1,024 episodes on 4,096 paths
+- Key RL choices: PER on; IQN off; Munchausen off; N-step = 1; gamma = 1 (reward already discounted)
+- Optimizer: batch size 64; layer size 128; lr_actor 3e-4; lr_critic 2e-4; τ = 0.003
+- PER schedule: alpha 0.5; beta_start 0.7; beta_frames 150k
+- Exploration: Gaussian noise; epsilon 0.3 with decay 0.9999
+
+Qualitative results summary (see `Jupyter Notebooks/RL vs LSM Analysis.ipynb` for figures):
+- RL mean present value closely tracks the LSM benchmark; bootstrap 95% CI for the mean difference generally includes zero.
+- Per-path PV distributions (KDE, ECDF) and total exercised quantity are aligned across methods.
+- Exercise timing and hazard curves are comparable; intensity vs moneyness shows similar responsiveness when in-the-money.
+- Efficiency slope (PV vs total quantity) is in the same range, indicating competitive value-per-unit allocation.
+
+Note on discounting: because the environment reward already applies financial discounting, set `--gamma=1` and prefer `-nstep=1` to avoid double-discounting and reduce bias.
+
 ---
 
 ## 2. Mathematical & Financial Context
@@ -301,12 +319,19 @@ Persist full configuration JSON; include git commit hash in future (add field).
 
 ### 12.2 Suggested Starting Grid
 ```
-gamma ∈ {0.995, 0.999, 0.9998}
-nstep ∈ {3,5,7}
+# If environment reward is already discounted (default):
+gamma ∈ {1}
+nstep ∈ {1}
 per_alpha ∈ {0.5,0.6,0.7}
+per_beta_start ∈ {0.6,0.7}
+per_beta_frames ∈ {100k, 150k, 200k}
 batch_size ∈ {64,128}
-iqn ∈ {0,1}
+iqn ∈ {0}  # IQN off yielded the most stable results in current monthly setup
+tau (t) ∈ {0.003, 0.001}
+lr_actor ∈ {3e-4}
+lr_critic ∈ {2e-4, 3e-4}
 ```
+Recommended baseline (monthly, HHK): `gamma=1, nstep=1, per_alpha=0.5, per_beta_start=0.7, per_beta_frames=150k, bs=64, lr_a=3e-4, lr_c=2e-4, t=0.003, iqn=0, munchausen=0`.
 Record (price_mean, price_CI, convergence_episodes, wallclock_hours).
 
 ---
@@ -364,12 +389,12 @@ cd D4PG-QR-FRM
 python -m venv .venv && source .venv/bin/activate  # or conda create -n swing_pricing python=3.11
 pip install torch numpy pandas gymnasium matplotlib seaborn tensorboard tqdm
 
-# Baseline monthly contract training (single seed)
-python run.py -n_paths=4096 -eval_every=512 -n_paths_eval=1024 -munchausen=0 -nstep=5 -per=1 -iqn=0 -noise=gauss \
-    -epsilon=0.3 -epsilon_decay=0.9999 --per_alpha=0.6 --per_beta_start=0.4 --per_beta_frames=100000 \
-    --gamma=0.9995 -learn_every=2 -learn_number=1 -bs=64 -layer_size=128 -lr_a=3e-4 -lr_c=3e-4 -t=1e-3 \
+# Monthly contract training (stable config derived from run.sh)
+python run.py -n_paths=32768 -eval_every=1024 -n_paths_eval=4096 -munchausen=0 -nstep=1 -per=1 -iqn=0 -noise=gauss \
+    -epsilon=0.3 -epsilon_decay=0.9999 --per_alpha=0.5 --per_beta_start=0.7 --per_beta_frames=150000 \
+    --gamma=1 -learn_every=2 -learn_number=1 -bs=64 -layer_size=128 -lr_a=3e-4 -lr_c=2e-4 -t=0.003 \
     --strike=1.0 --maturity=0.0833 --n_rights=22 --q_min=0.0 --q_max=2.0 --Q_min=0.0 --Q_max=20.0 \
-    --risk_free_rate=0.05 --S0=1.0 --alpha=12.0 --sigma=1.2 --beta=150.0 --lam=6.0 --mu_J=0.3 -seed=1 -name="MonthlySwing_Test"
+    --risk_free_rate=0.05 --S0=1.0 --alpha=12.0 --sigma=1.2 --beta=150.0 --lam=6.0 --mu_J=0.3 -seed=12 -name="SwingOption2_32k_12"
 
 tensorboard --logdir runs
 ```
@@ -868,18 +893,21 @@ where:
 
 **For Swing Option Pricing:**
 ```bash
-# Recommended configuration for swing options
+# Recommended configuration (monthly HHK, discounted rewards in env)
 python run.py \
-    --per 1 \              # Enable PER for important experiences
-    --munchausen 1 \       # Entropy regularization
-    --iqn 1 \             # Distributional learning
-    --nstep 5 \           # Multi-step returns
-    --learn_every 2 \     # Frequent learning
-    --batch_size 128 \    # Larger batches for stability
-    --tau 1e-3 \          # Soft update rate
-    --gamma 0.995 \       # High discount for long-term contracts
-    --n_paths 10000      # Sufficient Monte Carlo paths for convergence
+    --per 1 \
+    --munchausen 0 \
+    --iqn 0 \
+    --nstep 1 \
+    --learn_every 2 \
+    --batch_size 64 \
+    --tau 0.003 \
+    --gamma 1 \
+    --n_paths 32768 \
+    --per_alpha 0.5 --per_beta_start 0.7 --per_beta_frames 150000 \
+    --lr_a 3e-4 --lr_c 2e-4
 ```
+Note: Munchausen and IQN are powerful but were disabled in the current best-performing monthly setup for stability and simplicity. Re-enable as needed for exploration or distributional risk metrics.
 
 ## Swing Option Pricing Results
 
@@ -1091,9 +1119,9 @@ The following hyperparameters control the behavior of Prioritized Experience Rep
 - **For short experiments:** Decrease `per_beta_frames` so β reaches 1.0 sooner.
 - **Always monitor**: Option price convergence, loss curves, and buffer utilization when tuning these parameters.
 
-**Default values:**
-- `--per_alpha=0.6`
-- `--per_beta_start=0.4`
-- `--per_beta_frames=100000`
+**Default values used in the stable monthly config:**
+- `--per_alpha=0.5`
+- `--per_beta_start=0.7`
+- `--per_beta_frames=150000`
 
-These settings provide a good balance for most swing option pricing tasks. Adjust as needed for your specific contract complexity and training duration.
+These settings provided the best stability–bias trade-off for the monthly HHK contract with already-discounted rewards.

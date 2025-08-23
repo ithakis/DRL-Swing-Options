@@ -57,8 +57,6 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
     """
     # Calculate immediate payoff: q_t * (S_t - K)^+
     payoff_per_unit = max(spot_price - strike, 0.0)
-    # Calculate immediate payoff: q_t * (S_t - K)
-    # payoff_per_unit = spot_price - strike
     
     immediate_payoff = q_actual * payoff_per_unit
     
@@ -138,6 +136,11 @@ class SwingOptionEnv(gym.Env):
         
         # Calculate reward using standardized function
         spot_price = self.spot_path[self.current_step]
+
+        # If out-of-the-money, do not allow exercising: ignore action (q_actual=0)
+        # This enforces that attempted exercises when (S_t - K) <= 0 are not registered.
+        if spot_price - self.contract.strike <= 0.0:
+            q_actual = 0.0
         
         # Update state first to get current totals
         if q_actual > 1e-6:  # Threshold for "exercise occurred"
