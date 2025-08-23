@@ -97,18 +97,39 @@ D4PG-QR-FRM/
 
 ### Installation
 
+Below is a minimal, reproducible conda setup covering only the packages actually used in this codebase and notebooks (aligned with your EP11 env). It separates core training, optional FDM pricing (QuantLib), and notebook analysis extras.
+
 ```bash
-git clone https://github.com/ithakis/D4PG-QR-FRM.git
-cd D4PG-QR-FRM
+# 1) Create a clean environment (Python 3.11)
+conda create -n d4pg-swing -c conda-forge python=3.11
+conda activate d4pg-swing
 
-# Create conda environment
-conda create -n swing_rl python=3.11
-conda activate swing_rl
+# 2) Core scientific + RL stack (conda-forge)
+conda install -c conda-forge \
+    numpy scipy pandas matplotlib seaborn scikit-learn \
+    tqdm gymnasium ipykernel
 
-# Install dependencies
-pip install torch torchvision gymnasium numpy pandas matplotlib seaborn
-pip install scipy scikit-learn tqdm tensorboard quantlib-python
+# 3) PyTorch (CPU) — use pip for a current stable wheel on macOS/Apple Silicon
+pip install torch torchvision
+
+# 4) Logging & dashboards
+pip install tensorboard
+
+# 5) Optional: FDM pricer (QuantLib) for PDE benchmark
+#    Only needed if you plan to run src/fdm_swing_pricer.py or the QuantLib notebook
+pip install QuantLib
+
+# 6) Optional: notebooks analysis helpers
+pip install bootstrapped scienceplots plotly
+
+# (Optional) Register the kernel in Jupyter
+python -m ipykernel install --user --name d4pg-swing --display-name "Python (d4pg-swing)"
 ```
+
+Notes
+- Training and evaluation require: torch, gymnasium, numpy, scipy, pandas, tqdm, tensorboard (plus matplotlib/seaborn for plots).
+- LSM benchmark uses only numpy/pandas; FDM benchmark requires QuantLib.
+- On macOS/Apple Silicon, the pip PyTorch wheel enables MPS acceleration automatically when available.
 
 ### Basic Training
 
