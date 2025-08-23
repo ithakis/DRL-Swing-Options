@@ -51,29 +51,31 @@ A swing option grants the right to repeatedly exercise a quantity \( q_t \in [q_
 
 Per decision time $t$:
 
-```
-payoff_t = q_t \cdot \max(S_t - K, 0)
-```
+$$
+	ext{payoff}_t = q_t \cdot \max\left(S_t - K, 0\right)
+$$
 
 Discounted path present value (PV):
 
-```
-P_{path} = \sum_{t=1}^N e^{-r t \Delta t} \, q_t \cdot \max(S_t - K, 0)
-```
+$$
+P_{\text{path}} = \sum_{t=1}^N e^{-r\, t\, \Delta t} \; q_t \cdot \max\left(S_t - K, 0\right)
+$$
 
 Monte Carlo estimator (risk–neutral):
 
-```
-V_0 = \frac{1}{M} \sum_{i=1}^M P_{path, i}
-```
+$$
+V_0 = \frac{1}{M} \sum_{i=1}^M P_{\text{path}, i}
+$$
 
 ### 2.3 Underlying Spot (HHK Model – stylized)
 Two-factor with mean-reversion and spikes:
-```
-dX_t = -α X_t dt + σ dW_t                (diffusive mean-reverting factor)
-dY_t = -β Y_t dt + J_t dN_t              (jump/spike factor)
-S_t  = f(t) * exp(X_t + Y_t)  or  exp(f(t) + X_t + Y_t)
-```
+$$
+\begin{aligned}
+dX_t &= -\alpha\, X_t\, dt + \sigma\, dW_t &&\text{(diffusive mean-reverting factor)}\\
+dY_t &= -\beta\, Y_t\, dt + J_t\, dN_t &&\text{(jump/spike factor)}\\
+S_t  &= f(t)\, e^{X_t + Y_t}\quad\text{or}\quad e^{f(t) + X_t + Y_t}\
+\end{aligned}
+$$
 Seasonality (e.g., deterministic sinusoid) is embedded in \( f(t) \).  
 Jump sizes \( J_t \) may be log-normal / exponential; intensity \( λ \).  
 
@@ -139,13 +141,11 @@ D4PG-QR-FRM/
 
 ### 5.1 Environment (`swing_env.py`)
 State vector (intended, final shape = 9):
-```
-[ (S_t - K),  q_exercised_norm,  q_remaining_norm,
-    time_to_maturity_norm,  progress_norm,
-    S_t,  X_t,  Y_t,  days_since_last_exercise_norm ]
-```
+$$
+[\, (S_t - K),\; q_{\text{exercised\_norm}},\; q_{\text{remaining\_norm}},\; \text{time\_to\_maturity\_norm},\; \text{progress\_norm},\; S_t,\; X_t,\; Y_t,\; \text{days\_since\_last\_exercise\_norm} \,]
+$$
 Action: scalar in [0,1] → denormalized to [q_min, q_max].  
-Reward function (financial discounting): \( (df)^{t+1} q_t (S_t-K)^+ \) or with max^+ depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
+Reward function (financial discounting): $$ (df)^{t+1} q_t (S_t-K)^+ $$ or with \(\max(\cdot,0)\) depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
 Terminate when: maturity reached OR \( Q\_\text{exercised} ≥ Q_{\max} \).  
 
 ### 5.2 Agent (`agent.py`)
@@ -650,12 +650,12 @@ state = [
 **Action Space**: Continuous [0,1] representing normalized exercise quantity
 
 **Reward Function**: 
-```python
-# Per-step reward with proper financial discounting
-reward = exp(-r * t) × q_t × max(S_t - K, 0)
-```
 
-Where `exp(-r * t)` ensures proper present value calculation for swing option pricing.
+$$
+	ext{reward} = e^{-r t}\; q_t \; \max\left(S_t - K, 0\right)
+$$
+
+Where $e^{-r t}$ ensures proper present value calculation for swing option pricing.
 
 **Swing Option Valuation Formulas:**
 
