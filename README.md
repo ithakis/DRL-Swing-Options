@@ -54,7 +54,7 @@ $$S_t = \exp(f(t) + X_t + Y_t)$$
 With:
 - **Diffusive OU component**: $dX_t = -\alpha X_t dt + \sigma dW_t$
 - **Jump component**: $dY_t = -\beta Y_t dt + J_t dN_t$
-- **Seasonal function**: $f(t)$ (e.g., $\log(S_0) + A\cos(2\pi t)$)
+- **Seasonal function**: $f(t)$ e.g., $\log(S_0) + A\cos(2\pi t)$
 - **Jump process**: $N_t \sim \text{Poisson}(\lambda t)$, $J_i \sim \text{Exp}(1/\mu_J)$
 
 ### D4PG for Swing Options
@@ -175,13 +175,14 @@ Based on the monthly HHK swing contract configuration (see `Jupyter Notebooks/4:
 - **Jump process**: β = 150.0, λ = 6.0, μ_J = 0.3
 - **Initial spot**: S₀ = 1.0
 
+
 ### Empirical Results
 
-| Method | Option Price | 95% CI | Avg Exercise | Sample Size | Training Time |
-|--------|-------------|---------|--------------|-------------|---------------|
-| **D4PG-RL** | 2.660 | ±0.085 | 11.66 | 4,096 paths | ~2 hours |
-| **LSM Benchmark** | 2.682 | ±0.089 | 11.35 | 4,096 paths | ~10 minutes |
-| **Relative Error** | -0.82% | - | +2.7% | - | - |
+| Method           | Option Price | 95% CI   | Avg Exercise | Sample Size  |
+|------------------|-------------|----------|--------------|--------------|
+| **D4PG-RL**      | 2.660       | ±0.085   | 11.66        | 4,096 paths  |
+| **LSM Benchmark**| 2.682       | ±0.089   | 11.35        | 4,096 paths  |
+| **Relative Error** | -0.82%    | -        | +2.7%        | -            |
 
 ### Statistical Analysis
 
