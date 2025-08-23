@@ -49,11 +49,11 @@ A swing option grants the right to repeatedly exercise a quantity \( q_t \in [q_
 
 ### 2.2 Payoff Mechanics
 Per decision time \( t \):  
-$$ \text{payoff}_t = q_t \,(S_t - K)^+ $$
+$ \text{payoff}_t = q_t \,(S_t - K)^+ $
 Discounted path PV:  
-$$ P_{\text{path}} = \sum_{t=1}^N e^{-r t \Delta t}\, q_t (S_t-K)^+ $$
+$ P_{\text{path}} = \sum_{t=1}^N e^{-r t \Delta t}\, q_t (S_t-K)^+ $
 Monte Carlo estimator (risk–neutral):  
-$$ V_0 = \frac{1}{M} \sum_{i=1}^M P_{\text{path}, i}. $$
+$ V_0 = \frac{1}{M} \sum_{i=1}^M P_{\text{path}, i}. $
 
 ### 2.3 Underlying Spot (HHK Model – stylized)
 Two-factor with mean-reversion and spikes:
