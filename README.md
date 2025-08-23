@@ -177,18 +177,31 @@ Based on the monthly HHK swing contract configuration (see `Jupyter Notebooks/4:
 
 ### Empirical Results
 
-| Method | Option Price | 95% CI | Avg Exercise | Training Time |
-|--------|-------------|---------|--------------|---------------|
-| **D4PG-RL** | 5.487 | ±0.024 | 18.2 | ~2 hours |
-| **LSM Benchmark** | 5.463 | ±0.026 | 18.4 | ~10 minutes |
-| **Relative Error** | +0.44% | - | -1.1% | - |
+| Method | Option Price | 95% CI | Avg Exercise | Sample Size | Training Time |
+|--------|-------------|---------|--------------|-------------|---------------|
+| **D4PG-RL** | 2.660 | ±0.085 | 11.66 | 4,096 paths | ~2 hours |
+| **LSM Benchmark** | 2.682 | ±0.089 | 11.35 | 4,096 paths | ~10 minutes |
+| **Relative Error** | -0.82% | - | +2.7% | - | - |
+
+### Statistical Analysis
+
+**Price Convergence:**
+- Bootstrap mean delta (RL - LSM): -0.0204
+- 95% Confidence interval: [-0.141, +0.097] 
+- Welch's t-test: p = 0.724 (no significant difference)
+
+**Exercise Efficiency:**
+- RL efficiency slope: 0.2874 (95% CI: [0.280, 0.295])
+- LSM efficiency slope: 0.2942 (95% CI: [0.287, 0.302])
+- Both methods show similar value-per-unit allocation efficiency
 
 ### Key Insights
 
-1. **Pricing Accuracy**: RL achieves competitive pricing with <0.5% deviation from LSM
-2. **Exercise Behavior**: Similar allocation patterns but subtle timing differences
-3. **Uncertainty Quantification**: Distributional RL provides richer risk metrics
-4. **Scalability**: RL approach scales better to higher-dimensional constraints
+1. **Pricing Accuracy**: RL achieves statistically equivalent pricing (p = 0.724) with <1% deviation from LSM
+2. **Exercise Behavior**: RL shows earlier exercise timing (p < 1e-17) but similar total allocation patterns
+3. **Efficiency Metrics**: Both methods demonstrate comparable efficiency slopes (~0.29), indicating similar optimization quality
+4. **Distributional Learning**: RL provides full return distributions while LSM gives point estimates with bootstrap CIs
+5. **Temporal Patterns**: RL exhibits front-loading bias while LSM prefers more uniform allocation over time
 
 ## Validation & Benchmarking
 
