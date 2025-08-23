@@ -52,7 +52,7 @@ A swing option grants the right to repeatedly exercise a quantity \( q_t \in [q_
 Per decision time $t$:
 
 $$
-	ext{payoff}_t = q_t \cdot \max\left(S_t - K, 0\right)
+	Payoff_t = q_t \cdot \max\left(S_t - K, 0\right)
 $$
 
 Discounted path present value (PV):
@@ -73,7 +73,7 @@ $$
 \begin{aligned}
 dX_t &= -\alpha\, X_t\, dt + \sigma\, dW_t &&\text{(diffusive mean-reverting factor)}\\
 dY_t &= -\beta\, Y_t\, dt + J_t\, dN_t &&\text{(jump/spike factor)}\\
-S_t  &= f(t)\, e^{X_t + Y_t}\quad\text{or}\quad e^{f(t) + X_t + Y_t}\
+S_t  &= f(t)\, e^{X_t + Y_t}\quad\text{or}\quad e^{f(t) + X_t + Y_t}
 \end{aligned}
 $$
 Seasonality (e.g., deterministic sinusoid) is embedded in \( f(t) \).  
@@ -142,7 +142,7 @@ D4PG-QR-FRM/
 ### 5.1 Environment (`swing_env.py`)
 State vector (intended, final shape = 9):
 $$
-[\, (S_t - K),\; q_{\text{exercised\_norm}},\; q_{\text{remaining\_norm}},\; \text{time\_to\_maturity\_norm},\; \text{progress\_norm},\; S_t,\; X_t,\; Y_t,\; \text{days\_since\_last\_exercise\_norm} \,]
+\left[\, S_t - K,\; \frac{q_{\text{exercised}}}{Q_{\max}},\; \frac{q_{\text{remaining}}}{Q_{\max}},\; \text{time\mbox{-}to\mbox{-}maturity}_{\text{norm}},\; \text{progress}_{\text{norm}},\; S_t,\; X_t,\; Y_t,\; \text{days\mbox{-}since\mbox{-}last\mbox{-}exercise}_{\text{norm}} \,\right]
 $$
 Action: scalar in [0,1] → denormalized to [q_min, q_max].  
 Reward function (financial discounting): $(df)^{t+1} q_t (S_t-K)^+$ or with \(\max(\cdot,0)\) depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
@@ -150,9 +150,9 @@ Terminate when: maturity reached OR $Q\_\text{exercised} ≥ Q_{\max}$.
 
 ### 5.2 Agent (`agent.py`)
 Implements D4PG style updates:  
-* Actor: deterministic policy \( a = \mu(s) \)  
+* Actor: deterministic policy $a = \mu(s)$
 * Critic: either standard Q-network or distributional IQN (quantile embedding + cosine basis)  
-* Target networks: soft updated by \( \tau \)  
+* Target networks: soft updated by $\tau$
 * Replay: uniform circular or prioritized variant  
 * N‑step return aggregation prior to storage  
 * Optional Munchausen reward shaping / log-policy augmentation (currently placeholder; policy log‑prob needs action distribution assumption—e.g., squashed Gaussian—for continuous domain)  
