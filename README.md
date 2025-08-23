@@ -317,11 +317,11 @@ Comprehensive comparison of RL vs LSM pricing with statistical significance test
 If you use this codebase in academic research:
 
 ```bibtex
-@misc{d4pg_swing_options_2025,
-    title={D4PG-QR-FRM: Deep Reinforcement Learning for Swing Option Pricing},
-    author={[Your Name]},
+@misc{drl_swing_options_2025,
+    title={DRL-Swing-Options: Deep Reinforcement Learning for Swing Option Pricing},
+    author={Alexander-Tsoskounoglou},
     year={2025},
-    url={https://github.com/ithakis/D4PG-QR-FRM},
+    url={https://github.com/ithakis/DRL-Swing-Options},
     note={Research implementation of distributional deep RL for energy derivatives}
 }
 ```
@@ -329,22 +329,6 @@ If you use this codebase in academic research:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Priority Areas
-- Additional stochastic process models (Ornstein-Uhlenbeck variations)
-- Alternative RL algorithms (SAC, TD3, PPO adaptations)  
-- Real market data integration and calibration tools
-- Performance optimizations and distributed training
-
-## Support
-
-- **Issues**: Use GitHub Issues for bug reports and feature requests
-- **Discussions**: GitHub Discussions for research questions and methodology
-- **Email**: [maintainer@email.com] for private inquiries
 
 ---
 
