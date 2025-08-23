@@ -145,8 +145,8 @@ $$
 [\, (S_t - K),\; q_{\text{exercised\_norm}},\; q_{\text{remaining\_norm}},\; \text{time\_to\_maturity\_norm},\; \text{progress\_norm},\; S_t,\; X_t,\; Y_t,\; \text{days\_since\_last\_exercise\_norm} \,]
 $$
 Action: scalar in [0,1] → denormalized to [q_min, q_max].  
-Reward function (financial discounting): $$ (df)^{t+1} q_t (S_t-K)^+ $$ or with \(\max(\cdot,0)\) depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
-Terminate when: maturity reached OR \( Q\_\text{exercised} ≥ Q_{\max} \).  
+Reward function (financial discounting): $(df)^{t+1} q_t (S_t-K)^+$ or with \(\max(\cdot,0)\) depending on chosen variant (current code shows both lines; remove the non-clipped variant for correctness).  
+Terminate when: maturity reached OR $Q\_\text{exercised} ≥ Q_{\max}$.  
 
 ### 5.2 Agent (`agent.py`)
 Implements D4PG style updates:  
@@ -660,13 +660,13 @@ Where $e^{-r t}$ ensures proper present value calculation for swing option prici
 **Swing Option Valuation Formulas:**
 
 **1. Per-step Payoff:**
-$$\text{Payoff at time } t = q_t \cdot (S_t - K)^+$$
+$\text{Payoff at time } t = q_t \cdot (S_t - K)^+$
 
 **2. Path-wise Total Discounted Payoff:**
-$$P_{\text{path}} = \sum_{t=1}^{T} e^{-r t} \cdot q_t \cdot (S_t - K)^+$$
+$P_{\text{path}} = \sum_{t=1}^{T} e^{-r t} \cdot q_t \cdot (S_t - K)^+$
 
 **3. Option Value (Monte Carlo Estimate):**
-$$V_0 = \frac{1}{N} \sum_{i=1}^{N} P_{\text{path},i}$$
+$V_0 = \frac{1}{N} \sum_{i=1}^{N} P_{\text{path},i}$
 
 ## Dependencies
 
