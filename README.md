@@ -48,12 +48,24 @@ Note on discounting: because the environment reward already applies financial di
 A swing option grants the right to repeatedly exercise a quantity \( q_t \in [q_{\min}, q_{\max}] \) over \( N = n\_rights \) discrete times subject to a **global cap** \( Q_{\max} \) (and optionally a minimum \( Q_{\min} \)) and optional refraction constraints (minimum time between positive exercises).  
 
 ### 2.2 Payoff Mechanics
-Per decision time \( t \):  
-$ \text{payoff}_t = q_t \,(S_t - K)^+ $
-Discounted path PV:  
-$ P_{\text{path}} = \sum_{t=1}^N e^{-r t \Delta t}\, q_t (S_t-K)^+ $
-Monte Carlo estimator (risk–neutral):  
-$ V_0 = \frac{1}{M} \sum_{i=1}^M P_{\text{path}, i}. $
+
+Per decision time $t$:
+
+```
+payoff_t = q_t \cdot \max(S_t - K, 0)
+```
+
+Discounted path present value (PV):
+
+```
+P_{path} = \sum_{t=1}^N e^{-r t \Delta t} \, q_t \cdot \max(S_t - K, 0)
+```
+
+Monte Carlo estimator (risk–neutral):
+
+```
+V_0 = \frac{1}{M} \sum_{i=1}^M P_{path, i}
+```
 
 ### 2.3 Underlying Spot (HHK Model – stylized)
 Two-factor with mean-reversion and spikes:
