@@ -615,6 +615,7 @@ def evaluate_swing_option(
     writer: SummaryWriter,
     path: int,
     evaluations_dir: str,
+    lsm_price: float,
     csv_writer: Optional[AsyncCSVWriter] = None,
 ) -> List[float]:
     """
@@ -754,10 +755,22 @@ def evaluate_swing_option(
     confidence_95 = 1.96 * price_std / np.sqrt(n_paths)
 
     if path is not None:
+        # Legacy logs
         writer.add_scalar("Swing_Option_Price", option_price, path)
         writer.add_scalar("Price_Std", price_std, path)
         writer.add_scalar("Avg_Total_Exercised", avg_exercised, path)
         writer.add_scalar("Avg_Exercise_Count", avg_exercises, path)
+
+        # Grouped Pricing metrics (same tab)
+        price_delta = option_price - float(lsm_price)
+        if float(lsm_price) != 0.0:
+            price_delta_pct = 100.0 * price_delta / float(lsm_price)
+        else:
+            price_delta_pct = 0.0
+        writer.add_scalar("Pricing/RL_Price", option_price, path)
+        writer.add_scalar("Pricing/LSM_Price", float(lsm_price), path)
+        writer.add_scalar("Pricing/Delta_Price", price_delta, path)
+        writer.add_scalar("Pricing/Delta_Percent", price_delta_pct, path)
 
         # Print detailed evaluation results
         print(f"\n{'=' * 50}")
@@ -933,6 +946,7 @@ def run_training(
     action_low: float,
     action_high: float,
     evaluations_dir: str,
+    lsm_price: float,
     csv_writer: Optional[AsyncCSVWriter] = None,
 ) -> None:
     """
@@ -976,6 +990,7 @@ def run_training(
             writer=tensorboard_writer,
             path=0,
             evaluations_dir=evaluations_dir,
+            lsm_price=lsm_price,
             csv_writer=csv_writer,
         )
     for current_path in range(1, args.n_paths + 1):
@@ -1073,6 +1088,7 @@ def run_training(
                 writer=tensorboard_writer,
                 path=current_path,
                 evaluations_dir=evaluations_dir,
+                lsm_price=lsm_price,
                 csv_writer=csv_writer,
             )
 
@@ -1228,6 +1244,7 @@ def main():
             action_low=action_low,
             action_high=action_high,
             evaluations_dir=evaluations_dir,
+            lsm_price=mean_lsm_price,
             csv_writer=csv_writer,
         )
 
