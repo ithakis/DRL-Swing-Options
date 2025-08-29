@@ -34,7 +34,7 @@ args=(
     --Q_min=0.0
     --Q_max=100.0             # up to 100 call rights
     --risk_free_rate=0.0      # r = 0 in the experiment
-    --min_refraction_days=0
+    --min_refraction_periods=0
     # ── HHK spike-model parameters (Fig. 1 & 10, matches notebook) ───
     --S0=1.0                  # initial spot (matches strike scale)
     --alpha=7.0               # OU mean-reversion speed

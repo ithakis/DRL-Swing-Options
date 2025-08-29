@@ -39,9 +39,9 @@ args=(
     --q_min=0.0                # Min exercise per decision (no minimum)
     --q_max=2.0                # Max exercise per decision
     --Q_min=0.0                # Global minimum exercise (none)
-    --Q_max=44.0               # Global maximum exercise (e.g. 44 units total)
+    --Q_max=20.0               # Global maximum exercise (e.g. 20 units total)
     --risk_free_rate=0.05      # 5% annual risk-free rate
-    --min_refraction_days=0    # No refraction period (can exercise in consecutive days)
+    --min_refraction_periods=0 # Minimum refraction (cooldown) periods after exercise
 
     # Stochastic process (HHK model) parameters (unchanged from baseline)
     --S0=1.0                   # Initial spot price
@@ -52,10 +52,10 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_44_16k_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_44_16k_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_44_16k_13" -seed 13 &
-python run.py "${args[@]}" -name "SwingOption_44_16k_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_16k_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_16k_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_16k_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption_20_16k_14" -seed 14
 
 # python run.py "${args[@]}" -name "SwingOption2_32k_15" -seed 15 &
 # python run.py "${args[@]}" -name "SwingOption2_32k_16" -seed 16 &

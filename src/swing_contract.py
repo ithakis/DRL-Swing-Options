@@ -24,8 +24,8 @@ class SwingContract:
     maturity: float = 1.0           # Time to maturity in years
     n_rights: int = 250             # Number of decision dates
     
-    # Refraction period (minimum time between exercises)
-    min_refraction_days: int = 0    # Minimum days between exercises (0 = no restriction)
+    # Refraction period (minimum periods between exercises)
+    min_refraction_periods: int = 0    # If >0, after exercising you must wait this many periods before you can exercise again
     
     # Discount rate
     r: float = 0.05                 # Risk-free rate for discounting
@@ -78,9 +78,9 @@ class SwingContract:
             return False
         
         # Refraction constraint
-        if (self.min_refraction_days > 0 and 
+        if (self.min_refraction_periods > 0 and 
             last_exercise_step >= 0 and 
-            current_step - last_exercise_step < self.min_refraction_days):
+            current_step - last_exercise_step <= self.min_refraction_periods):
             if action > 0:  # Only applies if we're trying to exercise
                 return False
         

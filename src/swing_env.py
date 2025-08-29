@@ -203,9 +203,9 @@ class SwingOptionEnv(gym.Env):
         q_feasible = min(q_feasible, max_allowed)
         
         # Refraction constraint
-        if (self.contract.min_refraction_days > 0 and 
+        if (self.contract.min_refraction_periods > 0 and 
             self.last_exercise_step >= 0 and
-            self.current_step - self.last_exercise_step < self.contract.min_refraction_days):
+            self.current_step - self.last_exercise_step <= self.contract.min_refraction_periods):
             q_feasible = 0.0
             
         # Ensure we can still meet global minimum in remaining steps

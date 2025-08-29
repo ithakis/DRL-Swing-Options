@@ -45,7 +45,7 @@ args=(
     --Q_min=0.0                 # No minimum total exercise requirement
     --Q_max=20.0                # Max 20 units total over the month (10 days worth)
     --risk_free_rate=0.05       # 5% annual risk-free rate
-    --min_refraction_days=0     # No refraction period (can exercise daily)
+    --min_refraction_periods=0     # No refraction period (can exercise consecutive periods)
     
     # Market Process Parameters (monthly calibration)
     --S0=1.0                  # Initial spot price

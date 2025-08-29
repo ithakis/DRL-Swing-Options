@@ -176,6 +176,7 @@ This launches multiple seeds with 32,768 training episodes and comprehensive eva
 ### Swing Option Adaptations
 
 - **Constraint Handling**: Automatic feasibility checking for all contract constraints
+- **Refraction (Cooldown) Periods**: Use `--min_refraction_periods` to enforce a cooldown after exercise. For example, `--min_refraction_periods=1` blocks the immediate next period after any exercise. Applied consistently in both RL environment and LSM benchmark.
 - **Monte Carlo Pricing**: Statistical evaluation framework with confidence intervals
 - **Multi-Benchmark Evaluation**: LSM and FDM comparison methods
 - **Rich State Representation**: Spot price, exercise history, underlying factors, market regime

@@ -152,7 +152,7 @@ class ConfigManager:
             "--risk_free_rate", type=float, default=0.05, help="Risk-free rate for discounting, default = 0.05"
         )
         parser.add_argument(
-            "--min_refraction_days", type=int, default=0, help="Minimum days between exercises, default = 0"
+            "--min_refraction_periods", type=int, default=0, help="Minimum periods between exercises, default = 0"
         )
 
         # HHK Stochastic Process Parameters
@@ -1116,8 +1116,8 @@ def main():
         strike=args.strike,
         maturity=args.maturity,
         n_rights=args.n_rights,
-        r=args.risk_free_rate,
-        min_refraction_days=args.min_refraction_days,
+    r=args.risk_free_rate,
+    min_refraction_periods=args.min_refraction_periods,
     )
 
     stochastic_process_params = {
