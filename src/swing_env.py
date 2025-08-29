@@ -36,20 +36,25 @@ from gymnasium.spaces import Box
 from .swing_contract import SwingContract
 
 
-def calculate_standardized_reward(spot_price: float, q_actual: float, strike: float, 
-                                current_step: int, discount_factor: float) -> float:
+def calculate_standardized_reward(
+    spot_price: float,
+    q_actual: float,
+    strike: float,
+    current_step: int,
+    discount_factor: float,
+) -> float:
     """
     Standardized reward calculation for reinforcement learning
     
     Updated to match the swing option pricing formula:
     Per-step Payoff: q_t * (S_t - K)^+
-    Path-wise Total: sum_{t=1}^T e^{-r*t} * q_t * (S_t - K)^+
+    Path-wise Total: sum_{j=0}^{T-1} (df**j) * q_j * (S_j - K)^+
     
     Args:
         spot_price: Current spot price
         q_actual: Actual exercise quantity
         strike: Strike price
-        current_step: Current time step
+        current_step: 0-based time step index j
         discount_factor: Discount factor per step
         
     Returns:
@@ -60,8 +65,8 @@ def calculate_standardized_reward(spot_price: float, q_actual: float, strike: fl
     
     immediate_payoff = q_actual * payoff_per_unit
     
-    # Apply discrete discounting
-    discounted_reward = (discount_factor ** (current_step + 1)) * immediate_payoff
+    # Apply discrete discounting with 0-based exponent (aligns with t_j = j * dt)
+    discounted_reward = (discount_factor ** current_step) * immediate_payoff
     
     return discounted_reward
 
@@ -127,62 +132,63 @@ class SwingOptionEnv(gym.Env):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Take one step in the environment"""
         action_value = float(action[0])
-        
+
         # Denormalize action to contract quantity
         q_proposed = self.contract.denormalize_action(action_value)
-        
+
         # Check feasibility and clip if necessary
         q_actual = self._get_feasible_action(q_proposed)
-        
-        # Calculate reward using standardized function
+
+        # Current spot at this decision time
         spot_price = self.spot_path[self.current_step]
 
         # If out-of-the-money, do not allow exercising: ignore action (q_actual=0)
-        # This enforces that attempted exercises when (S_t - K) <= 0 are not registered.
         if spot_price - self.contract.strike <= 0.0:
             q_actual = 0.0
-        
-        # Update state first to get current totals
-        if q_actual > 1e-6:  # Threshold for "exercise occurred"
+
+        # Track last exercise time if any amount exercised
+        if q_actual > 1e-6:
             self.last_exercise_step = self.current_step
-            
+
+        # Compute new cumulative exercised and advance time
         new_q_exercised = self.q_exercised + q_actual
         self.current_step += 1
-        
-        # Check termination conditions
-        terminated = (self.current_step >= self.contract.n_rights or 
-                     new_q_exercised >= self.contract.Q_max - 1e-6)
-        truncated = False
-        
-        # Calculate total reward including terminal penalty if needed
-        # Use continuous discounting as per the swing option pricing formula
-        total_reward = calculate_standardized_reward(
-            spot_price, q_actual, self.contract.strike, 
-            self.current_step - 1, self.contract.discount_factor
+
+        # Termination conditions
+        terminated = (
+            self.current_step >= self.contract.n_rights
+            or new_q_exercised >= self.contract.Q_max - 1e-6
         )
-        
-        # Update episode state
+        truncated = False
+
+        # Per-step discounted reward with 0-based exponent (j = current_step - 1)
+        total_reward = calculate_standardized_reward(
+            spot_price=spot_price,
+            q_actual=q_actual,
+            strike=self.contract.strike,
+            current_step=self.current_step - 1,
+            discount_factor=self.contract.discount_factor,
+        )
+
+        # Update episode bookkeeping
         self.q_exercised = new_q_exercised
         self.episode_return += total_reward
-        
-        # Calculate components for info (for backward compatibility)
+
+        # Info for analysis/logging
         immediate_reward = q_actual * max(spot_price - self.contract.strike, 0.0)
         discounted_reward = (self.contract.discount_factor ** (self.current_step - 1)) * immediate_reward
-        terminal_penalty = total_reward - discounted_reward
-        
         info = {
-            'spot_price': spot_price,
-            'q_proposed': q_proposed,
-            'q_actual': q_actual,
-            'immediate_payoff': immediate_reward,
-            'discounted_reward': discounted_reward,
-            'terminal_penalty': terminal_penalty,
-            'cumulative_exercised': self.q_exercised,
-            'episode_return': self.episode_return
+            "spot_price": spot_price,
+            "q_proposed": q_proposed,
+            "q_actual": q_actual,
+            "immediate_payoff": immediate_reward,
+            "discounted_reward": discounted_reward,
+            "terminal_penalty": 0.0,
+            "cumulative_exercised": self.q_exercised,
+            "episode_return": self.episode_return,
         }
-        
+
         next_obs = self._get_observation()
-        
         return next_obs, total_reward, terminated, truncated, info
     
     def _get_feasible_action(self, q_proposed: float) -> float:

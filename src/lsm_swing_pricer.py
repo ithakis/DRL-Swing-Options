@@ -95,7 +95,8 @@ def price_swing_option_lsm(
     records = []
     for j in range(n_steps):
         price = prices[:, j]
-        disc = df ** (j + 1)
+        # Use 0-based discount exponent so that the first decision at t=0 is undiscounted
+        disc = df ** j
         for i in range(n_paths):
             r = rights[i]
             q_before = q_used[i]
