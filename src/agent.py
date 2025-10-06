@@ -1,6 +1,6 @@
 import copy
 import random
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -19,6 +19,9 @@ except ImportError:
 class Agent:
     """Stable Agent implementation with diagnostics."""
     def __init__(self, state_size, action_size, n_step, per, munchausen, distributional, noise_type, random_seed, hidden_size,
+                 actor_hidden_size: Optional[int] = None, critic_hidden_size: Optional[int] = None,
+                 actor_layers: int = 2, critic_layers: int = 2,
+                 optimizer: str = "adamw", weight_decay_actor: float = 0.0, weight_decay_critic: float = 1e-4,
                  BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=1e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
                  WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
                  device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
@@ -46,18 +49,55 @@ class Agent:
 
         self.min_replay_size = min_replay_size or BATCH_SIZE * 10
 
-        self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-        self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
+        actor_hidden_size = actor_hidden_size or hidden_size
+        critic_hidden_size = critic_hidden_size or hidden_size
+        if actor_layers < 1:
+            raise ValueError(f"actor_layers must be >= 1, got {actor_layers}")
+        if critic_layers < 2 and not distributional:
+            raise ValueError("critic_layers must be >= 2 when using the standard critic")
+
+        optimizer_name = optimizer.lower()
+        if optimizer_name not in {"adam", "adamw"}:
+            raise ValueError(f"Unsupported optimizer '{optimizer}'. Choose from 'adam', 'adamw'.")
+        optim_cls = optim.AdamW if optimizer_name == "adamw" else optim.Adam
+
+        self.actor_hidden_size = actor_hidden_size
+        self.critic_hidden_size = critic_hidden_size
+        self.actor_layers = actor_layers
+        self.critic_layers = critic_layers
+        self.optimizer_name = optimizer_name
+        self._updates_done = 0
+
+        self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
+        self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
+        self.actor_target.load_state_dict(self.actor_local.state_dict())
+        self.actor_optimizer = optim_cls(self.actor_local.parameters(), lr=LR_ACTOR, weight_decay=weight_decay_actor)
 
         if distributional:
             self.N = 32
-            self.critic_local = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
-            self.critic_target = IQN(state_size, action_size, layer_size=hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
+            self.critic_local = IQN(state_size, action_size, layer_size=critic_hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
+            self.critic_target = IQN(state_size, action_size, layer_size=critic_hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
+            self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
-            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=hidden_size).to(device)
-        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)
+            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers).to(device)
+            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers).to(device)
+            self.critic_target.load_state_dict(self.critic_local.state_dict())
+        self.critic_optimizer = optim_cls(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=weight_decay_critic)
+
+        actor_params = sum(p.numel() for p in self.actor_local.parameters())
+        critic_params = sum(p.numel() for p in self.critic_local.parameters())
+        optimizer_label = optim_cls.__name__
+        print(
+            f"Optimizer setup: optimizer={optimizer_label} | "
+            f"actor_lr={LR_ACTOR:.2e} (weight_decay={weight_decay_actor:.1e}) | "
+            f"critic_lr={LR_CRITIC:.2e} (weight_decay={weight_decay_critic:.1e})"
+        )
+        print(
+            f"Actor params: {actor_params:,} | hidden_size={actor_hidden_size} | layers={actor_layers}"
+        )
+        print(
+            f"Critic params: {critic_params:,} | hidden_size={critic_hidden_size} | layers={'IQN' if distributional else critic_layers}"
+        )
 
         self.entropy_tau = 0.03
         self.lo = -1.0
@@ -191,6 +231,7 @@ class Agent:
         actor_loss.backward()
         clip_grad_norm_(self.actor_local.parameters(), 1.0)
         self.actor_optimizer.step()
+        self._updates_done += 1
         if self.step_counter % 200 == 0:
             with torch.no_grad():
                 tgt_q = self.critic_target(states, self.actor_target(states))
@@ -245,6 +286,7 @@ class Agent:
         actor_loss.backward()
         clip_grad_norm_(self.actor_local.parameters(), 1.0)
         self.actor_optimizer.step()
+        self._updates_done += 1
         if self.per and hasattr(self.memory, 'update_priorities'):
             pr = td_error.mean(dim=(1, 2)).abs().clamp_min(1e-6).detach().cpu().numpy()
             self.memory.update_priorities(idx, pr)
@@ -264,6 +306,10 @@ class Agent:
         if self.noise is not None:
             self.noise.reset()
         return critic_loss.item(), actor_loss.item()
+
+    @property
+    def updates_done(self) -> int:
+        return self._updates_done
 
     def soft_update(self, local, target):
         with torch.no_grad():

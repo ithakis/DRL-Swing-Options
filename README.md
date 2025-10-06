@@ -30,6 +30,12 @@ This implementation combines:
 3. **Advanced RL Extensions**: Prioritized Experience Replay, Munchausen RL, N-step bootstrapping
 4. **Comprehensive Benchmarking**: Least-Squares Monte Carlo (LSM) and Finite Difference Methods (FDM)
 
+## Recent Updates
+
+- Switchable optimizers via `--optimizer {adam, adamw}` (default: AdamW) with decoupled `--weight_decay_actor` and `--weight_decay_critic` controls (critic defaults to `1e-4`).
+- Actor and critic networks now respect `-layer_size` and can be tuned independently with `--actor_hidden_size`, `--critic_hidden_size`, `--actor_layers`, and `--critic_layers`.
+- Model build logs report the chosen widths/depths and parameter counts for both actor and critic to simplify experiment tracking.
+
 ## Mathematical Framework
 
 ### Swing Option Valuation
@@ -150,7 +156,11 @@ python run.py \
     --batch_size 64 \
     --tau 0.003 \
     --lr_a 3e-4 \
-    --lr_c 2e-4
+    --lr_c 2e-4 \
+    --optimizer adamw \
+    --weight_decay_critic 1e-4 \
+    --actor_layers 2 --critic_layers 2 \
+    -layer_size 128
 ```
 
 ### Production Training
@@ -162,6 +172,13 @@ bash run.sh
 ```
 
 This launches multiple seeds with 32,768 training episodes and comprehensive evaluation.
+
+### Optimizer and Network Configuration
+
+- **Optimizer selection**: Use `--optimizer adam` for legacy Adam or `--optimizer adamw` (default) for decoupled weight decay. Tweak decay with `--weight_decay_actor` and `--weight_decay_critic` (critic defaults to `1e-4`).
+- **Network sizing**: `-layer_size` remains the global width knob. Override per-network widths with `--actor_hidden_size` / `--critic_hidden_size`.
+- **Depth control**: Set `--actor_layers` and `--critic_layers` (defaults: 2). The critic enforces at least two layers so that actions are merged after the state encoder.
+- **Run diagnostics**: Model construction prints optimizer configuration plus actor/critic parameter counts so logs capture the exact architecture used in each run.
 
 ## Algorithm Features
 

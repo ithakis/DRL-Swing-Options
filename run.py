@@ -223,8 +223,32 @@ class ConfigManager:
         parser.add_argument(
             "-layer_size",
             type=int,
-            default=256,
-            help="Number of nodes per neural network layer, default is 256",
+            default=128,
+            help="Legacy hidden size flag applied when specific actor/critic sizes are not provided (default: 128)",
+        )
+        parser.add_argument(
+            "--actor_hidden_size",
+            type=int,
+            default=None,
+            help="Hidden width for the actor network (overrides -layer_size for the policy)",
+        )
+        parser.add_argument(
+            "--critic_hidden_size",
+            type=int,
+            default=None,
+            help="Hidden width for the critic network (overrides -layer_size for the value function)",
+        )
+        parser.add_argument(
+            "--actor_layers",
+            type=int,
+            default=2,
+            help="Number of hidden layers in the actor network (default: 2)",
+        )
+        parser.add_argument(
+            "--critic_layers",
+            type=int,
+            default=2,
+            help="Number of hidden layers in the critic network (default: 2; must be >=2)",
         )
         parser.add_argument(
             "-epsilon",
@@ -273,6 +297,25 @@ class ConfigManager:
             "-t", "--t", type=float, default=1e-3, help="Softupdate factor t, default is 1e-3"
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
+        parser.add_argument(
+            "--optimizer",
+            type=str,
+            choices=["adam", "adamw"],
+            default="adamw",
+            help="Optimizer for actor/critic (default: adamw)",
+        )
+        parser.add_argument(
+            "--weight_decay_actor",
+            type=float,
+            default=0.0,
+            help="Decoupled weight decay applied to the actor optimizer (default: 0.0)",
+        )
+        parser.add_argument(
+            "--weight_decay_critic",
+            type=float,
+            default=1e-4,
+            help="Decoupled weight decay applied to the critic optimizer (default: 1e-4)",
+        )
 
         # System and Optimization Parameters
         parser.add_argument(
@@ -964,6 +1007,8 @@ def run_training(
     scores = []
     scores_window = deque(maxlen=100)
     total_steps = 0
+    last_update_time = time.time()
+    last_update_count = agent.updates_done
 
     print(f"\n{'=' * 60}")
     print("STARTING RL AGENT TRAINING")
@@ -1040,6 +1085,16 @@ def run_training(
         # Performance monitoring
         TrainingManager.monitor_performance(agent, current_path, steps_per_sec)
 
+        current_update_time = time.time()
+        updates_completed = agent.updates_done
+        update_interval = current_update_time - last_update_time
+        if update_interval > 0:
+            updates_per_second = (updates_completed - last_update_count) / update_interval
+        else:
+            updates_per_second = 0.0
+        last_update_time = current_update_time
+        last_update_count = updates_completed
+
         # Calculate episode return and update tracking
         episode_return = float(score)
         scores_window.append(episode_return)
@@ -1051,6 +1106,7 @@ def run_training(
         tensorboard_writer.add_scalar("Episode_Return", episode_return, current_path)
         tensorboard_writer.add_scalar("Paths_Per_Second", paths_per_sec, current_path)
         tensorboard_writer.add_scalar("Steps_Per_Second", steps_per_sec, current_path)
+        tensorboard_writer.add_scalar("Updates_Per_Second", updates_per_second, current_path)
         tensorboard_writer.add_scalar("Total_Steps", total_steps, current_path)
         tensorboard_writer.add_scalar("Path_Length", path_steps, current_path)
         
@@ -1062,7 +1118,7 @@ def run_training(
         print(
             f"Path {current_path}/{args.n_paths} | Return = {episode_return:.3f} | "
             f"Steps = {path_steps} | Paths/sec = {paths_per_sec:.1f} | "
-            f"Steps/sec = {steps_per_sec:.0f}"
+            f"Steps/sec = {steps_per_sec:.0f} | Updates/sec = {updates_per_second:.1f}"
         )
 
         # Post-training evaluation logic
@@ -1193,6 +1249,9 @@ def main():
     state_size = train_env.observation_space.shape[0]   # pyright: ignore[reportOptionalSubscript]
     action_size = train_env.action_space.shape[0]       # pyright: ignore[reportOptionalSubscript]
 
+    actor_hidden_size = args.actor_hidden_size or args.layer_size
+    critic_hidden_size = args.critic_hidden_size or args.layer_size
+
     agent = Agent(
         state_size=train_env.observation_space.shape[0],
         action_size=train_env.action_space.shape[0],
@@ -1203,13 +1262,19 @@ def main():
         noise_type=args.noise,
         random_seed=seed,
         hidden_size=args.layer_size,
+        actor_hidden_size=actor_hidden_size,
+        critic_hidden_size=critic_hidden_size,
+        actor_layers=args.actor_layers,
+        critic_layers=args.critic_layers,
+        optimizer=args.optimizer,
+        weight_decay_actor=args.weight_decay_actor,
+        weight_decay_critic=args.weight_decay_critic,
         BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
         GAMMA=args.gamma,
         t=args.t,
         LR_ACTOR=args.lr_a,
         LR_CRITIC=args.lr_c,
-        WEIGHT_DECAY=0,
         LEARN_EVERY=args.learn_every,
         LEARN_NUMBER=args.learn_number,
         epsilon=args.epsilon,
