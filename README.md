@@ -71,10 +71,7 @@ The RL formulation treats swing option exercise as a continuous control problem:
 
 - **State Space**: $[S_t/K, Q_{\text{exercised}}/Q_{\max}, \text{TTM}, X_t, Y_t, \ldots]$
 - **Action Space**: Normalized exercise quantity $\tilde{q}_t \in [0,1]$
-- **Reward**:
-  $$
-  r_t = e^{-r\Delta t}\left[q_t \cdot \max(S_t - K, 0) - c_{\text{cost}} \, q_t^{\gamma_{\text{cost}}}\right]
-  $$
+- **Reward**: $r_t = e^{-r\Delta t}\left[q_t \cdot \max(S_t - K, 0) - c_{\text{cost}} \, q_t^{\gamma_{\text{cost}}}\right]$
 - **Policy**: $\pi_\theta(q_t | s_t)$ learned via D4PG
 
 ## Repository Structure
