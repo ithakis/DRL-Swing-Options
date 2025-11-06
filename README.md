@@ -42,15 +42,19 @@ This implementation combines:
 
 ### Swing Option Valuation
 
-The swing option pricing problem is formulated as:
+The swing option pricing problem is formulated as the expected discounted value of net exercise payoffs:
 
-$$V_0 = \mathbb{E}\left[\sum_{t=1}^{T} e^{-rt} \cdot q_t \cdot \max(S_t - K, 0)\right]$$
+$$
+V_0 = \mathbb{E}\left[\sum_{t=0}^{T-1} e^{-r\,t\,\Delta t}\left(q_t \cdot \max(S_t - K, 0) - c_{\text{cost}} \, q_t^{\gamma_{\text{cost}}}\right)\right]
+$$
 
 Where:
-- $q_t \in [q_{\min}, q_{\max}]$: Exercise quantity at time $t$
+- $q_t \in [q_{\min}, q_{\max}]$: Exercise quantity at time index $t$
 - $S_t$: Spot price following the HHK model
 - $K$: Strike price
 - $r$: Risk-free rate
+- $\Delta t = \text{maturity} / (n_{\text{rights}}-1)$: Time-step spacing between exercise opportunities
+- $c_{\text{cost}}$, $\gamma_{\text{cost}}$: Convex exercise cost parameters (defaults $0$ and $1$ recover the no-cost baseline)
 - Constraints: $\sum_{t=1}^T q_t \leq Q_{\max}$, refraction periods, etc.
 
 ### HHK Stochastic Process
