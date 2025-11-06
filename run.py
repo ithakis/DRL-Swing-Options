@@ -154,6 +154,18 @@ class ConfigManager:
         parser.add_argument(
             "--min_refraction_periods", type=int, default=0, help="Minimum periods between exercises, default = 0"
         )
+        parser.add_argument(
+            "--c_cost",
+            type=float,
+            default=0.0,
+            help="Convex cost coefficient c for per-unit exercise cost (0 disables the cost).",
+        )
+        parser.add_argument(
+            "--gamma_cost",
+            type=float,
+            default=1.0,
+            help="Convex cost exponent gamma for per-unit exercise cost.",
+        )
 
         # HHK Stochastic Process Parameters
         parser.add_argument("--S0", type=float, default=100.0, help="Initial spot price, default = 100.0")
@@ -279,6 +291,38 @@ class ConfigManager:
             type=float,
             default=1e-7,
             help="Minimum learning rate floor (default: 1e-7)",
+        )
+        parser.add_argument(
+            "--actor_grad_clip",
+            type=float,
+            default=1.0,
+            help="Clip threshold for actor gradients (<=0 disables clipping, default: 1.0)",
+        )
+        parser.add_argument(
+            "--critic_grad_clip",
+            type=float,
+            default=1.0,
+            help="Clip threshold for critic gradients (<=0 disables clipping, default: 1.0)",
+        )
+        parser.add_argument(
+            "--actor_grad_clip_type",
+            type=str,
+            choices=["norm", "value", "none"],
+            default="norm",
+            help="Clipping strategy for actor gradients (default: norm)",
+        )
+        parser.add_argument(
+            "--critic_grad_clip_type",
+            type=str,
+            choices=["norm", "value", "none"],
+            default="norm",
+            help="Clipping strategy for critic gradients (default: norm)",
+        )
+        parser.add_argument(
+            "--grad_clip_norm_type",
+            type=float,
+            default=2.0,
+            help="Norm type used when clipping by norm (default: 2.0 for L2 norm)",
         )
         parser.add_argument(
             "--max_replay_size",
@@ -1172,8 +1216,10 @@ def main():
         strike=args.strike,
         maturity=args.maturity,
         n_rights=args.n_rights,
-    r=args.risk_free_rate,
-    min_refraction_periods=args.min_refraction_periods,
+        r=args.risk_free_rate,
+        min_refraction_periods=args.min_refraction_periods,
+        c_cost=args.c_cost,
+        gamma_cost=args.gamma_cost,
     )
 
     stochastic_process_params = {
@@ -1291,7 +1337,12 @@ def main():
         final_lr_fraction=args.final_lr_fraction,
         total_episodes=args.n_paths,
         warmup_frac=args.warmup_frac,
-        min_lr=args.min_lr
+        min_lr=args.min_lr,
+        actor_grad_clip=args.actor_grad_clip,
+        critic_grad_clip=args.critic_grad_clip,
+        actor_grad_clip_type=args.actor_grad_clip_type,
+        critic_grad_clip_type=args.critic_grad_clip_type,
+        grad_clip_norm_type=args.grad_clip_norm_type,
     )
     t0 = time.time()
 
