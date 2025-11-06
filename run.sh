@@ -22,13 +22,20 @@ args=(
     --min_replay_size=10000    # Warm-up buffer size before learning starts (random play)
     --max_replay_size=200000   # Replay buffer capacity (stores up to 200k transitions)
     -t=0.003                   # Target network soft-update rate tau (stronger smoothing)
-    -bs=64                     # Batch size for each gradient update
+    -bs=128                    # Batch size for each gradient update
     -layer_size=128            # Hidden layer size for actor/critic networks
     -lr_a=3e-4                 # Actor learning rate (3e-4, constant)
     -lr_c=2e-4                 # Critic learning rate (2e-4, calmer critic)
     --final_lr_fraction=1.0    # Final learning rate as fraction of initial (1.0 => no decay)
     --warmup_frac=0.0          # Fraction of training for learning-rate warmup (0 => no warmup)
     --min_lr=1e-6              # Minimum learning rate (not used since no decay, just a safeguard)
+    --actor_grad_clip=0.5      # Tighter actor gradient clipping for smoother policy updates
+    --critic_grad_clip=1.5     # Allow slightly larger critic updates before clipping
+    --actor_grad_clip_type=norm
+    --critic_grad_clip_type=norm
+    --grad_clip_norm_type=2.0
+    --weight_decay_actor=1e-4  # Light L2 regularization on the policy network
+    --weight_decay_critic=3e-4 # Stronger L2 regularization on the value network
     --compile=0                # Disable torch.compile (for simplicity and compatibility)
     -n_cores=2                 # Number of CPU cores to utilize for parallel processing
 
@@ -42,6 +49,8 @@ args=(
     --Q_max=20.0               # Global maximum exercise (e.g. 20 units total)
     --risk_free_rate=0.05      # 5% annual risk-free rate
     --min_refraction_periods=0 # Minimum refraction (cooldown) periods after exercise
+    --c_cost=0.8               # Convex cost coefficient c in r_t = exp(-r*dt)[q_t(S_t-K)^+ - c*q_t^{gamma}] {0.2,0.4,0.6,0.8}
+    --gamma_cost=3.0           # Convex cost exponent gamma for the per-unit exercise cost term {1.5,2,3}
 
     # Stochastic process (HHK model) parameters (unchanged from baseline)
     --S0=1.0                   # Initial spot price
@@ -52,12 +61,19 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_16k_11_AdamW" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_16k_12_AdamW" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_16k_13_AdamW" -seed 13 &
-python run.py "${args[@]}" -name "SwingOption_20_16k_14_AdamW" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_14" -seed 14
 
 # python run.py "${args[@]}" -name "SwingOption2_32k_15" -seed 15 &
 # python run.py "${args[@]}" -name "SwingOption2_32k_16" -seed 16 &
 # python run.py "${args[@]}" -name "SwingOption2_32k_17" -seed 17 &
 # python run.py "${args[@]}" -name "SwingOption2_32k_18" -seed 18
+
+
+
+## To activate the corect environment, run:
+# > cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options
+# > conda activate EP11
+# > bash run.sh

@@ -39,6 +39,57 @@ from src.swing_env import SwingOptionEnv
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
 
 
+def signed_zero_aware_pct_change(initial: float, new: float) -> float:
+    """
+    Compute the signed, zero-aware percentage change between an initial and new value.
+
+    This handles positive/negative inputs as well as sign flips without raising divide-by-zero
+    errors. When the baseline is zero and the new value is non-zero, the function returns an
+    appropriately signed infinity.
+
+    Examples
+    --------
+    >>> signed_zero_aware_pct_change(-3.0, 0.47)
+    115.7
+    >>> signed_zero_aware_pct_change(2.0, 3.0)
+    50.0
+    >>> signed_zero_aware_pct_change(3.0, -2.0)
+    -166.7
+    """
+
+    a = np.asarray(initial, dtype=float)
+    b = np.asarray(new, dtype=float)
+    a, b = np.broadcast_arrays(a, b)
+
+    result = np.empty_like(a, dtype=float)
+
+    zero_mask = a == 0.0
+    both_zero_mask = zero_mask & (b == 0.0)
+    nonzero_mask = ~zero_mask
+    same_sign_mask = nonzero_mask & (np.sign(a) == np.sign(b))
+
+    result[both_zero_mask] = 0.0
+
+    inf_mask = zero_mask & ~both_zero_mask
+    if np.any(inf_mask):
+        result[inf_mask] = np.sign(b[inf_mask]) * np.inf
+
+    if np.any(same_sign_mask):
+        result[same_sign_mask] = ((b - a) / a * 100.0)[same_sign_mask]
+
+    cross_mask = nonzero_mask & ~same_sign_mask
+    if np.any(cross_mask):
+        result[cross_mask] = (
+            np.sign(b[cross_mask])
+            * (np.abs(b[cross_mask]) + np.abs(a[cross_mask]))
+            / np.abs(a[cross_mask])
+            * 100.0
+        )
+
+    rounded = np.round(result, 1)
+    return float(rounded) if rounded.shape == () else rounded
+
+
 class AsyncCSVWriter:
     """Asynchronous CSV writer to avoid blocking main execution"""
 
@@ -850,10 +901,7 @@ def evaluate_swing_option(
 
         # Grouped Pricing metrics (same tab)
         price_delta = option_price - float(lsm_price)
-        if float(lsm_price) != 0.0:
-            price_delta_pct = 100.0 * price_delta / float(lsm_price)
-        else:
-            price_delta_pct = 0.0
+        price_delta_pct = signed_zero_aware_pct_change(float(lsm_price), option_price)
         writer.add_scalar("Pricing/RL_Price", option_price, path)
         writer.add_scalar("Pricing/LSM_Price", float(lsm_price), path)
         writer.add_scalar("Pricing/Delta_Price", price_delta, path)

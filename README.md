@@ -35,6 +35,8 @@ This implementation combines:
 - Switchable optimizers via `--optimizer {adam, adamw}` (default: AdamW) with decoupled `--weight_decay_actor` and `--weight_decay_critic` controls (critic defaults to `1e-4`).
 - Actor and critic networks now respect `-layer_size` and can be tuned independently with `--actor_hidden_size`, `--critic_hidden_size`, `--actor_layers`, and `--critic_layers`.
 - Model build logs report the chosen widths/depths and parameter counts for both actor and critic to simplify experiment tracking.
+- Configurable gradient clipping for actor/critic (`--actor_grad_clip`, `--critic_grad_clip`) with norm/value modes and bias-safe weight decay groupings for improved stability.
+- Convex per-exercise cost term controllable via `--c_cost` and `--gamma_cost`, shared between the RL environment and LSM benchmark (defaults keep the cost disabled).
 
 ## Mathematical Framework
 
@@ -69,7 +71,10 @@ The RL formulation treats swing option exercise as a continuous control problem:
 
 - **State Space**: $[S_t/K, Q_{\text{exercised}}/Q_{\max}, \text{TTM}, X_t, Y_t, \ldots]$
 - **Action Space**: Normalized exercise quantity $\tilde{q}_t \in [0,1]$
-- **Reward**: $r_t = e^{-rt} \cdot q_t \cdot \max(S_t - K, 0)$
+- **Reward**:
+  $$
+  r_t = e^{-r\Delta t}\left[q_t \cdot \max(S_t - K, 0) - c_{\text{cost}} \, q_t^{\gamma_{\text{cost}}}\right]
+  $$
 - **Policy**: $\pi_\theta(q_t | s_t)$ learned via D4PG
 
 ## Repository Structure

@@ -30,6 +30,10 @@ class SwingContract:
     # Discount rate
     r: float = 0.05                 # Risk-free rate for discounting
     
+    # Convex exercise cost parameters
+    c_cost: float = 0.0             # Convex cost coefficient (0 disables the cost term)
+    gamma_cost: float = 1.0         # Convex cost exponent
+
     def __post_init__(self):
         """Validate contract parameters"""
         assert self.q_min >= 0, "q_min must be non-negative"
@@ -38,6 +42,8 @@ class SwingContract:
         assert self.n_rights > 0, "n_rights must be positive"
         assert self.maturity > 0, "maturity must be positive"
         assert self.r >= 0, "discount rate must be non-negative"
+        assert self.c_cost >= 0.0, "c_cost must be non-negative"
+        assert self.gamma_cost > 0.0, "gamma_cost must be strictly positive"
         
         # Ensure global constraints are feasible
         max_possible = self.q_max * self.n_rights

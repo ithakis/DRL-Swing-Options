@@ -42,7 +42,9 @@ def calculate_standardized_reward(
     strike: float,
     current_step: int,
     discount_factor: float,
-) -> float:
+    cost_coefficient: float,
+    cost_exponent: float,
+) -> Tuple[float, float, float, float]:
     """
     Standardized reward calculation for reinforcement learning
     
@@ -56,19 +58,23 @@ def calculate_standardized_reward(
         strike: Strike price
         current_step: 0-based time step index j
         discount_factor: Discount factor per step
+        cost_coefficient: Convex exercise cost coefficient
+        cost_exponent: Convex exercise cost exponent
         
     Returns:
-        Discounted reward
+        Tuple (discounted reward, gross payoff, exercise cost, net payoff)
     """
     # Calculate immediate payoff: q_t * (S_t - K)^+
     payoff_per_unit = max(spot_price - strike, 0.0)
     
-    immediate_payoff = q_actual * payoff_per_unit
+    gross_payoff = q_actual * payoff_per_unit
+    exercise_cost = cost_coefficient * (q_actual ** cost_exponent)
+    net_payoff = gross_payoff - exercise_cost
     
     # Apply discrete discounting with 0-based exponent (aligns with t_j = j * dt)
-    discounted_reward = (discount_factor ** current_step) * immediate_payoff
+    discounted_reward = (discount_factor ** current_step) * net_payoff
     
-    return discounted_reward
+    return discounted_reward, gross_payoff, exercise_cost, net_payoff
 
 
 class SwingOptionEnv(gym.Env):
@@ -162,12 +168,14 @@ class SwingOptionEnv(gym.Env):
         truncated = False
 
         # Per-step discounted reward with 0-based exponent (j = current_step - 1)
-        total_reward = calculate_standardized_reward(
+        total_reward, gross_payoff, exercise_cost, net_payoff = calculate_standardized_reward(
             spot_price=spot_price,
             q_actual=q_actual,
             strike=self.contract.strike,
             current_step=self.current_step - 1,
             discount_factor=self.contract.discount_factor,
+            cost_coefficient=self.contract.c_cost,
+            cost_exponent=self.contract.gamma_cost,
         )
 
         # Update episode bookkeeping
@@ -175,14 +183,14 @@ class SwingOptionEnv(gym.Env):
         self.episode_return += total_reward
 
         # Info for analysis/logging
-        immediate_reward = q_actual * max(spot_price - self.contract.strike, 0.0)
-        discounted_reward = (self.contract.discount_factor ** (self.current_step - 1)) * immediate_reward
         info = {
             "spot_price": spot_price,
             "q_proposed": q_proposed,
             "q_actual": q_actual,
-            "immediate_payoff": immediate_reward,
-            "discounted_reward": discounted_reward,
+            "gross_payoff": gross_payoff,
+            "exercise_cost": exercise_cost,
+            "immediate_payoff": net_payoff,
+            "discounted_reward": total_reward,
             "terminal_penalty": 0.0,
             "cumulative_exercised": self.q_exercised,
             "episode_return": self.episode_return,

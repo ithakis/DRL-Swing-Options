@@ -56,6 +56,9 @@ def price_swing_option_lsm(
     strike = contract.strike
     qmax = contract.q_max
     cooldown = max(0, int(getattr(contract, "min_refraction_periods", 0)))
+    cost_coeff = contract.c_cost
+    cost_exp = contract.gamma_cost
+    exercise_cost_qmax = cost_coeff * (qmax ** cost_exp)
 
     # number of discrete rights (assumes Q_max multiple of q_max)
     R = int(round(contract.Q_max / qmax))
@@ -64,13 +67,14 @@ def price_swing_option_lsm(
     values = np.zeros((cooldown + 1, R + 1, n_paths))
     exercise = np.zeros((cooldown + 1, R + 1, n_paths, n_steps), dtype=bool)
 
-    payoff_T = qmax * np.maximum(prices[:, -1] - strike, 0.0)
-    itm_T = prices[:, -1] > strike
+    payoff_T_gross = qmax * np.maximum(prices[:, -1] - strike, 0.0)
+    payoff_T_net = payoff_T_gross - exercise_cost_qmax
+    itm_T = payoff_T_gross > 0.0
     # Terminal step: can exercise only if cooldown state c==0 and r>=1
     for c in range(cooldown + 1):
         for r in range(1, R + 1):
             if c == 0:
-                values[c, r] = payoff_T
+                values[c, r] = payoff_T_net
                 exercise[c, r, itm_T, n_steps - 1] = True
             else:
                 # Cannot exercise at terminal if in cooldown; value is zero (no future)
@@ -80,11 +84,12 @@ def price_swing_option_lsm(
 
     for j in range(n_steps - 2, -1, -1):
         price = prices[:, j]
-        payoff = qmax * np.maximum(price - strike, 0.0)
+        payoff_gross = qmax * np.maximum(price - strike, 0.0)
+        payoff_net = payoff_gross - exercise_cost_qmax
         X_poly[:, 0] = 1.0
         for k in range(1, poly_degree + 1):
             X_poly[:, k] = price ** k
-        mask = payoff > 0
+        mask = payoff_gross > 0
         old_vals = values.copy()
         new_vals = values.copy()
         # Iterate cooldown states and rights remaining
@@ -100,9 +105,9 @@ def price_swing_option_lsm(
                     c_ex = cooldown
                     y_ex = df * old_vals[c_ex, r - 1]
                     cont_ex = _regress(X_poly, y_ex, poly_degree, mask)
-                    exc = (payoff + cont_ex > cont_keep) & (payoff > 0)
+                    exc = (payoff_net + cont_ex > cont_keep) & (payoff_gross > 0)
                     exercise[c, r, exc, j] = True
-                    new_vals[c, r] = np.where(exc, payoff + y_ex, y_keep)
+                    new_vals[c, r] = np.where(exc, payoff_net + y_ex, y_keep)
                 else:
                     # In cooldown: cannot exercise
                     new_vals[c, r] = y_keep
@@ -123,13 +128,17 @@ def price_swing_option_lsm(
             q_before = q_used[i]
             if r > 0 and exercise[c, r, i, j]:
                 q = min(qmax, contract.Q_max - q_before)
-                pay = q * max(price[i] - strike, 0.0)
+                payoff_gross = q * max(price[i] - strike, 0.0)
+                pay_cost = cost_coeff * (q ** cost_exp)
+                pay = payoff_gross - pay_cost
                 rights[i] -= 1
                 q_used[i] += q
                 path_payoffs[i] += disc * pay
                 cool_state[i] = cooldown  # reset cooldown after exercising
             else:
                 q = 0.0
+                payoff_gross = 0.0
+                pay_cost = 0.0
                 pay = 0.0
                 # countdown cooldown if in effect
                 if cool_state[i] > 0:
@@ -141,6 +150,8 @@ def price_swing_option_lsm(
                 "q_exercised_so_far": q_before,
                 "q_t": q,
                 "payoff": pay,
+                "payoff_gross": payoff_gross,
+                "exercise_cost": pay_cost,
             })
     # if _print_results: print(f'csv_path: {csv_path}')
     pd.DataFrame(records).to_csv(csv_path, index=False)

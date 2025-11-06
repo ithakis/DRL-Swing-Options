@@ -1,12 +1,12 @@
 import copy
 import random
-from typing import Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
+from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 
 try:
     from .networks import IQN, Actor, Critic
@@ -25,7 +25,10 @@ class Agent:
                  BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=1e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
                  WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
                  device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
-                 final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7, **kwargs):
+                 final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7,
+                 actor_grad_clip: float = 1.0, critic_grad_clip: float = 1.0,
+                 actor_grad_clip_type: str = "norm", critic_grad_clip_type: str = "norm",
+                 grad_clip_norm_type: float = 2.0, **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
             device = torch.device('cuda' if device.lower() in ('cuda', 'gpu') and torch.cuda.is_available() else 'cpu')
@@ -71,7 +74,12 @@ class Agent:
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
         self.actor_target.load_state_dict(self.actor_local.state_dict())
-        self.actor_optimizer = optim_cls(self.actor_local.parameters(), lr=LR_ACTOR, weight_decay=weight_decay_actor)
+        self.actor_optimizer = self._build_optimizer(
+            model=self.actor_local,
+            optim_cls=optim_cls,
+            lr=LR_ACTOR,
+            weight_decay=weight_decay_actor,
+        )
 
         if distributional:
             self.N = 32
@@ -82,7 +90,12 @@ class Agent:
             self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers).to(device)
             self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers).to(device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
-        self.critic_optimizer = optim_cls(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=weight_decay_critic)
+        self.critic_optimizer = self._build_optimizer(
+            model=self.critic_local,
+            optim_cls=optim_cls,
+            lr=LR_CRITIC,
+            weight_decay=weight_decay_critic,
+        )
 
         actor_params = sum(p.numel() for p in self.actor_local.parameters())
         critic_params = sum(p.numel() for p in self.critic_local.parameters())
@@ -116,6 +129,20 @@ class Agent:
         self.min_lr = min_lr
         warmup_episodes = int(self.total_episodes * warmup_frac)
 
+        self.grad_clip_norm_type = grad_clip_norm_type
+        if actor_grad_clip_type == "none" or not actor_grad_clip or actor_grad_clip <= 0:
+            self.actor_grad_clip = None
+            self.actor_grad_clip_type = "none"
+        else:
+            self.actor_grad_clip = actor_grad_clip
+            self.actor_grad_clip_type = actor_grad_clip_type if actor_grad_clip_type in {"norm", "value"} else "norm"
+        if critic_grad_clip_type == "none" or not critic_grad_clip or critic_grad_clip <= 0:
+            self.critic_grad_clip = None
+            self.critic_grad_clip_type = "none"
+        else:
+            self.critic_grad_clip = critic_grad_clip
+            self.critic_grad_clip_type = critic_grad_clip_type if critic_grad_clip_type in {"norm", "value"} else "norm"
+
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
                 return 1.0
@@ -140,6 +167,38 @@ class Agent:
         self._last_iqn_spread = None
         self.noise = OUNoise(action_size, random_seed) if noise_type == 'ou' else None
         self._episode_count = 0
+
+    def _build_optimizer(self, model: torch.nn.Module, optim_cls, lr: float, weight_decay: float):
+        """Create optimizer with sensible weight decay exclusions."""
+        params_decay = []
+        params_no_decay = []
+        if weight_decay > 0.0:
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.dim() == 1 or name.endswith("bias") or "norm" in name.lower():
+                    params_no_decay.append(param)
+                else:
+                    params_decay.append(param)
+
+        param_groups = []
+        if params_decay:
+            param_groups.append({"params": params_decay, "weight_decay": weight_decay})
+        if params_no_decay:
+            param_groups.append({"params": params_no_decay, "weight_decay": 0.0})
+
+        if not param_groups:
+            return optim_cls(model.parameters(), lr=lr, weight_decay=0.0)
+        return optim_cls(param_groups, lr=lr)
+
+    def _clip_gradients(self, parameters: Iterable[torch.nn.Parameter], clip_value: Optional[float], clip_type: str):
+        """Apply gradient clipping according to the configured strategy."""
+        if clip_value is None or clip_value <= 0:
+            return
+        if clip_type == "norm":
+            clip_grad_norm_(parameters, clip_value, norm_type=self.grad_clip_norm_type)
+        elif clip_type == "value":
+            clip_grad_value_(parameters, clip_value)
 
     def update_episode_count(self, episode: int):
         """Update internal episode counter (used for PER beta annealing in caller)."""
@@ -223,13 +282,13 @@ class Agent:
             priorities = None
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        clip_grad_norm_(self.critic_local.parameters(), 1.0)
+        self._clip_gradients(self.critic_local.parameters(), self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
         actor_loss = -self.critic_local(states, actions_pred).mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        clip_grad_norm_(self.actor_local.parameters(), 1.0)
+        self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
         self.actor_optimizer.step()
         self._updates_done += 1
         if self.step_counter % 200 == 0:
@@ -276,7 +335,7 @@ class Agent:
             critic_loss = quantile_loss.mean()
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        clip_grad_norm_(self.critic_local.parameters(), 1.0)
+        self._clip_gradients(self.critic_local.parameters(), self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
 
         actions_pred = self.actor_local(states)
@@ -284,7 +343,7 @@ class Agent:
         actor_loss = -q_pred.mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        clip_grad_norm_(self.actor_local.parameters(), 1.0)
+        self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
         self.actor_optimizer.step()
         self._updates_done += 1
         if self.per and hasattr(self.memory, 'update_priorities'):
