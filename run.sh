@@ -49,8 +49,8 @@ args=(
     --Q_max=20.0               # Global maximum exercise (e.g. 20 units total)
     --risk_free_rate=0.05      # 5% annual risk-free rate
     --min_refraction_periods=0 # Minimum refraction (cooldown) periods after exercise
-    --c_cost=0.8               # Convex cost coefficient c in r_t = exp(-r*dt)[q_t(S_t-K)^+ - c*q_t^{gamma}] {0.2,0.4,0.6,0.8}
-    --gamma_cost=3.0           # Convex cost exponent gamma for the per-unit exercise cost term {1.5,2,3}
+    --c_cost=0               # Convex cost coefficient c in r_t = exp(-r*dt)[q_t(S_t-K)^+ - c*q_t^{gamma}] {0.2,0.4,0.6,0.8}
+    --gamma_cost=1           # Convex cost exponent gamma for the per-unit exercise cost term {1.5,2,3}
 
     # Stochastic process (HHK model) parameters (unchanged from baseline)
     --S0=1.0                   # Initial spot price
@@ -61,10 +61,10 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_13" -seed 13 &
-python run.py "${args[@]}" -name "SwingOption_20_gamma3_c0.8_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption_20_14" -seed 14
 
 # python run.py "${args[@]}" -name "SwingOption2_32k_15" -seed 15 &
 # python run.py "${args[@]}" -name "SwingOption2_32k_16" -seed 16 &
