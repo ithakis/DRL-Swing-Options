@@ -1,0 +1,310 @@
+[
+  {
+    "run": "SwingOption_20_RegimeSwitching_wRegLab_32_11_r2",
+    "eval_points": 16,
+    "delta_final": -2.200000047683716,
+    "delta_best": 0.0,
+    "delta_worst": -18.299999237060547,
+    "delta_positive_frac": 0.0,
+    "delta_std": 5.18476937004026,
+    "delta_slope_per_1k_paths": 0.5455824659507285,
+    "delta_best_step": 0,
+    "delta_worst_step": 1024,
+    "rl_price_final": 2.8554537296295166,
+    "lsm_price_final": 2.9182376861572266,
+    "final_price_gap": -0.06278395652770996,
+    "training_signals": {
+      "Episode_Return": {
+        "final": 0.9474719762802124,
+        "mean": 2.6220320837148505,
+        "std": 3.009922484502063,
+        "slope_per_1k_paths": 0.06782119860243284
+      },
+      "Average100": {
+        "final": 3.068301200866699,
+        "mean": 2.613024376932909,
+        "std": 0.6811310773630465,
+        "slope_per_1k_paths": 0.07042842430258427
+      },
+      "Critic_loss": {
+        "final": 0.13373582065105438,
+        "mean": 0.15761462487381683,
+        "std": 0.09266149237805284,
+        "slope_per_1k_paths": 1.733088254162675e-05
+      },
+      "Actor_loss": {
+        "final": -2.6786422729492188,
+        "mean": -2.3845169450229857,
+        "std": 0.3094224674181137,
+        "slope_per_1k_paths": -0.001168172681789367
+      },
+      "Policy/Action_variance_mean": {
+        "final": 0.1933780163526535,
+        "mean": 0.206825417897782,
+        "std": 0.02028504486758248,
+        "slope_per_1k_paths": -5.678075826016565e-05
+      },
+      "Policy/Actions_at_lower_pct": {
+        "final": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "slope_per_1k_paths": 0.0
+      },
+      "Policy/Actions_at_upper_pct": {
+        "final": 0.3541666567325592,
+        "mean": 0.3409874071293814,
+        "std": 0.07469676120331223,
+        "slope_per_1k_paths": -0.0002698079384773631
+      },
+      "TD_Error/p90": {
+        "final": 1.6309295892715454,
+        "mean": 1.3165037303483353,
+        "std": 0.22680008190424528,
+        "slope_per_1k_paths": 0.0005994933629948811
+      },
+      "TD_Error/p99": {
+        "final": 4.909937858581543,
+        "mean": 2.9258917320608395,
+        "std": 1.1230559173145176,
+        "slope_per_1k_paths": 0.0007016417504787811
+      },
+      "PER/priority_entropy": {
+        "final": 12.03887939453125,
+        "mean": 11.602926457054764,
+        "std": 0.5882325572590261,
+        "slope_per_1k_paths": 0.005652193364891947
+      }
+    }
+  },
+  {
+    "run": "SwingOption_20_RegimeSwitching_wRegLab_32_12_r2",
+    "eval_points": 20,
+    "delta_final": -18.100000381469727,
+    "delta_best": -18.100000381469727,
+    "delta_worst": -98.80000305175781,
+    "delta_positive_frac": 0.0,
+    "delta_std": 17.58815781916241,
+    "delta_slope_per_1k_paths": 1.1258370908243327,
+    "delta_best_step": 1024,
+    "delta_worst_step": 0,
+    "rl_price_final": 2.3741185665130615,
+    "lsm_price_final": 2.8989336490631104,
+    "final_price_gap": -0.5248150825500488,
+    "training_signals": {
+      "Episode_Return": {
+        "final": 2.4803566932678223,
+        "mean": 2.268173155523122,
+        "std": 2.2542563040887953,
+        "slope_per_1k_paths": 0.03102365907104119
+      },
+      "Average100": {
+        "final": 2.4663381576538086,
+        "mean": 2.2626912092567024,
+        "std": 0.5067398393747132,
+        "slope_per_1k_paths": 0.032708217410448
+      },
+      "Critic_loss": {
+        "final": 0.06738324463367462,
+        "mean": 0.10976765954179638,
+        "std": 0.07718255935038436,
+        "slope_per_1k_paths": -8.060809671107322e-05
+      },
+      "Actor_loss": {
+        "final": -1.7978931665420532,
+        "mean": -1.79392096653676,
+        "std": 0.22056200150278363,
+        "slope_per_1k_paths": 0.00042246165244650384
+      },
+      "Policy/Action_variance_mean": {
+        "final": 0.0,
+        "mean": 0.0887625949278516,
+        "std": 0.08513299888910646,
+        "slope_per_1k_paths": -0.0008237517007168327
+      },
+      "Policy/Actions_at_lower_pct": {
+        "final": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "slope_per_1k_paths": 0.0
+      },
+      "Policy/Actions_at_upper_pct": {
+        "final": 1.0,
+        "mean": 0.8361262725192534,
+        "std": 0.2042170505788759,
+        "slope_per_1k_paths": 0.0018325897630471703
+      },
+      "TD_Error/p90": {
+        "final": 0.8860792517662048,
+        "mean": 1.0894150612416775,
+        "std": 0.20082989343911917,
+        "slope_per_1k_paths": -0.0002076232192543177
+      },
+      "TD_Error/p99": {
+        "final": 2.379395008087158,
+        "mean": 2.5747697313271387,
+        "std": 1.0647154374611383,
+        "slope_per_1k_paths": 0.001154080386299055
+      },
+      "PER/priority_entropy": {
+        "final": 12.032000541687012,
+        "mean": 11.62103379182211,
+        "std": 0.5775041423443547,
+        "slope_per_1k_paths": 0.005163074238654068
+      }
+    }
+  },
+  {
+    "run": "SwingOption_20_RegimeSwitching_wRegLab_32_13_r2",
+    "eval_points": 20,
+    "delta_final": -17.399999618530273,
+    "delta_best": -17.399999618530273,
+    "delta_worst": -100.0,
+    "delta_positive_frac": 0.0,
+    "delta_std": 18.002252719962378,
+    "delta_slope_per_1k_paths": 1.152343755321844,
+    "delta_best_step": 1024,
+    "delta_worst_step": 0,
+    "rl_price_final": 2.371772050857544,
+    "lsm_price_final": 2.8725531101226807,
+    "final_price_gap": -0.5007810592651367,
+    "training_signals": {
+      "Episode_Return": {
+        "final": 4.912240982055664,
+        "mean": 2.277581618067068,
+        "std": 2.2427323646620487,
+        "slope_per_1k_paths": 0.030056707299879006
+      },
+      "Average100": {
+        "final": 2.3288629055023193,
+        "mean": 2.2716356751044184,
+        "std": 0.5126248089412738,
+        "slope_per_1k_paths": 0.03170739891338189
+      },
+      "Critic_loss": {
+        "final": 0.03628291189670563,
+        "mean": 0.11589868600728793,
+        "std": 0.06593366310852702,
+        "slope_per_1k_paths": -0.00016380399816546087
+      },
+      "Actor_loss": {
+        "final": -1.659256100654602,
+        "mean": -1.828158326857556,
+        "std": 0.24143106586743876,
+        "slope_per_1k_paths": 0.0007020297971944917
+      },
+      "Policy/Action_variance_mean": {
+        "final": 0.0,
+        "mean": 0.09013732994054445,
+        "std": 0.08621190008835324,
+        "slope_per_1k_paths": -0.0008338350135356256
+      },
+      "Policy/Actions_at_lower_pct": {
+        "final": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "slope_per_1k_paths": 0.0
+      },
+      "Policy/Actions_at_upper_pct": {
+        "final": 1.0,
+        "mean": 0.8338510124978266,
+        "std": 0.2062733979766918,
+        "slope_per_1k_paths": 0.0018526949986638842
+      },
+      "TD_Error/p90": {
+        "final": 1.0543161630630493,
+        "mean": 1.1404275294602761,
+        "std": 0.23344165951801144,
+        "slope_per_1k_paths": -0.0006988699982469931
+      },
+      "TD_Error/p99": {
+        "final": 2.0687992572784424,
+        "mean": 2.749353477567153,
+        "std": 1.0166892642984715,
+        "slope_per_1k_paths": -0.0004090366512953751
+      },
+      "PER/priority_entropy": {
+        "final": 12.03252124786377,
+        "mean": 11.62507144036255,
+        "std": 0.5772264262369315,
+        "slope_per_1k_paths": 0.005147423073398415
+      }
+    }
+  },
+  {
+    "run": "SwingOption_20_RegimeSwitching_wRegLab_32_14_r2",
+    "eval_points": 17,
+    "delta_final": -0.8999999761581421,
+    "delta_best": -0.8999999761581421,
+    "delta_worst": -99.4000015258789,
+    "delta_positive_frac": 0.0,
+    "delta_std": 22.84685926885974,
+    "delta_slope_per_1k_paths": 2.305214123243431,
+    "delta_best_step": 13312,
+    "delta_worst_step": 0,
+    "rl_price_final": 2.899742841720581,
+    "lsm_price_final": 2.9251973628997803,
+    "final_price_gap": -0.02545452117919922,
+    "training_signals": {
+      "Episode_Return": {
+        "final": 4.634199619293213,
+        "mean": 2.6508328351001307,
+        "std": 3.0312050017701386,
+        "slope_per_1k_paths": 0.0674799155805514
+      },
+      "Average100": {
+        "final": 2.986513614654541,
+        "mean": 2.6419343783959155,
+        "std": 0.6627231283924369,
+        "slope_per_1k_paths": 0.0698532415531897
+      },
+      "Critic_loss": {
+        "final": 0.07080312818288803,
+        "mean": 0.1529055247132366,
+        "std": 0.11028547385052531,
+        "slope_per_1k_paths": -3.14974040374559e-05
+      },
+      "Actor_loss": {
+        "final": -2.6856534481048584,
+        "mean": -2.3871583046279663,
+        "std": 0.3009802740824347,
+        "slope_per_1k_paths": -0.0009571432211166992
+      },
+      "Policy/Action_variance_mean": {
+        "final": 0.21457673609256744,
+        "mean": 0.2221722140399529,
+        "std": 0.018919339284086952,
+        "slope_per_1k_paths": 4.7960714861584195e-05
+      },
+      "Policy/Actions_at_lower_pct": {
+        "final": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "slope_per_1k_paths": 0.0
+      },
+      "Policy/Actions_at_upper_pct": {
+        "final": 0.28125,
+        "mean": 0.3321746947128542,
+        "std": 0.06038140441309665,
+        "slope_per_1k_paths": 5.3067661652814466e-05
+      },
+      "TD_Error/p90": {
+        "final": 1.47321617603302,
+        "mean": 1.2757351224767248,
+        "std": 0.21300352738601908,
+        "slope_per_1k_paths": 0.0002477032580013538
+      },
+      "TD_Error/p99": {
+        "final": 3.7219574451446533,
+        "mean": 2.827748540385278,
+        "std": 1.1388468566188363,
+        "slope_per_1k_paths": 0.0010551102930508908
+      },
+      "PER/priority_entropy": {
+        "final": 12.036620140075684,
+        "mean": 11.62260292025242,
+        "std": 0.576866128865591,
+        "slope_per_1k_paths": 0.005233127507115319
+      }
+    }
+  }
+]

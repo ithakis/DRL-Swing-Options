@@ -4,26 +4,55 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import special
+from sklearn.linear_model import Lasso, Ridge
 
 from .swing_contract import SwingContract
 
 
-def _regress(X: np.ndarray, y: np.ndarray, degree: int, mask: Optional[np.ndarray] = None) -> np.ndarray:
-    """Return fitted values of polynomial regression."""
+def _regress(
+    X: np.ndarray,
+    y: np.ndarray,
+    degree: int,
+    mask: Optional[np.ndarray] = None,
+    reg_type: str = "none",
+    reg_alpha: float = 0.0,
+) -> np.ndarray:
+    """Return fitted values of polynomial regression with optional regularization."""
     if mask is not None and mask.sum() >= degree + 1:
         Xm = X[mask]
         ym = y[mask]
     else:
         Xm = X
         ym = y
-    beta, *_ = np.linalg.lstsq(Xm, ym, rcond=None)
-    return X @ beta
+
+    if reg_type == "none":
+        # Standard OLS regression (default Longstaff-Schwartz behavior)
+        beta, *_ = np.linalg.lstsq(Xm, ym, rcond=None)
+        return X @ beta
+
+    if reg_type == "ridge":
+        # Ridge regression adds L2 penalty to stabilize coefficients
+        model = Ridge(alpha=reg_alpha, fit_intercept=False)
+        model.fit(Xm, ym)
+        return model.predict(X)
+
+    if reg_type == "lasso":
+        # Lasso regression adds L1 penalty to promote sparsity / reduce overfit
+        model = Lasso(alpha=reg_alpha, fit_intercept=False, max_iter=10000)
+        model.fit(Xm, ym)
+        return model.predict(X)
+
+    raise ValueError(f"Unsupported reg_type '{reg_type}'. Expected 'none', 'ridge', or 'lasso'.")
 
 
 def price_swing_option_lsm(
     contract: SwingContract,
     dataset: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     poly_degree: int = 2,
+    basis_type: str = "power",
+    reg_type: str = "none",
+    reg_alpha: float = 1e-6,
     n_bootstrap: int = 1000,
     seed: Optional[int] = None,
     csv_path: str = "swing_option_lsm_paths.csv",
@@ -40,6 +69,13 @@ def price_swing_option_lsm(
         shape ``(n_paths, n_rights)``.
     poly_degree : int, optional
         Degree of polynomial basis used in regressions.
+    basis_type : str, optional
+        Basis family for regression. Supported: ``power`` (default), ``laguerre``,
+        ``hermite``, ``chebyshev``.
+    reg_type : str, optional
+        Regression regularization: ``none`` (default OLS), ``ridge`` or ``lasso``.
+    reg_alpha : float, optional
+        Regularization strength (ignored when ``reg_type='none'``).
     n_bootstrap : int, optional
         Number of bootstrap samples for confidence interval.
     seed : int, optional
@@ -51,6 +87,16 @@ def price_swing_option_lsm(
     prices = S  # all decision prices (including initial spot at t=0)
     n_paths, n_steps = prices.shape
     assert n_steps == contract.n_rights, "Mismatch between paths and contract rights"
+
+    basis_type = basis_type.lower()
+    valid_basis = {"power", "laguerre", "hermite", "chebyshev"}
+    if basis_type not in valid_basis:
+        raise ValueError(f"Unsupported basis_type '{basis_type}'. Expected one of {valid_basis}.")
+
+    reg_type = reg_type.lower()
+    valid_reg = {"none", "ridge", "lasso"}
+    if reg_type not in valid_reg:
+        raise ValueError(f"Unsupported reg_type '{reg_type}'. Expected one of {valid_reg}.")
 
     df = contract.discount_factor
     strike = contract.strike
@@ -86,9 +132,33 @@ def price_swing_option_lsm(
         price = prices[:, j]
         payoff_gross = qmax * np.maximum(price - strike, 0.0)
         payoff_net = payoff_gross - exercise_cost_qmax
-        X_poly[:, 0] = 1.0
-        for k in range(1, poly_degree + 1):
-            X_poly[:, k] = price ** k
+        if basis_type == "power":
+            # Classic monomial basis used in vanilla Longstaff-Schwartz
+            X_poly[:, 0] = 1.0
+            for k in range(1, poly_degree + 1):
+                X_poly[:, k] = price ** k
+        elif basis_type == "laguerre":
+            # Using Laguerre polynomials L_k (orthogonal on [0, inf))
+            for k in range(poly_degree + 1):
+                X_poly[:, k] = special.eval_laguerre(k, price)
+        elif basis_type == "hermite":
+            # Using physicist's Hermite polynomials H_k
+            for k in range(poly_degree + 1):
+                X_poly[:, k] = special.eval_hermite(k, price)
+        elif basis_type == "chebyshev":
+            # Normalize prices to [-1, 1] for Chebyshev polynomials T_k
+            p_min = price.min()
+            p_max = price.max()
+            if p_max > p_min:
+                mid = 0.5 * (p_min + p_max)
+                scale = p_max - p_min
+                x_norm = 2.0 * (price - mid) / scale
+            else:
+                x_norm = np.zeros_like(price)
+            for k in range(poly_degree + 1):
+                X_poly[:, k] = special.eval_chebyt(k, x_norm)
+        else:  # pragma: no cover
+            raise RuntimeError("basis_type validation failed unexpectedly")
         mask = payoff_gross > 0
         old_vals = values.copy()
         new_vals = values.copy()
@@ -98,13 +168,27 @@ def price_swing_option_lsm(
                 # If we keep (no exercise now): cooldown counts down (cannot go below 0)
                 c_keep = max(c - 1, 0)
                 y_keep = df * old_vals[c_keep, r]
-                cont_keep = _regress(X_poly, y_keep, poly_degree, mask)
+                cont_keep = _regress(
+                    X_poly,
+                    y_keep,
+                    poly_degree,
+                    mask,
+                    reg_type=reg_type,
+                    reg_alpha=reg_alpha,
+                )
 
                 if c == 0:
                     # If we exercise now: cooldown resets to full, rights reduce by 1
                     c_ex = cooldown
                     y_ex = df * old_vals[c_ex, r - 1]
-                    cont_ex = _regress(X_poly, y_ex, poly_degree, mask)
+                    cont_ex = _regress(
+                        X_poly,
+                        y_ex,
+                        poly_degree,
+                        mask,
+                        reg_type=reg_type,
+                        reg_alpha=reg_alpha,
+                    )
                     exc = (payoff_net + cont_ex > cont_keep) & (payoff_gross > 0)
                     exercise[c, r, exc, j] = True
                     new_vals[c, r] = np.where(exc, payoff_net + y_ex, y_keep)
@@ -164,9 +248,13 @@ def price_swing_option_lsm(
         boot_means[b] = path_payoffs[idx].mean()
     ci_low, ci_high = np.percentile(boot_means, [2.5, 97.5])
 
-    if _print_results: 
+    if _print_results:
         print(
             f"Swing option price: {price_estimate:.4f}\n"
             f"95% CI: [{ci_low:.4f}, {ci_high:.4f}]"
+        )
+        print(
+            f"LSM settings -> basis: {basis_type}, degree: {poly_degree}, "
+            f"reg: {reg_type}, alpha: {reg_alpha:.2e}"
         )
     return price_estimate, (ci_low, ci_high)

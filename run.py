@@ -218,6 +218,34 @@ class ConfigManager:
             help="Convex cost exponent gamma for per-unit exercise cost.",
         )
 
+        # LSM Benchmark Configuration
+        parser.add_argument(
+            "--lsm_basis",
+            type=str,
+            default="power",
+            choices=["power", "laguerre", "hermite", "chebyshev"],
+            help="Basis family for the LSM regression (default: power).",
+        )
+        parser.add_argument(
+            "--lsm_degree",
+            type=int,
+            default=3,
+            help="Polynomial degree for LSM basis functions (default: 3).",
+        )
+        parser.add_argument(
+            "--lsm_reg",
+            type=str,
+            default="none",
+            choices=["none", "ridge", "lasso"],
+            help="Regularization to use for LSM regression (default: none).",
+        )
+        parser.add_argument(
+            "--lsm_reg_alpha",
+            type=float,
+            default=1e-6,
+            help="Regularization strength alpha for ridge/lasso LSM (default: 1e-6).",
+        )
+
         # HHK Stochastic Process Parameters
         parser.add_argument("--S0", type=float, default=100.0, help="Initial spot price, default = 100.0")
         parser.add_argument("--alpha", type=float, default=7.0, help="Mean reversion speed, default = 7.0")
@@ -1308,7 +1336,11 @@ def main():
     mean_lsm_price, (th5q_price,th95q_price) = price_swing_option_lsm(
         contract=swing_contract,
         dataset=eval_ds,
-        poly_degree=3, seed=seed+1,
+        poly_degree=args.lsm_degree,
+        basis_type=args.lsm_basis,
+        reg_type=args.lsm_reg,
+        reg_alpha=args.lsm_reg_alpha,
+        seed=seed+1,
         csv_path=evaluations_dir + '/lsm.csv'
     )
     print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")

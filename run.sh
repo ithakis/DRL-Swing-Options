@@ -52,6 +52,12 @@ args=(
     --c_cost=0               # Convex cost coefficient c in r_t = exp(-r*dt)[q_t(S_t-K)^+ - c*q_t^{gamma}] {0.2,0.4,0.6,0.8}
     --gamma_cost=1           # Convex cost exponent gamma for the per-unit exercise cost term {1.5,2,3}
 
+    # LSM benchmark controls (defaults preserve legacy power basis / OLS behavior)
+    --lsm_basis=chebyshev        # Polynomial family for LSM regression {power,laguerre,hermite,chebyshev}
+    --lsm_degree=100           # Highest polynomial degree to include in the LSM basis
+    --lsm_reg=none           # Regularization type for LSM regression {none,ridge,lasso}
+    --lsm_reg_alpha=1e-6     # Regularization strength (alpha) for ridge/lasso
+
     # Stochastic process (HHK model) parameters (unchanged from baseline)
     --S0=1.0                   # Initial spot price
     --alpha=12.0               # OU mean-reversion rate
