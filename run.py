@@ -265,6 +265,8 @@ class ConfigManager:
         parser.add_argument("--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)")
         parser.add_argument("--per_beta_start", type=float, default=0.4, help="PER: initial importance sampling weight beta_start (default: 0.4)")
         parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
+        parser.add_argument("--per_priority_floor", type=float, default=1e-6, help="Minimum PER priority to avoid zeros (default: 1e-6)")
+        parser.add_argument("--per_priority_clip_pct", type=float, default=99.5, help="Clip PER priorities to this percentile (0 disables, default: 99.5)")
         parser.add_argument(
             "-per",
             type=int,
@@ -275,9 +277,9 @@ class ConfigManager:
         parser.add_argument(
             "-munchausen",
             type=int,
-            default=1,
+            default=0,
             choices=[0, 1],
-            help="Adding Munchausen RL to the agent if set to 1, default = 1",
+            help="Adding Munchausen RL to the agent if set to 1 (default: 0 / off)",
         )
         parser.add_argument(
             "-iqn",
@@ -292,6 +294,18 @@ class ConfigManager:
             choices=["ou", "gauss"],
             default="OU",
             help="Choose noise type: ou = OU-Noise, gauss = Gaussian noise, default ou",
+        )
+        parser.add_argument(
+            "--noise_sigma",
+            type=float,
+            default=1.0,
+            help="Scale of exploration noise; decays with epsilon (default: 1.0)",
+        )
+        parser.add_argument(
+            "--noise_anneal_power",
+            type=float,
+            default=1.0,
+            help="Exponent tying noise std to epsilon (default: 1.0 = linear)",
         )
 
         # Network and Learning Parameters
@@ -314,8 +328,8 @@ class ConfigManager:
         parser.add_argument(
             "-layer_size",
             type=int,
-            default=128,
-            help="Legacy hidden size flag applied when specific actor/critic sizes are not provided (default: 128)",
+            default=64,
+            help="Legacy hidden size flag applied when specific actor/critic sizes are not provided (default: 64 for 2×64 MLPs)",
         )
         parser.add_argument(
             "--actor_hidden_size",
@@ -374,28 +388,28 @@ class ConfigManager:
         parser.add_argument(
             "--actor_grad_clip",
             type=float,
-            default=1.0,
-            help="Clip threshold for actor gradients (<=0 disables clipping, default: 1.0)",
+            default=0.0,
+            help="Clip threshold for actor gradients (<=0 disables clipping, default: 0.0 / disabled)",
         )
         parser.add_argument(
             "--critic_grad_clip",
             type=float,
-            default=1.0,
-            help="Clip threshold for critic gradients (<=0 disables clipping, default: 1.0)",
+            default=0.0,
+            help="Clip threshold for critic gradients (<=0 disables clipping, default: 0.0 / disabled)",
         )
         parser.add_argument(
             "--actor_grad_clip_type",
             type=str,
             choices=["norm", "value", "none"],
-            default="norm",
-            help="Clipping strategy for actor gradients (default: norm)",
+            default="none",
+            help="Clipping strategy for actor gradients (default: none/disabled)",
         )
         parser.add_argument(
             "--critic_grad_clip_type",
             type=str,
             choices=["norm", "value", "none"],
-            default="norm",
-            help="Clipping strategy for critic gradients (default: norm)",
+            default="none",
+            help="Clipping strategy for critic gradients (default: none/disabled)",
         )
         parser.add_argument(
             "--grad_clip_norm_type",
@@ -417,7 +431,19 @@ class ConfigManager:
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
-            "-t", "--t", type=float, default=1e-3, help="Softupdate factor t, default is 1e-3"
+            "-t", "--t", type=float, default=2e-3, help="Softupdate factor t (Polyak tau), default is 2e-3"
+        )
+        parser.add_argument(
+            "--tau_final",
+            type=float,
+            default=-1.0,
+            help="Optional final tau; <0 disables scheduling (default: disabled)",
+        )
+        parser.add_argument(
+            "--tau_schedule_frac",
+            type=float,
+            default=0.0,
+            help="Fraction of training over which tau decays to tau_final (default: 0 = disabled)",
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
         parser.add_argument(
@@ -430,14 +456,20 @@ class ConfigManager:
         parser.add_argument(
             "--weight_decay_actor",
             type=float,
-            default=0.0,
-            help="Decoupled weight decay applied to the actor optimizer (default: 0.0)",
+            default=5e-5,
+            help="Decoupled weight decay applied to the actor optimizer (default: 5e-5)",
         )
         parser.add_argument(
             "--weight_decay_critic",
             type=float,
             default=1e-4,
             help="Decoupled weight decay applied to the critic optimizer (default: 1e-4)",
+        )
+        parser.add_argument(
+            "--critic_ema_decay",
+            type=float,
+            default=0.0,
+            help="EMA decay for critic eval smoothing (0 disables, default: 0.0)",
         )
 
         # System and Optimization Parameters
@@ -806,7 +838,7 @@ def evaluate_swing_option(
     n_paths = eval_env.S.shape[0]
     
     # Define state column names based on SwingOptionEnv._get_observation()
-            #     spot_price - self.contract.strike,  # Payoff
+            #     spot_price - self.contract.strike,  # spot_minus_strike (S_t - K)
             # self.q_exercised / self.contract.Q_max,  # Normalized cumulative exercise
             # q_remaining / self.contract.Q_max,  # Normalized remaining capacity
             # time_to_maturity / self.contract.maturity,  # Normalized time to maturity
@@ -817,7 +849,7 @@ def evaluate_swing_option(
             # # self.recent_volatility,  # Recent realized volatility
             # days_since_exercise / self.contract.n_rights  # Normalized refraction time
     state_columns = [
-        'Payoff',      # spot_price - strike
+        'spot_minus_strike',      # spot_price - strike
         'q_exercised_norm',     # q_exercised / Q_max  
         'q_remaining_norm',     # q_remaining / Q_max
         'time_to_maturity_norm', # time_to_maturity / maturity
@@ -830,7 +862,7 @@ def evaluate_swing_option(
     ]
     
     # CSV headers
-    csv_headers = ['path', 'time_step'] + state_columns + ['q_t', 'reward']
+    csv_headers = ['path', 'time_step'] + state_columns + ['q_t', 'exercise_cost', 'reward']
     
     # Prepare CSV file path
     csv_filename = f"rl_episode_{path}.csv"
@@ -873,6 +905,7 @@ def evaluate_swing_option(
                 round(state[7], 6),  # recent_volatility
                 round(state[8], 6),  # days_since_exercise_norm
                 round(info.get("q_actual", 0), 6),  # action (extract scalar from array and round)
+                round(info.get("exercise_cost", 0.0), 6),
                 round(reward, 6)   # reward
             ]
             path_data.append(step_row)
@@ -1386,6 +1419,8 @@ def main():
         munchausen=args.munchausen,
         distributional=args.iqn,
         noise_type=args.noise,
+        noise_sigma=args.noise_sigma,
+        noise_anneal_power=args.noise_anneal_power,
         random_seed=seed,
         hidden_size=args.layer_size,
         actor_hidden_size=actor_hidden_size,
@@ -1395,10 +1430,13 @@ def main():
         optimizer=args.optimizer,
         weight_decay_actor=args.weight_decay_actor,
         weight_decay_critic=args.weight_decay_critic,
+        critic_ema_decay=args.critic_ema_decay,
         BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
         GAMMA=args.gamma,
         t=args.t,
+        tau_final=args.tau_final if args.tau_final > 0 else None,
+        tau_schedule_frac=args.tau_schedule_frac,
         LR_ACTOR=args.lr_a,
         LR_CRITIC=args.lr_c,
         LEARN_EVERY=args.learn_every,
@@ -1414,6 +1452,8 @@ def main():
         per_alpha=args.per_alpha,
         per_beta_start=args.per_beta_start,
         per_beta_frames=args.per_beta_frames,
+        per_priority_floor=args.per_priority_floor,
+        per_priority_clip_pct=args.per_priority_clip_pct,
         final_lr_fraction=args.final_lr_fraction,
         total_episodes=args.n_paths,
         warmup_frac=args.warmup_frac,

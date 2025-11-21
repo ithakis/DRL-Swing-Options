@@ -6,32 +6,46 @@
 # Monthly Swing Option Baseline:
 args=( 
     # 4096 or 8192 or 16384 or 32768 or 65536
-    -n_paths=8192            # Number of Monte Carlo paths (episodes) per run: higher = more stable pricing, slower training
+    -n_paths=32768            # Number of Monte Carlo paths (episodes) per run: higher = more stable pricing, slower training
     -eval_every=512         # Frequency (in paths) to run pricing evaluation: lower = more frequent monitoring
     -n_paths_eval=4096       # Number of paths for each evaluation: higher = more accurate price estimate, slower eval
-    -munchausen=1            # Munchausen RL: 1=add entropy bonus to reward for better exploration, 0=off
-    -nstep=5                 # N-step bootstrapping: how many steps to look ahead for value updates (stability/speed tradeoff)
+    -munchausen=0            # Munchausen RL off by default
+    -nstep=1                 # Single-step TD for stability
     --per_alpha=0.5          # PER: prioritization exponent (0=uniform, 1=full prioritization)
-    --per_beta_start=0.6     # PER: initial importance-sampling correction (0=off, 1=full correction)
-    --per_beta_frames=180000 # PER: frames to anneal beta from start to 1.0 (controls bias correction speed)
-    --gamma=0.9998           # Discount factor for future rewards (close to 1 = long-term focus)
+    --per_beta_start=0.7     # PER: initial importance-sampling correction (0=off, 1=full correction)
+    --per_beta_frames=150000 # PER: frames to anneal beta from start to 1.0 (controls bias correction speed)
+    --per_priority_floor=1e-6  # Minimum PER priority
+    --per_priority_clip_pct=99.5 # Clip PER priorities to percentile (0 disables)
+    --gamma=1                # Discount factor for future rewards (close to 1 = long-term focus)
     -learn_every=2           # How often to update networks (in steps): lower = more frequent updates
     -learn_number=1          # Number of learning updates per step: higher = more aggressive learning
     -iqn=0                   # Use distributional IQN critic: 1=enable (uncertainty-aware), 0=standard critic
-    -noise=ou             # Action noise type: 'gauss' = Gaussian, 'ou' = Ornstein-Uhlenbeck (exploration)
-    -epsilon=0.15             # Initial epsilon for exploration noise (probability of random action)
-    -epsilon_decay=.99995       # Epsilon decay rate per episode (1.0 = no decay, <1.0 = decaying exploration)
+    -noise=gauss             # Action noise type: 'gauss' = Gaussian, 'ou' = Ornstein-Uhlenbeck (exploration)
+    --noise_sigma=1.0          # Scale exploration noise (decays with epsilon)
+    --noise_anneal_power=1.0   # Exponent tying noise std to epsilon
+    -epsilon=0.3             # Initial epsilon for exploration noise (probability of random action)
+    -epsilon_decay=0.99994   # Epsilon decay rate per episode (1.0 = no decay, <1.0 = decaying exploration)
     -per=1                   # Enable Prioritized Experience Replay: 1=on, 0=off
     --min_replay_size=15000  # Minimum buffer size before learning starts (stabilizes early training)
     --max_replay_size=200000 # Maximum replay buffer size (memory/variance tradeoff)
-    -t=0.0005               # Soft update factor tau for target networks (lower = more stable, slower adaptation)
-    -bs=128                   # Batch size for learning updates (samples per update)
-    -layer_size=128          # Number of neurons per hidden layer (network capacity)
+    -t=0.002                # Soft update factor tau for target networks (lower = more stable, slower adaptation)
+    --tau_final=0.002          # Final tau for target schedule (<0 disables)
+    --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
+    -bs=64                   # Batch size for learning updates (samples per update)
+    -layer_size=64           # Number of neurons per hidden layer (network capacity)
     -lr_a=2e-4               # Actor network learning rate (policy update speed)
     -lr_c=1e-4               # Critic network learning rate (value update speed)
-    --final_lr_fraction=0.1 # Final LR as fraction of initial (exponential decay: 1.0=no decay, 0.01=decay to 1%)
+    --final_lr_fraction=0.1  # Final LR as fraction of initial (exponential decay: 1.0=no decay, 0.01=decay to 1%)
     --warmup_frac=0.05       # Fraction of episodes for LR warm-up (5% of total episodes)
     --min_lr=5e-5            # Minimum learning rate floor (prevents LR from becoming too small)
+    --actor_grad_clip=0
+    --critic_grad_clip=0
+    --actor_grad_clip_type=none
+    --critic_grad_clip_type=none
+    --grad_clip_norm_type=2.0
+    --weight_decay_actor=5e-5
+    --weight_decay_critic=1e-4
+    --critic_ema_decay=0.0     # EMA decay for critic eval smoothing (0 disables)
     --compile=0              # Use torch.compile for model optimization: 1=on, 0=off (experimental)
     -n_cores=2               # Number of CPU cores to use (parallelism)
     

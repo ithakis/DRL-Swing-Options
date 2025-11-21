@@ -35,7 +35,7 @@ This implementation combines:
 - Switchable optimizers via `--optimizer {adam, adamw}` (default: AdamW) with decoupled `--weight_decay_actor` and `--weight_decay_critic` controls (critic defaults to `1e-4`).
 - Actor and critic networks now respect `-layer_size` and can be tuned independently with `--actor_hidden_size`, `--critic_hidden_size`, `--actor_layers`, and `--critic_layers`.
 - Model build logs report the chosen widths/depths and parameter counts for both actor and critic to simplify experiment tracking.
-- Configurable gradient clipping for actor/critic (`--actor_grad_clip`, `--critic_grad_clip`) with norm/value modes and bias-safe weight decay groupings for improved stability.
+- Configurable gradient clipping for actor/critic (`--actor_grad_clip`, `--critic_grad_clip`) with norm/value modes; disabled by default for speed, but available when stability demands it.
 - Convex per-exercise cost term controllable via `--c_cost` and `--gamma_cost`, shared between the RL environment and LSM benchmark (defaults keep the cost disabled).
 
 ## Mathematical Framework
@@ -160,13 +160,13 @@ python run.py \
     --gamma 1 \
     --learn_every 2 \
     --batch_size 64 \
-    --tau 0.003 \
+    --tau 0.002 \
     --lr_a 3e-4 \
     --lr_c 2e-4 \
     --optimizer adamw \
     --weight_decay_critic 1e-4 \
     --actor_layers 2 --critic_layers 2 \
-    -layer_size 128
+    -layer_size 64
 ```
 
 ### Production Training
@@ -181,8 +181,8 @@ This launches multiple seeds with 32,768 training episodes and comprehensive eva
 
 ### Optimizer and Network Configuration
 
-- **Optimizer selection**: Use `--optimizer adam` for legacy Adam or `--optimizer adamw` (default) for decoupled weight decay. Tweak decay with `--weight_decay_actor` and `--weight_decay_critic` (critic defaults to `1e-4`).
-- **Network sizing**: `-layer_size` remains the global width knob. Override per-network widths with `--actor_hidden_size` / `--critic_hidden_size`.
+- **Optimizer selection**: Use `--optimizer adam` for legacy Adam or `--optimizer adamw` (default) for decoupled weight decay. Tweak decay with `--weight_decay_actor` (default `5e-5`) and `--weight_decay_critic` (default `1e-4`).
+- **Network sizing**: `-layer_size` remains the global width knob (default 64 for a lightweight 2×64 baseline). Override per-network widths with `--actor_hidden_size` / `--critic_hidden_size`.
 - **Depth control**: Set `--actor_layers` and `--critic_layers` (defaults: 2). The critic enforces at least two layers so that actions are merged after the state encoder.
 - **Run diagnostics**: Model construction prints optimizer configuration plus actor/critic parameter counts so logs capture the exact architecture used in each run.
 
@@ -190,9 +190,9 @@ This launches multiple seeds with 32,768 training episodes and comprehensive eva
 
 ### Core D4PG Extensions
 
-- **✅ Distributional Critic (IQN)**: Learn full return distributions for uncertainty quantification
+- **✅ Distributional Critic (IQN)**: Learn full return distributions for uncertainty quantification (optional, off by default)
 - **✅ Prioritized Experience Replay**: Focus learning on important transitions
-- **✅ Munchausen RL**: Entropy-regularized policy improvement for better exploration
+- **✅ Munchausen RL**: Entropy-regularized policy improvement for better exploration (optional, off by default)
 - **✅ N-Step Bootstrapping**: Multi-step returns for faster value propagation
 - **✅ Soft Target Updates**: Stable target network synchronization
 
@@ -280,8 +280,8 @@ Training typically converges within 5K-10K episodes, with stable pricing estimat
 ## Technical Details
 
 ### Neural Network Architecture
-- **Actor**: 128-128 hidden layers with tanh activation
-- **Critic**: 128-128 hidden layers with ReLU activation  
+- **Actor**: 64-64 hidden layers with tanh activation (default baseline; increase `-layer_size` for larger models)
+- **Critic**: 64-64 hidden layers with ReLU activation  
 - **IQN**: 64 quantile samples with cosine embedding
 - **Optimization**: Adam with learning rate scheduling
 
@@ -296,7 +296,10 @@ Training typically converges within 5K-10K episodes, with stable pricing estimat
     "iqn": False,            # Standard critic for simplicity
     "nstep": 1,              # Single-step TD learning
     "gamma": 1.0,            # No additional discounting (reward pre-discounted)
-    "tau": 0.003,            # Target network soft update rate
+    "tau": 0.002,            # Target network soft update rate
+    "layer_size": 64,        # Default actor/critic width (2×64 MLPs)
+    "weight_decay_actor": 5e-5,
+    "weight_decay_critic": 1e-4,
     "batch_size": 64,        # Mini-batch size
     "learn_every": 2,        # Learning frequency
     "buffer_size": 200000,   # Replay buffer capacity

@@ -115,7 +115,7 @@ class Actor(nn.Module):
         state_size: int,
         action_size: int,
         seed: int,
-        hidden_size: int = 128,
+        hidden_size: int = 64,
         n_layers: int = 2,
         device: Optional[Union[str, torch.device]] = None
     ) -> None:
@@ -125,7 +125,7 @@ class Actor(nn.Module):
             state_size: Dimension of the state space
             action_size: Dimension of the action space  
             seed: Random seed for reproducibility
-            hidden_size: Number of units in hidden layers (default: 128)
+            hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 policy)
             n_layers: Number of hidden layers (default: 2)
             device: Device to place the network on (cuda/cpu)
         """
@@ -234,7 +234,7 @@ class Critic(nn.Module):
         state_size: int,
         action_size: int,
         seed: int,
-        hidden_size: int = 128,
+        hidden_size: int = 64,
         n_layers: int = 2,
         device: Optional[Union[str, torch.device]] = None
     ) -> None:
@@ -244,7 +244,7 @@ class Critic(nn.Module):
             state_size: Dimension of the state space
             action_size: Dimension of the action space
             seed: Random seed for reproducibility
-            hidden_size: Number of units in hidden layers (default: 128)
+            hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 critic)
             n_layers: Number of hidden layers (default: 2)
             device: Device to place the network on (cuda/cpu)
         """

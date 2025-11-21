@@ -5,11 +5,11 @@ args=(
     # 8192 * 2 = 16384 training episodes (16k)
     -n_paths=32768              # Training episodes (paths)
     -eval_every=1024           # Evaluation frequency (in episodes)
-    -n_paths_eval=4096         # Paths per evaluation (for stable pricing estimate)
+    -n_paths_eval=32768         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0              # Disable Munchausen RL (no entropy bonus in reward)
     -nstep=1
-    --per_alpha=0.5            # PER prioritization exponent
-    --per_beta_start=0.7       # PER initial importance-sampling bias correction
+    --per_alpha=0.45           # PER prioritization exponent
+    --per_beta_start=0.9       # PER initial importance-sampling bias correction
     --per_beta_frames=150000   # Anneal beta to 1.0 over 150k transitions
     --per_priority_floor=1e-6  # Minimum PER priority
     --per_priority_clip_pct=99.5 # Clip PER priorities to percentile (0 disables)
@@ -21,27 +21,27 @@ args=(
     --noise_sigma=1.0          # Scale exploration noise (decays with epsilon)
     --noise_anneal_power=1.0   # Exponent tying noise std to epsilon
     -epsilon=0.3               # Initial epsilon-greedy exploration probability (30% random actions)
-    -epsilon_decay=0.99994      # Epsilon decay factor per episode (slowly decrease random action rate)
+    -epsilon_decay=0.99988     # Epsilon decay factor per episode (slowly decrease random action rate)
     -per=1                     # Enable Prioritized Experience Replay
-    --min_replay_size=10000    # Warm-up buffer size before learning starts (random play)
+    --min_replay_size=18000    # Warm-up buffer size before learning starts (random play)
     --max_replay_size=200000   # Replay buffer capacity (stores up to 200k transitions)
-    -t=0.002                   # Target network soft-update rate tau (smoother targets)
+    -t=0.003                   # Target network soft-update rate tau (moderate smoothing)
     --tau_final=0.002          # Final tau for target schedule (<0 disables)
     --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
     -bs=64                     # Batch size for each gradient update
     -layer_size=64             # Hidden layer size for actor/critic networks
     -lr_a=3e-4                 # Actor learning rate (3e-4, constant)
-    -lr_c=2e-4                 # Critic learning rate (2e-4, calmer critic)
+    -lr_c=1.7e-4               # Critic learning rate (tempered critic)
     --final_lr_fraction=1.0    # Final learning rate as fraction of initial (1.0 => no decay)
     --warmup_frac=0.0          # Fraction of training for learning-rate warmup (0 => no warmup)
     --min_lr=1e-6              # Minimum learning rate (not used since no decay, just a safeguard)
-    --actor_grad_clip=0        # Disable actor gradient clipping by default
-    --critic_grad_clip=0       # Disable critic gradient clipping by default
-    --actor_grad_clip_type=none
-    --critic_grad_clip_type=none
+    --actor_grad_clip=1.0      # Tighter actor gradient clipping for smoother policy updates
+    --critic_grad_clip=2.5     # Allow slightly larger critic updates before clipping
+    --actor_grad_clip_type=norm
+    --critic_grad_clip_type=norm
     --grad_clip_norm_type=2.0
     --weight_decay_actor=5e-5  # Light L2 regularization on the policy network
-    --weight_decay_critic=1e-4 # Stronger L2 regularization on the value network
+    --weight_decay_critic=1.2e-4 # Moderate L2 regularization on the value network
     --critic_ema_decay=0.0     # EMA decay for critic eval smoothing (0 disables)
     --compile=0                # Disable torch.compile (for simplicity and compatibility)
     -n_cores=2                 # Number of CPU cores to utilize for parallel processing
@@ -74,15 +74,15 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_v2_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_v2_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_v2_13" -seed 13 &
-python run.py "${args[@]}" -name "SwingOption_20_v2_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_v4_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_v4_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_v4_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption_20_v4_14" -seed 14
 
-# python run.py "${args[@]}" -name "SwingOption_20_15" -seed 15 &
-# python run.py "${args[@]}" -name "SwingOption_20_16" -seed 16 &
-# python run.py "${args[@]}" -name "SwingOption_20_17" -seed 17 &
-# python run.py "${args[@]}" -name "SwingOption_20_18" -seed 18
+# python run.py "${args[@]}" -name "SwingOption_20_v4_15" -seed 15 &
+# python run.py "${args[@]}" -name "SwingOption_20_v4_16" -seed 16 &
+# python run.py "${args[@]}" -name "SwingOption_20_v4_17" -seed 17 &
+# python run.py "${args[@]}" -name "SwingOption_20_v4_18" -seed 18
 
 
 

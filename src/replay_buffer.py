@@ -342,6 +342,7 @@ class PrioritizedReplay(object):
         self.priorities = np.ones(capacity, dtype=np.float32)
         self.max_priority = 1.0
         self.min_priority = 1e-6
+        self.priority_clip_pct: Optional[float] = None
 
         # RNG
         self.rng = np.random.RandomState(seed)
@@ -484,6 +485,11 @@ class PrioritizedReplay(object):
         if not isinstance(batch_priorities, np.ndarray):
             batch_priorities = np.array(batch_priorities, dtype=np.float32)
         batch_priorities = np.maximum(batch_priorities.flatten(), self.min_priority)
+        if self.priority_clip_pct is not None and self.priority_clip_pct > 0:
+            clip_val = np.percentile(self.priorities[: self.size] if self.size > 0 else batch_priorities,
+                                     self.priority_clip_pct)
+            if clip_val > 0:
+                batch_priorities = np.minimum(batch_priorities, clip_val.astype(np.float32))
         batch_indices = np.clip(batch_indices, 0, self.size - 1)
         self.priorities[batch_indices] = batch_priorities
         new_max = np.max(batch_priorities)

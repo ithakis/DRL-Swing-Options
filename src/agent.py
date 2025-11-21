@@ -17,18 +17,28 @@ except ImportError:
 
 
 class Agent:
-    """Stable Agent implementation with diagnostics."""
-    def __init__(self, state_size, action_size, n_step, per, munchausen, distributional, noise_type, random_seed, hidden_size,
+    """
+    Stable Agent implementation with diagnostics and lightweight defaults (2×64 MLPs).
+    Defaults: single-step TD targets, IQN and Munchausen are opt-in (off by default),
+    gradient clipping is disabled unless thresholds are provided, actor/critic weight
+    decay defaults to 5e-5/1e-4, and target updates use a smoother tau=0.002.
+    """
+    def __init__(self, state_size, action_size, n_step, per, munchausen, distributional, noise_type, random_seed, hidden_size: int = 64,
                  actor_hidden_size: Optional[int] = None, critic_hidden_size: Optional[int] = None,
                  actor_layers: int = 2, critic_layers: int = 2,
-                 optimizer: str = "adamw", weight_decay_actor: float = 0.0, weight_decay_critic: float = 1e-4,
-                 BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=1e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
+                 optimizer: str = "adamw", weight_decay_actor: float = 5e-5, weight_decay_critic: float = 1e-4,
+                 BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=2e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
                  WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
                  device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
+                 per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 99.5,
                  final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7,
-                 actor_grad_clip: float = 1.0, critic_grad_clip: float = 1.0,
-                 actor_grad_clip_type: str = "norm", critic_grad_clip_type: str = "norm",
-                 grad_clip_norm_type: float = 2.0, **kwargs):
+                 actor_grad_clip: float = 0.0, critic_grad_clip: float = 0.0,
+                 actor_grad_clip_type: str = "none", critic_grad_clip_type: str = "none",
+                 grad_clip_norm_type: float = 2.0,
+                 noise_sigma: float = 1.0, noise_anneal_power: float = 1.0,
+                 tau_final: Optional[float] = None, tau_schedule_frac: float = 0.0,
+                 critic_ema_decay: float = 0.0,
+                 **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
             device = torch.device('cuda' if device.lower() in ('cuda', 'gpu') and torch.cuda.is_available() else 'cpu')
@@ -40,6 +50,9 @@ class Agent:
         self.distributional = distributional
         self.GAMMA = GAMMA
         self.t = t
+        self.tau_final = tau_final if tau_final is not None and tau_final > 0 else None
+        self.tau_schedule_frac = max(0.0, min(1.0, tau_schedule_frac))
+        self._current_tau = t
         self.n_step = n_step
         self.BUFFER_SIZE = BUFFER_SIZE
         self.BATCH_SIZE = BATCH_SIZE
@@ -96,6 +109,8 @@ class Agent:
             lr=LR_CRITIC,
             weight_decay=weight_decay_critic,
         )
+        self.critic_ema_decay = critic_ema_decay
+        self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
 
         actor_params = sum(p.numel() for p in self.actor_local.parameters())
         critic_params = sum(p.numel() for p in self.critic_local.parameters())
@@ -119,6 +134,12 @@ class Agent:
         if per:
             self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step,
                                             parallel_env=1, alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames)
+            # Configure PER priority stability
+            try:
+                self.memory.min_priority = per_priority_floor
+                self.memory.priority_clip_pct = per_priority_clip_pct
+            except Exception:
+                pass
         else:
             self.memory = CircularReplayBuffer(buffer_size=BUFFER_SIZE, batch_size=BATCH_SIZE, n_step=n_step, parallel_env=1,
                                                 device=device, seed=random_seed, gamma=GAMMA, use_memmap=BUFFER_SIZE > 500000)
@@ -142,6 +163,10 @@ class Agent:
         else:
             self.critic_grad_clip = critic_grad_clip
             self.critic_grad_clip_type = critic_grad_clip_type if critic_grad_clip_type in {"norm", "value"} else "norm"
+        # Default behavior keeps clipping disabled; users can enable it via positive thresholds.
+
+        self.noise_sigma = noise_sigma
+        self.noise_anneal_power = noise_anneal_power
 
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
@@ -192,7 +217,7 @@ class Agent:
         return optim_cls(param_groups, lr=lr)
 
     def _clip_gradients(self, parameters: Iterable[torch.nn.Parameter], clip_value: Optional[float], clip_type: str):
-        """Apply gradient clipping according to the configured strategy."""
+        """Apply gradient clipping according to the configured strategy. No-op when clip_value<=0 (default)."""
         if clip_value is None or clip_value <= 0:
             return
         if clip_type == "norm":
@@ -217,9 +242,11 @@ class Agent:
             action = self.actor_local(state_t).cpu().numpy()
         self.actor_local.train()
         if add_noise and self.noise is not None:
-            action += self.noise.sample() * self.epsilon
+            scale = (self.epsilon ** self.noise_anneal_power) * self.noise_sigma
+            action += self.noise.sample() * scale
         elif add_noise and self.noise is None:
-            action += np.random.normal(0, self.epsilon, size=action.shape)
+            scale = (self.epsilon ** self.noise_anneal_power) * self.noise_sigma
+            action += np.random.normal(0, scale, size=action.shape)
         return action
 
     def step(self, state, action, reward, next_state, done, timestamp, writer):
@@ -297,6 +324,7 @@ class Agent:
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
         self.soft_update(self.actor_local, self.actor_target)
+        self._update_ema_buffers()
         if self.per and priorities is not None and hasattr(self.memory, 'update_priorities'):
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
         self.epsilon *= self.epsilon_decay
@@ -361,6 +389,7 @@ class Agent:
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
         self.soft_update(self.actor_local, self.actor_target)
+        self._update_ema_buffers()
         self.epsilon *= self.epsilon_decay
         if self.noise is not None:
             self.noise.reset()
@@ -371,10 +400,29 @@ class Agent:
         return self._updates_done
 
     def soft_update(self, local, target):
+        tau = self._compute_tau()
         with torch.no_grad():
             for tp, lp in zip(target.parameters(), local.parameters()):
-                tp.data.mul_(1 - self.t)
-                tp.data.add_(lp.data, alpha=self.t)
+                tp.data.mul_(1 - tau)
+                tp.data.add_(lp.data, alpha=tau)
+
+    def _compute_tau(self) -> float:
+        if self.tau_final is None or self.tau_schedule_frac <= 0.0:
+            return self.t
+        frac = min(1.0, max(0.0, (self._episode_count) / max(1, int(self.total_episodes * self.tau_schedule_frac))))
+        self._current_tau = self.t * (1.0 - frac) + self.tau_final * frac
+        return self._current_tau
+
+    def _update_ema_buffers(self):
+        if self.critic_ema_decay <= 0 or self.critic_ema_state is None:
+            return
+        with torch.no_grad():
+            for k, v in self.critic_local.state_dict().items():
+                self.critic_ema_state[k].mul_(self.critic_ema_decay).add_(v, alpha=1.0 - self.critic_ema_decay)
+
+    def get_critic_eval_state(self):
+        """Return EMA-smoothed critic parameters for evaluation if available."""
+        return self.critic_ema_state if self.critic_ema_state is not None else self.critic_local.state_dict()
 
     def _log_batch_diagnostics(self, batch, ts, writer):
         states, actions, rewards, next_states, dones, idx, weights = batch

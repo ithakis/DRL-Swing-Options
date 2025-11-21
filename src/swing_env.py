@@ -146,15 +146,33 @@ class SwingOptionEnv(gym.Env):
         q_actual = self._get_feasible_action(q_proposed)
 
         # Current spot at this decision time
-        spot_price = self.spot_path[self.current_step]
+        current_step = self.current_step
+        spot_price = self.spot_path[current_step]
 
-        # If out-of-the-money, do not allow exercising: ignore action (q_actual=0)
-        if spot_price - self.contract.strike <= 0.0:
+        # Evaluate payoff before committing to an exercise
+        total_reward, gross_payoff, exercise_cost, net_payoff = calculate_standardized_reward(
+            spot_price=spot_price,
+            q_actual=q_actual,
+            strike=self.contract.strike,
+            current_step=current_step,
+            discount_factor=self.contract.discount_factor,
+            cost_coefficient=self.contract.c_cost,
+            cost_exponent=self.contract.gamma_cost,
+        )
+
+        # Enforce q_t = 0 whenever the realized reward would be non-positive
+        action_masked = False
+        if net_payoff <= 0.0:
+            action_masked = q_actual > 0.0
             q_actual = 0.0
+            total_reward = 0.0
+            gross_payoff = 0.0
+            exercise_cost = 0.0
+            net_payoff = 0.0
 
         # Track last exercise time if any amount exercised
         if q_actual > 1e-6:
-            self.last_exercise_step = self.current_step
+            self.last_exercise_step = current_step
 
         # Compute new cumulative exercised and advance time
         new_q_exercised = self.q_exercised + q_actual
@@ -166,17 +184,6 @@ class SwingOptionEnv(gym.Env):
             or new_q_exercised >= self.contract.Q_max - 1e-6
         )
         truncated = False
-
-        # Per-step discounted reward with 0-based exponent (j = current_step - 1)
-        total_reward, gross_payoff, exercise_cost, net_payoff = calculate_standardized_reward(
-            spot_price=spot_price,
-            q_actual=q_actual,
-            strike=self.contract.strike,
-            current_step=self.current_step - 1,
-            discount_factor=self.contract.discount_factor,
-            cost_coefficient=self.contract.c_cost,
-            cost_exponent=self.contract.gamma_cost,
-        )
 
         # Update episode bookkeeping
         self.q_exercised = new_q_exercised
@@ -194,6 +201,7 @@ class SwingOptionEnv(gym.Env):
             "terminal_penalty": 0.0,
             "cumulative_exercised": self.q_exercised,
             "episode_return": self.episode_return,
+            "action_masked": action_masked,
         }
 
         next_obs = self._get_observation()
@@ -254,10 +262,10 @@ class SwingOptionEnv(gym.Env):
                               if self.last_exercise_step >= 0 else self.current_step)
         
         # State:
-        # - Payoff
+        # - spot_minus_strike (S_t - K)
 
         state = np.array([
-            spot_price - self.contract.strike,  # Payoff
+            spot_price - self.contract.strike,  # spot_minus_strike (S_t - K)
             self.q_exercised / self.contract.Q_max,  # Normalized cumulative exercise
             q_remaining / self.contract.Q_max,  # Normalized remaining capacity
             time_to_maturity / self.contract.maturity,  # Normalized time to maturity
