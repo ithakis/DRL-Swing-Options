@@ -266,7 +266,7 @@ class ConfigManager:
         parser.add_argument("--per_beta_start", type=float, default=0.4, help="PER: initial importance sampling weight beta_start (default: 0.4)")
         parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
         parser.add_argument("--per_priority_floor", type=float, default=1e-6, help="Minimum PER priority to avoid zeros (default: 1e-6)")
-        parser.add_argument("--per_priority_clip_pct", type=float, default=99.5, help="Clip PER priorities to this percentile (0 disables, default: 99.5)")
+        parser.add_argument("--per_priority_clip_pct", type=float, default=0.0, help="Clip PER priorities to this percentile (0 disables, default: disabled)")
         parser.add_argument(
             "-per",
             type=int,
@@ -306,6 +306,12 @@ class ConfigManager:
             type=float,
             default=1.0,
             help="Exponent tying noise std to epsilon (default: 1.0 = linear)",
+        )
+        parser.add_argument(
+            "--min_action_noise",
+            type=float,
+            default=0.05,
+            help="Minimum noise scale applied in act() to avoid zero-variance policies (default: 0.05)",
         )
 
         # Network and Learning Parameters
@@ -470,6 +476,24 @@ class ConfigManager:
             type=float,
             default=0.0,
             help="EMA decay for critic eval smoothing (0 disables, default: 0.0)",
+        )
+        parser.add_argument(
+            "--action_reg_weight",
+            type=float,
+            default=1e-3,
+            help="L2 regularization weight on actions in actor loss (default: 1e-3)",
+        )
+        parser.add_argument(
+            "--target_policy_noise",
+            type=float,
+            default=0.1,
+            help="Std of noise added to target actions for smoothing (default: 0.1; 0 disables)",
+        )
+        parser.add_argument(
+            "--target_policy_clip",
+            type=float,
+            default=0.25,
+            help="Clipping range for target policy smoothing noise (default: 0.25)",
         )
 
         # System and Optimization Parameters
@@ -1175,6 +1199,7 @@ def run_training(
     start_time = time.time()
     episode_times = deque(maxlen=50)
     episode_steps = deque(maxlen=50)
+    # Legacy placeholders removed: no safe training or diagnostics logging
 
     # eval_every should not be 0, either -1 or >0
     if args.eval_every == 0:
@@ -1209,6 +1234,7 @@ def run_training(
         state, _ = train_env.reset()
         score = 0.0
         path_steps = 0
+        actions_episode = []
 
         # Complete one full path/episode
         while True:
@@ -1220,6 +1246,7 @@ def run_training(
             next_state, reward, terminated, truncated, _ = train_env.step(action_v[0])
             done = terminated or truncated
             agent.step(state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer)
+            actions_episode.append(action_v[0])
 
             state = next_state
             score += float(reward)
@@ -1253,6 +1280,7 @@ def run_training(
         scores_window.append(episode_return)
         scores.append(episode_return)
         avg_100 = float(np.mean(scores_window))
+        # No safe-training diagnostics; minimal logging only
 
         # TensorBoard logging
         tensorboard_writer.add_scalar("Average100", avg_100, current_path)
@@ -1421,6 +1449,7 @@ def main():
         noise_type=args.noise,
         noise_sigma=args.noise_sigma,
         noise_anneal_power=args.noise_anneal_power,
+        min_action_noise=args.min_action_noise,
         random_seed=seed,
         hidden_size=args.layer_size,
         actor_hidden_size=actor_hidden_size,
@@ -1431,6 +1460,9 @@ def main():
         weight_decay_actor=args.weight_decay_actor,
         weight_decay_critic=args.weight_decay_critic,
         critic_ema_decay=args.critic_ema_decay,
+        action_reg_weight=args.action_reg_weight,
+        target_policy_noise=args.target_policy_noise,
+        target_policy_clip=args.target_policy_clip,
         BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
         GAMMA=args.gamma,

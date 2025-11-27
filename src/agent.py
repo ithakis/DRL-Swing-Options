@@ -30,14 +30,18 @@ class Agent:
                  BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=2e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
                  WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
                  device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
-                 per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 99.5,
+                 per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 0.0,
                  final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7,
                  actor_grad_clip: float = 0.0, critic_grad_clip: float = 0.0,
                  actor_grad_clip_type: str = "none", critic_grad_clip_type: str = "none",
                  grad_clip_norm_type: float = 2.0,
                  noise_sigma: float = 1.0, noise_anneal_power: float = 1.0,
+                 min_action_noise: float = 0.05,
                  tau_final: Optional[float] = None, tau_schedule_frac: float = 0.0,
                  critic_ema_decay: float = 0.0,
+                 action_reg_weight: float = 1e-3,
+                 target_policy_noise: float = 0.1,
+                 target_policy_clip: float = 0.25,
                  **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
@@ -83,6 +87,12 @@ class Agent:
         self.critic_layers = critic_layers
         self.optimizer_name = optimizer_name
         self._updates_done = 0
+        self.initial_actor_lr = LR_ACTOR
+        self.initial_critic_lr = LR_CRITIC
+        self.action_reg_weight = action_reg_weight
+        self.min_action_noise = min_action_noise
+        self.target_policy_noise = target_policy_noise
+        self.target_policy_clip = target_policy_clip
 
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
@@ -235,6 +245,17 @@ class Agent:
         if self.critic_scheduler:
             self.critic_scheduler.step()
 
+    def boost_learning_rates(self, boost: float):
+        """Boost learning rates up to their initial values (safety cap)."""
+        if boost <= 1.0:
+            return
+        max_actor = self.initial_actor_lr
+        max_critic = self.initial_critic_lr
+        for g in self.actor_optimizer.param_groups:
+            g['lr'] = min(max_actor, g['lr'] * boost)
+        for g in self.critic_optimizer.param_groups:
+            g['lr'] = min(max_critic, g['lr'] * boost)
+
     def act(self, state: np.ndarray, add_noise: bool = True):
         state_t = torch.from_numpy(state).float().to(self.device)
         self.actor_local.eval()
@@ -242,12 +263,12 @@ class Agent:
             action = self.actor_local(state_t).cpu().numpy()
         self.actor_local.train()
         if add_noise and self.noise is not None:
-            scale = (self.epsilon ** self.noise_anneal_power) * self.noise_sigma
+            scale = max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
             action += self.noise.sample() * scale
         elif add_noise and self.noise is None:
-            scale = (self.epsilon ** self.noise_anneal_power) * self.noise_sigma
+            scale = max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
             action += np.random.normal(0, scale, size=action.shape)
-        return action
+        return np.clip(action, -1.0, 1.0)
 
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         self.step_counter += 1
@@ -283,6 +304,9 @@ class Agent:
             weights = weights.to(self.device)
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
+            if self.target_policy_noise and self.target_policy_noise > 0:
+                noise = (torch.randn_like(next_actions) * self.target_policy_noise).clamp(-self.target_policy_clip, self.target_policy_clip)
+                next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
             q_next = self.critic_target(next_states, next_actions)
             if not self.munchausen:
                 q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
@@ -312,7 +336,9 @@ class Agent:
         self._clip_gradients(self.critic_local.parameters(), self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
-        actor_loss = -self.critic_local(states, actions_pred).mean()
+        q_val = self.critic_local(states, actions_pred)
+        reg = self.action_reg_weight * actions_pred.pow(2).mean()
+        actor_loss = -q_val.mean() + reg
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
@@ -343,6 +369,9 @@ class Agent:
             weights = weights.to(self.device)
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
+            if self.target_policy_noise and self.target_policy_noise > 0:
+                noise = (torch.randn_like(next_actions) * self.target_policy_noise).clamp(-self.target_policy_clip, self.target_policy_clip)
+                next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
             qt_next, _ = self.critic_target(next_states, next_actions, self.N)
             qt_next = qt_next.transpose(1, 2)
             if not self.munchausen:
@@ -368,7 +397,8 @@ class Agent:
 
         actions_pred = self.actor_local(states)
         q_pred, _ = self.critic_local(states, actions_pred, self.N)
-        actor_loss = -q_pred.mean()
+        reg = self.action_reg_weight * actions_pred.pow(2).mean()
+        actor_loss = -q_pred.mean() + reg
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
