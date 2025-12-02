@@ -306,6 +306,29 @@ Training typically converges within 5K-10K episodes, with stable pricing estimat
 }
 ```
 
+### PER Scheduling (why and how)
+- **Problem**: Static PER can over-focus early, spike TD errors, and drive action-variance collapse; turning PER off loses late-stage efficiency.
+- **What works**: Keep PER effectively off early (alpha≈0, beta≈1) and ramp it in once the critic stabilizes. Moderate alpha (0.35–0.4) and beta (0.8–0.85) by ~14–15k episodes balanced stability and late refinement in our runs.
+- **Schedules**: Linear ramps rise steadily; sigmoid ramps stay flatter early and rise smoothly mid-ramp. Sigmoid is preferred when you want to be “more uniform” in the first few thousand episodes.
+- **Typical settings**: Start ramp ~3k–5k episodes, end ~14k–15k; alpha_final 0.35–0.4; beta_final 0.8–0.85; keep priority floor small (≈1e-6) and avoid clipping unless spikes appear. Adjust ramp start/end to control how long the run behaves like uniform replay before PER takes over.
+### Exploration Noise Schedule
+
+The Gaussian exploration noise now supports a plateau-then-decay schedule controlled by `--noise_plateau = N_p` episodes:
+
+$$
+\epsilon_t =
+\begin{cases}
+\epsilon_0, & t \le N_p \\
+\epsilon_0 \cdot \epsilon_{\text{decay}}^{\,t - N_p}, & t > N_p
+\end{cases}
+,\qquad
+\sigma_t = \max\left(\sigma_{\min},\; \sigma_0 \cdot \epsilon_t^{\alpha}\right)
+$$
+
+For the v17 runs we use a 2,000-episode plateau with $(\epsilon_0, \epsilon_{\text{decay}}, \sigma_0, \alpha, \sigma_{\min}) = (0.3,\ 0.99993,\ 1.1,\ 0.55,\ 0.15)$ so early exploration stays high before resuming the original decay curve.
+
+![Plateaued Gaussian noise schedule](noise_plateau_schedule_v17.png)
+
 ### Computational Requirements
 - **Training**: ~2-4 hours on modern GPU (RTX 3080+)
 - **Memory**: 4-8GB RAM for standard configurations

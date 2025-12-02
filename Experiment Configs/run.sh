@@ -29,8 +29,6 @@ args=(
     --min_replay_size=15000  # Minimum buffer size before learning starts (stabilizes early training)
     --max_replay_size=200000 # Maximum replay buffer size (memory/variance tradeoff)
     -t=0.002                # Soft update factor tau for target networks (lower = more stable, slower adaptation)
-    --tau_final=0.002          # Final tau for target schedule (<0 disables)
-    --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
     -bs=64                   # Batch size for learning updates (samples per update)
     -layer_size=64           # Number of neurons per hidden layer (network capacity)
     -lr_a=2e-4               # Actor network learning rate (policy update speed)

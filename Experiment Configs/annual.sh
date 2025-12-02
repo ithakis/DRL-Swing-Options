@@ -31,8 +31,6 @@ args=(
     --min_replay_size=5000      # Increase from 1000 to 5000
     --max_replay_size=200000
     -t=0.002
-    --tau_final=0.002          # Final tau for target schedule (<0 disables)
-    --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
     -lr_a=2e-4                  # from lr_a=3e-4
     -lr_c=2e-4                  # from lr_c=3e-4
     --actor_grad_clip=0

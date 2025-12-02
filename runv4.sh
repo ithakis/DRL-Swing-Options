@@ -26,8 +26,6 @@ args=(
     --min_replay_size=18000    # Warm-up buffer size before learning starts (random play)
     --max_replay_size=200000   # Replay buffer capacity (stores up to 200k transitions)
     -t=0.003                   # Target network soft-update rate tau (moderate smoothing)
-    --tau_final=0.002          # Final tau for target schedule (<0 disables)
-    --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
     -bs=64                     # Batch size for each gradient update
     -layer_size=64             # Hidden layer size for actor/critic networks
     -lr_a=3e-4                 # Actor learning rate (3e-4, constant)
@@ -44,7 +42,7 @@ args=(
     --weight_decay_critic=1.2e-4 # Moderate L2 regularization on the value network
     --critic_ema_decay=0.0     # EMA decay for critic eval smoothing (0 disables)
     --compile=0                # Disable torch.compile (for simplicity and compatibility)
-    -n_cores=2                 # Number of CPU cores to utilize for parallel processing
+    -n_cores=1                 # Number of CPU cores to utilize for parallel processing
 
     # Swing Option Contract parameters (unchanged from default baseline contract)
     --strike=1.0

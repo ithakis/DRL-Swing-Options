@@ -63,12 +63,17 @@ if __name__ == "__main__":
                  hidden_size=parameters.layer_size,
                  BATCH_SIZE=parameters.batch_size, BUFFER_SIZE=parameters.replay_memory, GAMMA=parameters.gamma,
                  LR_ACTOR=parameters.lr_a, LR_CRITIC=parameters.lr_c, t=getattr(parameters, 't', getattr(parameters, 'tau', 0.002)),
-                 tau_final=getattr(parameters, 'tau_final', None) if getattr(parameters, 'tau_final', -1) > 0 else None,
-                 tau_schedule_frac=getattr(parameters, 'tau_schedule_frac', 0.0),
                  LEARN_EVERY=parameters.learn_every,
                  LEARN_NUMBER=parameters.learn_number, device="cpu", paths=0,
                  per_priority_floor=getattr(parameters, 'per_priority_floor', 1e-6),
                  per_priority_clip_pct=getattr(parameters, 'per_priority_clip_pct', 99.5),
-                 critic_ema_decay=getattr(parameters, 'critic_ema_decay', 0.0)) 
+                 critic_ema_decay=getattr(parameters, 'critic_ema_decay', 0.0),
+                 action_reg_weight=getattr(parameters, 'action_reg_weight', 1e-3),
+                 action_reg_cutoff=getattr(parameters, 'action_reg_cutoff', 0),
+                 per_alpha_final=getattr(parameters, 'per_alpha_final', None),
+                 per_alpha_ramp_start=getattr(parameters, 'per_alpha_ramp_start', 0),
+                 per_alpha_ramp_end=getattr(parameters, 'per_alpha_ramp_end', 0),
+                 per_beta_final=getattr(parameters, 'per_beta_final', None),
+                 per_alpha_sigmoid=bool(getattr(parameters, 'per_alpha_sigmoid', 0))) 
     evaluate(args.runs)
     

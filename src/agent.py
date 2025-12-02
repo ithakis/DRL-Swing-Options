@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
+import math
 
 try:
     from .networks import IQN, Actor, Critic
@@ -31,17 +32,20 @@ class Agent:
                  WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1, epsilon=.3, epsilon_decay=1.0,
                  device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
                  per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 0.0,
+                 per_alpha_final: Optional[float] = None, per_alpha_ramp_start: int = 0, per_alpha_ramp_end: int = 0,
+                 per_beta_final: Optional[float] = None, per_alpha_sigmoid: bool = False,
                  final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7,
                  actor_grad_clip: float = 0.0, critic_grad_clip: float = 0.0,
                  actor_grad_clip_type: str = "none", critic_grad_clip_type: str = "none",
                  grad_clip_norm_type: float = 2.0,
                  noise_sigma: float = 1.0, noise_anneal_power: float = 1.0,
+                 noise_plateau: int = 0,
                  min_action_noise: float = 0.05,
-                 tau_final: Optional[float] = None, tau_schedule_frac: float = 0.0,
                  critic_ema_decay: float = 0.0,
-                 action_reg_weight: float = 1e-3,
                  target_policy_noise: float = 0.1,
                  target_policy_clip: float = 0.25,
+                 action_reg_weight: float = 1e-3,
+                 action_reg_cutoff: int = 0,
                  **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
@@ -54,9 +58,6 @@ class Agent:
         self.distributional = distributional
         self.GAMMA = GAMMA
         self.t = t
-        self.tau_final = tau_final if tau_final is not None and tau_final > 0 else None
-        self.tau_schedule_frac = max(0.0, min(1.0, tau_schedule_frac))
-        self._current_tau = t
         self.n_step = n_step
         self.BUFFER_SIZE = BUFFER_SIZE
         self.BATCH_SIZE = BATCH_SIZE
@@ -64,6 +65,12 @@ class Agent:
         self.LEARN_NUMBER = LEARN_NUMBER
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
+        self.noise_plateau = max(0, int(noise_plateau))
+        self.per_alpha_final = per_alpha_final
+        self.per_alpha_ramp_start = max(0, int(per_alpha_ramp_start))
+        self.per_alpha_ramp_end = max(0, int(per_alpha_ramp_end))
+        self.per_beta_final = per_beta_final
+        self.per_alpha_sigmoid = per_alpha_sigmoid
         random.seed(random_seed)
         torch.manual_seed(random_seed)
 
@@ -89,10 +96,11 @@ class Agent:
         self._updates_done = 0
         self.initial_actor_lr = LR_ACTOR
         self.initial_critic_lr = LR_CRITIC
-        self.action_reg_weight = action_reg_weight
         self.min_action_noise = min_action_noise
         self.target_policy_noise = target_policy_noise
         self.target_policy_clip = target_policy_clip
+        self.action_reg_weight = action_reg_weight
+        self.action_reg_cutoff = max(0, int(action_reg_cutoff))
 
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
@@ -235,9 +243,16 @@ class Agent:
         elif clip_type == "value":
             clip_grad_value_(parameters, clip_value)
 
+    def _step_epsilon_decay(self):
+        """Decay epsilon only after the configured plateau episodes."""
+        if self._episode_count <= self.noise_plateau:
+            return
+        self.epsilon *= self.epsilon_decay
+
     def update_episode_count(self, episode: int):
         """Update internal episode counter (used for PER beta annealing in caller)."""
         self._episode_count = episode
+        self._maybe_update_per_schedule()
 
     def step_lr_schedulers(self, episode: int):
         if self.actor_scheduler:
@@ -269,6 +284,10 @@ class Agent:
             scale = max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
             action += np.random.normal(0, scale, size=action.shape)
         return np.clip(action, -1.0, 1.0)
+
+    def get_noise_scale(self) -> float:
+        """Return the current exploration noise scale used in act()."""
+        return max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
 
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         self.step_counter += 1
@@ -337,7 +356,8 @@ class Agent:
         self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
         q_val = self.critic_local(states, actions_pred)
-        reg = self.action_reg_weight * actions_pred.pow(2).mean()
+        reg_weight = self.action_reg_weight if (self.action_reg_cutoff == 0 or self._episode_count <= self.action_reg_cutoff) else 0.0
+        reg = reg_weight * actions_pred.pow(2).mean()
         actor_loss = -q_val.mean() + reg
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -353,7 +373,7 @@ class Agent:
         self._update_ema_buffers()
         if self.per and priorities is not None and hasattr(self.memory, 'update_priorities'):
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        self.epsilon *= self.epsilon_decay
+        self._step_epsilon_decay()
         if self.noise is not None:
             self.noise.reset()
         return critic_loss.item(), actor_loss.item()
@@ -397,7 +417,8 @@ class Agent:
 
         actions_pred = self.actor_local(states)
         q_pred, _ = self.critic_local(states, actions_pred, self.N)
-        reg = self.action_reg_weight * actions_pred.pow(2).mean()
+        reg_weight = self.action_reg_weight if (self.action_reg_cutoff == 0 or self._episode_count <= self.action_reg_cutoff) else 0.0
+        reg = reg_weight * actions_pred.pow(2).mean()
         actor_loss = -q_pred.mean() + reg
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -420,7 +441,7 @@ class Agent:
         self.soft_update(self.critic_local, self.critic_target)
         self.soft_update(self.actor_local, self.actor_target)
         self._update_ema_buffers()
-        self.epsilon *= self.epsilon_decay
+        self._step_epsilon_decay()
         if self.noise is not None:
             self.noise.reset()
         return critic_loss.item(), actor_loss.item()
@@ -437,11 +458,7 @@ class Agent:
                 tp.data.add_(lp.data, alpha=tau)
 
     def _compute_tau(self) -> float:
-        if self.tau_final is None or self.tau_schedule_frac <= 0.0:
-            return self.t
-        frac = min(1.0, max(0.0, (self._episode_count) / max(1, int(self.total_episodes * self.tau_schedule_frac))))
-        self._current_tau = self.t * (1.0 - frac) + self.tau_final * frac
-        return self._current_tau
+        return self.t
 
     def _update_ema_buffers(self):
         if self.critic_ema_decay <= 0 or self.critic_ema_state is None:
@@ -449,6 +466,50 @@ class Agent:
         with torch.no_grad():
             for k, v in self.critic_local.state_dict().items():
                 self.critic_ema_state[k].mul_(self.critic_ema_decay).add_(v, alpha=1.0 - self.critic_ema_decay)
+
+    def _maybe_update_per_schedule(self):
+        """Dynamically adjust PER alpha/beta to mimic uniform early and ramp later."""
+        if not self.per or not hasattr(self, "memory") or not isinstance(self.memory, PrioritizedReplay):
+            return
+        # If no schedule configured, keep defaults
+        if self.per_alpha_final is None or self.per_alpha_ramp_end <= self.per_alpha_ramp_start:
+            return
+        start = self.per_alpha_ramp_start
+        end = self.per_alpha_ramp_end
+        ep = self._episode_count
+        if ep <= start:
+            alpha = 0.0
+        elif ep >= end:
+            alpha = self.per_alpha_final
+        else:
+            frac = (ep - start) / max(1, end - start)
+            if self.per_alpha_sigmoid:
+                k = 8.0 / max(1.0, end - start)
+                mid = 0.5 * (start + end)
+                alpha = self.per_alpha_final / (1.0 + math.exp(-k * (ep - mid)))
+            else:
+                alpha = frac * self.per_alpha_final
+        beta_final = self.per_beta_final if self.per_beta_final is not None else 1.0
+        if ep <= start:
+            beta = 1.0
+        elif ep >= end:
+            beta = beta_final
+        else:
+            frac = (ep - start) / max(1, end - start)
+            if self.per_alpha_sigmoid:
+                k = 8.0 / max(1.0, end - start)
+                mid = 0.5 * (start + end)
+                frac_sig = 1.0 / (1.0 + math.exp(-k * (ep - mid)))
+                beta = 1.0 + (beta_final - 1.0) * frac_sig
+            else:
+                beta = 1.0 + (beta_final - 1.0) * frac
+        # Apply to memory and invalidate caches so sampling uses updated alpha
+        self.memory.alpha = alpha
+        self.memory.beta_start = beta
+        self.memory.beta_frames = int(1e9)  # effectively constant beta
+        self.memory.set_frame_count(0)
+        self.memory._cache_valid = False
+        self.memory._cumsum_valid = False
 
     def get_critic_eval_state(self):
         """Return EMA-smoothed critic parameters for evaluation if available."""

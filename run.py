@@ -53,6 +53,8 @@ def signed_zero_aware_pct_change(initial: float, new: float) -> float:
     115.7
     >>> signed_zero_aware_pct_change(2.0, 3.0)
     50.0
+    >>> signed_zero_aware_pct_change(2.0, 0.0)
+    -100.0
     >>> signed_zero_aware_pct_change(3.0, -2.0)
     -166.7
     """
@@ -66,7 +68,8 @@ def signed_zero_aware_pct_change(initial: float, new: float) -> float:
     zero_mask = a == 0.0
     both_zero_mask = zero_mask & (b == 0.0)
     nonzero_mask = ~zero_mask
-    same_sign_mask = nonzero_mask & (np.sign(a) == np.sign(b))
+    new_zero_mask = nonzero_mask & (b == 0.0)
+    same_sign_mask = nonzero_mask & (np.sign(a) == np.sign(b)) & ~new_zero_mask
 
     result[both_zero_mask] = 0.0
 
@@ -74,10 +77,14 @@ def signed_zero_aware_pct_change(initial: float, new: float) -> float:
     if np.any(inf_mask):
         result[inf_mask] = np.sign(b[inf_mask]) * np.inf
 
+    if np.any(new_zero_mask):
+        # Drop from non-zero baseline to zero -> -100% (or +100% if baseline was negative)
+        result[new_zero_mask] = -np.sign(a[new_zero_mask]) * 100.0
+
     if np.any(same_sign_mask):
         result[same_sign_mask] = ((b - a) / a * 100.0)[same_sign_mask]
 
-    cross_mask = nonzero_mask & ~same_sign_mask
+    cross_mask = nonzero_mask & ~same_sign_mask & ~new_zero_mask
     if np.any(cross_mask):
         result[cross_mask] = (
             np.sign(b[cross_mask])
@@ -267,6 +274,11 @@ class ConfigManager:
         parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
         parser.add_argument("--per_priority_floor", type=float, default=1e-6, help="Minimum PER priority to avoid zeros (default: 1e-6)")
         parser.add_argument("--per_priority_clip_pct", type=float, default=0.0, help="Clip PER priorities to this percentile (0 disables, default: disabled)")
+        parser.add_argument("--per_alpha_final", type=float, default=None, help="Optional PER alpha target for scheduling (None disables)")
+        parser.add_argument("--per_alpha_ramp_start", type=int, default=0, help="Episode to start PER alpha ramp (0 disables if end<=start)")
+        parser.add_argument("--per_alpha_ramp_end", type=int, default=0, help="Episode to end PER alpha ramp (0 disables if end<=start)")
+        parser.add_argument("--per_beta_final", type=float, default=None, help="Optional PER beta target for scheduling (None keeps default beta behavior)")
+        parser.add_argument("--per_alpha_sigmoid", type=int, default=0, choices=[0, 1], help="Use sigmoid ramp for PER alpha/beta (default: 0 / linear)")
         parser.add_argument(
             "-per",
             type=int,
@@ -306,6 +318,12 @@ class ConfigManager:
             type=float,
             default=1.0,
             help="Exponent tying noise std to epsilon (default: 1.0 = linear)",
+        )
+        parser.add_argument(
+            "--noise_plateau",
+            type=int,
+            default=0,
+            help="Episodes to hold epsilon/noise at the initial level before decay begins (default: 0)",
         )
         parser.add_argument(
             "--min_action_noise",
@@ -392,6 +410,18 @@ class ConfigManager:
             help="Minimum learning rate floor (default: 1e-7)",
         )
         parser.add_argument(
+            "--action_reg_weight",
+            type=float,
+            default=1e-3,
+            help="L2 penalty weight on actions to discourage boundary saturation (default: 1e-3)",
+        )
+        parser.add_argument(
+            "--action_reg_cutoff",
+            type=int,
+            default=0,
+            help="Apply action L2 penalty only up to this episode (0 = always on, default 0)",
+        )
+        parser.add_argument(
             "--actor_grad_clip",
             type=float,
             default=0.0,
@@ -439,18 +469,6 @@ class ConfigManager:
         parser.add_argument(
             "-t", "--t", type=float, default=2e-3, help="Softupdate factor t (Polyak tau), default is 2e-3"
         )
-        parser.add_argument(
-            "--tau_final",
-            type=float,
-            default=-1.0,
-            help="Optional final tau; <0 disables scheduling (default: disabled)",
-        )
-        parser.add_argument(
-            "--tau_schedule_frac",
-            type=float,
-            default=0.0,
-            help="Fraction of training over which tau decays to tau_final (default: 0 = disabled)",
-        )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
         parser.add_argument(
             "--optimizer",
@@ -476,12 +494,6 @@ class ConfigManager:
             type=float,
             default=0.0,
             help="EMA decay for critic eval smoothing (0 disables, default: 0.0)",
-        )
-        parser.add_argument(
-            "--action_reg_weight",
-            type=float,
-            default=1e-3,
-            help="L2 regularization weight on actions in actor loss (default: 1e-3)",
         )
         parser.add_argument(
             "--target_policy_noise",
@@ -1290,6 +1302,14 @@ def run_training(
         tensorboard_writer.add_scalar("Updates_Per_Second", updates_per_second, current_path)
         tensorboard_writer.add_scalar("Total_Steps", total_steps, current_path)
         tensorboard_writer.add_scalar("Path_Length", path_steps, current_path)
+        # Exploration diagnostics: epsilon and effective noise scale
+        noise_scale = agent.get_noise_scale() if hasattr(agent, "get_noise_scale") else max(
+            (agent.epsilon ** agent.noise_anneal_power) * agent.noise_sigma, agent.min_action_noise
+        )
+        tensorboard_writer.add_scalar("Exploration/Epsilon", agent.epsilon, current_path)
+        tensorboard_writer.add_scalar("Exploration/Noise_Scale", noise_scale, current_path)
+        plateau_flag = 1 if hasattr(agent, "noise_plateau") and current_path <= agent.noise_plateau else 0
+        tensorboard_writer.add_scalar("Exploration/Plateau_Active", plateau_flag, current_path)
         
         # Log learning rates for monitoring decay
         if agent.actor_scheduler is not None:
@@ -1449,6 +1469,7 @@ def main():
         noise_type=args.noise,
         noise_sigma=args.noise_sigma,
         noise_anneal_power=args.noise_anneal_power,
+        noise_plateau=args.noise_plateau,
         min_action_noise=args.min_action_noise,
         random_seed=seed,
         hidden_size=args.layer_size,
@@ -1460,15 +1481,12 @@ def main():
         weight_decay_actor=args.weight_decay_actor,
         weight_decay_critic=args.weight_decay_critic,
         critic_ema_decay=args.critic_ema_decay,
-        action_reg_weight=args.action_reg_weight,
         target_policy_noise=args.target_policy_noise,
         target_policy_clip=args.target_policy_clip,
         BUFFER_SIZE=args.max_replay_size,
         BATCH_SIZE=args.batch_size,
         GAMMA=args.gamma,
         t=args.t,
-        tau_final=args.tau_final if args.tau_final > 0 else None,
-        tau_schedule_frac=args.tau_schedule_frac,
         LR_ACTOR=args.lr_a,
         LR_CRITIC=args.lr_c,
         LEARN_EVERY=args.learn_every,
@@ -1486,6 +1504,11 @@ def main():
         per_beta_frames=args.per_beta_frames,
         per_priority_floor=args.per_priority_floor,
         per_priority_clip_pct=args.per_priority_clip_pct,
+        per_alpha_final=args.per_alpha_final,
+        per_alpha_ramp_start=args.per_alpha_ramp_start,
+        per_alpha_ramp_end=args.per_alpha_ramp_end,
+        per_beta_final=args.per_beta_final,
+        per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
         final_lr_fraction=args.final_lr_fraction,
         total_episodes=args.n_paths,
         warmup_frac=args.warmup_frac,
@@ -1495,6 +1518,8 @@ def main():
         actor_grad_clip_type=args.actor_grad_clip_type,
         critic_grad_clip_type=args.critic_grad_clip_type,
         grad_clip_norm_type=args.grad_clip_norm_type,
+        action_reg_weight=args.action_reg_weight,
+        action_reg_cutoff=args.action_reg_cutoff,
     )
     t0 = time.time()
 

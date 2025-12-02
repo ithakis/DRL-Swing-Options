@@ -5,7 +5,7 @@ args=(
     # 8192 * 2 = 16384 training episodes (16k)
     -n_paths=32768              # Training episodes (paths)
     -eval_every=1024           # Evaluation frequency (in episodes)
-    -n_paths_eval=4096         # Paths per evaluation (for stable pricing estimate)
+    -n_paths_eval=32768         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0              # Disable Munchausen RL (no entropy bonus in reward)
     -nstep=1
     --per_alpha=0.5            # PER prioritization exponent
@@ -26,8 +26,6 @@ args=(
     --min_replay_size=20000    # Warm-up buffer size before learning starts (random play)
     --max_replay_size=200000   # Replay buffer capacity (stores up to 200k transitions)
     -t=0.0032                  # Target network soft-update rate tau (moderate smoothing)
-    --tau_final=0.002          # Final tau for target schedule (<0 disables)
-    --tau_schedule_frac=0.5    # Fraction of training to decay tau toward tau_final
     -bs=64                     # Batch size for each gradient update
     -layer_size=64             # Hidden layer size for actor/critic networks
     -lr_a=3e-4                 # Actor learning rate (3e-4, constant)
@@ -44,7 +42,7 @@ args=(
     --weight_decay_critic=1.2e-4 # Moderate L2 regularization on the value network
     --critic_ema_decay=0.0     # EMA decay for critic eval smoothing (0 disables)
     --compile=0                # Disable torch.compile (for simplicity and compatibility)
-    -n_cores=2                 # Number of CPU cores to utilize for parallel processing
+    -n_cores=1                 # Number of CPU cores to utilize for parallel processing
 
     # Swing Option Contract parameters (unchanged from default baseline contract)
     --strike=1.0
@@ -74,15 +72,15 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-# python run.py "${args[@]}" -name "SwingOption_20_11" -seed 11 &
-# python run.py "${args[@]}" -name "SwingOption_20_12" -seed 12 &
-# python run.py "${args[@]}" -name "SwingOption_20_13" -seed 13 &
-# python run.py "${args[@]}" -name "SwingOption_20_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_v5_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_v5_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_v5_13" -seed 13 &
+python run.py "${args[@]}" -name "SwingOption_20_v5_14" -seed 14
 
-python run.py "${args[@]}" -name "SwingOption_20_15" -seed 15 &
-python run.py "${args[@]}" -name "SwingOption_20_16" -seed 16 &
-python run.py "${args[@]}" -name "SwingOption_20_17" -seed 17 &
-python run.py "${args[@]}" -name "SwingOption_20_18" -seed 18
+# python run.py "${args[@]}" -name "SwingOption_20_15" -seed 15 &
+# python run.py "${args[@]}" -name "SwingOption_20_16" -seed 16 &
+# python run.py "${args[@]}" -name "SwingOption_20_17" -seed 17 &
+# python run.py "${args[@]}" -name "SwingOption_20_18" -seed 18
 
 
 
