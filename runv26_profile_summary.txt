@@ -1,0 +1,103 @@
+=== Top 40 cumulative ===
+Wed Dec  3 13:06:09 2025    runv26.prof
+
+         2594633961 function calls (2277966005 primitive calls) in 1657.263 seconds
+
+   Ordered by: cumulative time
+   List reduced from 15468 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   5032/1    0.116    0.000 1657.269 1657.269 {built-in method builtins.exec}
+        1    0.001    0.001 1657.269 1657.269 run.py:1(<module>)
+        1    0.012    0.012 1652.967 1652.967 run.py:1353(main)
+        1    6.378    6.378 1643.682 1643.682 run.py:1172(run_training)
+   348623    4.724    0.000  789.780    0.002 agent.py:292(step)
+       17   17.307    1.018  725.744   42.691 run.py:846(evaluate_swing_option)
+  3271578   19.409    0.000  649.656    0.000 agent.py:274(act)
+   165312   12.574    0.000  497.552    0.003 agent.py:315(learn_)
+71974716/6543156   68.519    0.000  383.997    0.000 module.py:2855(train)
+41014460/4101446   21.466    0.000  324.807    0.000 module.py:1767(_wrapped_call_impl)
+41014460/4101446   36.818    0.000  322.093    0.000 module.py:1775(_call_impl)
+  3603856   13.298    0.000  249.349    0.000 networks.py:210(forward)
+  8202892   14.077    0.000  239.243    0.000 container.py:243(forward)
+   165312    8.535    0.000  226.664    0.001 replay_buffer.py:417(sample)
+ 71974840   90.945    0.000  221.359    0.000 module.py:1964(__setattr__)
+  3271578    1.104    0.000  194.196    0.000 module.py:2877(eval)
+ 10476115    6.176    0.000  150.970    0.000 fromnumeric.py:51(_wrapfunc)
+460885100/316935503   55.122    0.000  125.604    0.000 {built-in method builtins.isinstance}
+   330624    0.492    0.000  113.508    0.000 lr_scheduler.py:128(wrapper)
+   330624    2.321    0.000  113.016    0.000 optimizer.py:486(wrapper)
+   330624    1.509    0.000  100.025    0.000 optimizer.py:60(_use_grad)
+   330624    2.463    0.000   97.855    0.000 adam.py:213(step)
+   165312   94.475    0.001   94.475    0.001 replay_buffer.py:462(_update_probability_cache)
+   165312    0.480    0.000   93.261    0.001 replay_buffer.py:474(_update_cumsum_cache)
+   165312    0.153    0.000   92.755    0.001 fromnumeric.py:2879(cumsum)
+   165312   92.415    0.001   92.415    0.001 {method 'cumsum' of 'numpy.ndarray' objects}
+ 12304338   15.357    0.000   92.379    0.000 linear.py:124(forward)
+137406444   36.789    0.000   90.318    0.000 module.py:2750(children)
+  8202892   12.233    0.000   89.200    0.000 normalization.py:216(forward)
+   330624    0.569    0.000   88.858    0.000 _tensor.py:592(backward)
+   330624    1.637    0.000   88.260    0.000 __init__.py:243(backward)
+   661248    0.868    0.000   84.932    0.000 optimizer.py:131(maybe_fallback)
+   661248    2.099    0.000   83.793    0.000 adam.py:872(adam)
+   330624    0.763    0.000   82.016    0.000 graph.py:820(_engine_run_backward)
+   330624   80.987    0.000   80.987    0.000 {method 'run_backward' of 'torch._C._EngineBase' objects}
+   661248   30.957    0.000   76.843    0.000 adam.py:345(_single_tensor_adam)
+  8202892   11.339    0.000   72.770    0.000 functional.py:2898(layer_norm)
+ 35075498   72.333    0.000   72.333    0.000 {built-in method builtins.round}
+ 12304338   70.909    0.000   70.909    0.000 {built-in method torch._C._nn.linear}
+  3271578   22.255    0.000   68.605    0.000 swing_env.py:138(step)
+
+
+
+=== Top 40 self-time ===
+Wed Dec  3 13:06:09 2025    runv26.prof
+
+         2594633961 function calls (2277966005 primitive calls) in 1657.263 seconds
+
+   Ordered by: internal time
+   List reduced from 15468 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   165312   94.475    0.001   94.475    0.001 replay_buffer.py:462(_update_probability_cache)
+   165312   92.415    0.001   92.415    0.001 {method 'cumsum' of 'numpy.ndarray' objects}
+ 71974840   90.945    0.000  221.359    0.000 module.py:1964(__setattr__)
+   330624   80.987    0.000   80.987    0.000 {method 'run_backward' of 'torch._C._EngineBase' objects}
+ 35075498   72.333    0.000   72.333    0.000 {built-in method builtins.round}
+ 12304338   70.909    0.000   70.909    0.000 {built-in method torch._C._nn.linear}
+71974716/6543156   68.519    0.000  383.997    0.000 module.py:2855(train)
+  8202892   57.393    0.000   57.393    0.000 {built-in method torch.layer_norm}
+460885100/316935503   55.122    0.000  125.604    0.000 {built-in method builtins.isinstance}
+137406444   44.544    0.000   53.529    0.000 module.py:2759(named_children)
+41014460/4101446   36.818    0.000  322.093    0.000 module.py:1775(_call_impl)
+137406444   36.789    0.000   90.318    0.000 module.py:2750(children)
+ 71974800   31.679    0.000   43.575    0.000 parameter.py:10(__instancecheck__)
+   661248   30.957    0.000   76.843    0.000 adam.py:345(_single_tensor_adam)
+ 71974788   30.256    0.000   41.247    0.000 parameter.py:216(__instancecheck__)
+   165312   24.136    0.000   24.136    0.000 {method 'searchsorted' of 'numpy.ndarray' objects}
+  3271578   22.255    0.000   68.605    0.000 swing_env.py:138(step)
+41014460/4101446   21.466    0.000  324.807    0.000 module.py:1767(_wrapped_call_impl)
+   495936   19.776    0.000   19.776    0.000 {built-in method torch.quantile}
+  3271578   19.409    0.000  649.656    0.000 agent.py:274(act)
+  7604361   17.653    0.000   17.653    0.000 {method 'mul_' of 'torch._C.TensorBase' objects}
+ 10145360   17.356    0.000   18.857    0.000 _methods.py:99(_clip)
+       17   17.307    1.018  725.744   42.691 run.py:846(evaluate_swing_option)
+ 50212712   15.996    0.000   15.996    0.000 module.py:1947(__getattr__)
+ 12304338   15.357    0.000   92.379    0.000 linear.py:124(forward)
+  8202892   14.532    0.000   14.532    0.000 {built-in method torch.relu_}
+41658792/12233136   14.523    0.000   16.175    0.000 module.py:2806(named_modules)
+  8202892   14.077    0.000  239.243    0.000 container.py:243(forward)
+  3603856   13.298    0.000  249.349    0.000 networks.py:210(forward)
+ 10910636   12.836    0.000   38.430    0.000 module.py:2619(_named_members)
+   165312   12.574    0.000  497.552    0.003 agent.py:315(learn_)
+  8202892   12.233    0.000   89.200    0.000 normalization.py:216(forward)
+225433779   11.753    0.000   11.753    0.000 {method 'get' of 'dict' objects}
+  8202892   11.339    0.000   72.770    0.000 functional.py:2898(layer_norm)
+  6612481   10.420    0.000   10.420    0.000 {method 'add_' of 'torch._C.TensorBase' objects}
+     8266    8.865    0.001   11.006    0.001 replay_buffer.py:512(get_priority_stats)
+ 41014461    8.855    0.000    8.855    0.000 {built-in method torch._C._get_tracing_state}
+   165312    8.682    0.000   34.633    0.000 agent.py:518(_log_batch_diagnostics)
+143949588    8.544    0.000    8.544    0.000 {function _ParameterMeta.__instancecheck__ at 0x10f55ccc0}
+   165312    8.535    0.000  226.664    0.001 replay_buffer.py:417(sample)
+
+
