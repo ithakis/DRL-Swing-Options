@@ -107,41 +107,43 @@ D4PG-QR-FRM/
 
 ## Quick Start
 
-### Installation
+### Environment setup (macOS / Apple Silicon friendly)
 
-Below is a minimal, reproducible conda setup covering only the packages actually used in this codebase and notebooks (aligned with your EP11 env). It separates core training, optional FDM pricing (QuantLib), and notebook analysis extras.
+The project is tested with **Python 3.11.13** and **PyTorch 2.7.1 (CPU)** from `conda-forge` inside a Miniforge/conda environment named `EP11`. The instructions below reproduce that stack and avoid the OpenMP conflicts that can appear when mixing Brew and pip packages.
 
 ```bash
-# 1) Create a clean environment (Python 3.11)
-conda create -n d4pg-swing -c conda-forge python=3.11
-conda activate d4pg-swing
+# 0) Install Miniforge (if you have not already)
+# https://github.com/conda-forge/miniforge
 
-# 2) Core scientific + RL stack (conda-forge)
+# 1) Create and activate the environment (Python 3.11, conda-forge only)
+conda create -n EP11 -c conda-forge python=3.11
+conda activate EP11
+
+# 2) Core scientific + RL stack from conda-forge (keeps BLAS/OpenMP consistent)
 conda install -c conda-forge \
-    numpy scipy pandas matplotlib seaborn scikit-learn \
-    tqdm gymnasium ipykernel
+    numpy=2.2.6 scipy=1.15.2 pandas=2.3.0 \
+    matplotlib=3.10.3 seaborn=0.13.2 scikit-learn=1.7.1 \
+    tqdm=4.67.1 gymnasium=1.0.0 tensorboard=2.20.0 \
+    ipykernel=6.29.5 bootstrapped=0.0.2 scienceplots=2.1.1 plotly=6.1.2
 
-# 3) PyTorch (CPU) — use pip for a current stable wheel on macOS/Apple Silicon
-pip install torch torchvision
+# 3) Install the PyTorch CPU triplet from conda-forge (no pip wheels, no Brew libomp)
+conda install -c conda-forge pytorch=2.7.1 torchvision=0.22.0 torchaudio=2.7.1
 
-# 4) Logging & dashboards
-pip install tensorboard
+# 4) Optional extras
+# QuantLib for FDM benchmarking
+pip install QuantLib==1.39
+# Snakeviz + numba for profiling/acceleration experiments
+pip install snakeviz==2.2.2 numba==0.61.2
 
-# 5) Optional: FDM pricer (QuantLib) for PDE benchmark
-#    Only needed if you plan to run src/fdm_swing_pricer.py or the QuantLib notebook
-pip install QuantLib
-
-# 6) Optional: notebooks analysis helpers
-pip install bootstrapped scienceplots plotly
-
-# (Optional) Register the kernel in Jupyter
-python -m ipykernel install --user --name d4pg-swing --display-name "Python (d4pg-swing)"
+# 5) Register a Jupyter kernel (optional but convenient)
+python -m ipykernel install --user --name EP11 --display-name "Python (EP11)"
 ```
 
-Notes
-- Training and evaluation require: torch, gymnasium, numpy, scipy, pandas, tqdm, tensorboard (plus matplotlib/seaborn for plots).
-- LSM benchmark uses only numpy/pandas; FDM benchmark requires QuantLib.
-- On macOS/Apple Silicon, the pip PyTorch wheel enables MPS acceleration automatically when available.
+Environment tips
+- Always source packages from **conda-forge** inside this env. Avoid mixing with system Python or Brew `libomp`; the `conda-forge` build already ships `llvm-openmp 21.1.7`, which prevents duplicate-runtime crashes.
+- Keep PyTorch, `libtorch`, and `llvm-openmp` in lockstep (`conda install --update-deps pytorch torchvision torchaudio llvm-openmp`).
+- If you need GPU acceleration on another machine, use the matching CUDA build from `pytorch`’s channel but keep the same versions to maintain determinism.
+- On Apple Silicon, set `OMP_NUM_THREADS` to the number of performance cores (usually 4) if you notice thread oversubscription, but it is optional with the above stack.
 
 ### Basic Training
 

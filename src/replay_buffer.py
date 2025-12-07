@@ -2,6 +2,106 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+try:
+    import numba  # type: ignore
+except ImportError:
+    numba = None
+
+
+# --- Numba-friendly Fenwick helpers with safe fallbacks ---
+
+def _py_fenwick_update(tree: np.ndarray, prob_cache: np.ndarray, idx: int, priority: float, alpha: float, capacity: int) -> float:
+    """In-place Fenwick update; returns delta added to the tree sum."""
+    new_val = float(priority) ** alpha
+    old_val = prob_cache[idx]
+    delta = new_val - old_val
+    if abs(delta) < 1e-12:
+        return 0.0
+    prob_cache[idx] = new_val
+    i = idx + 1  # 1-indexed tree
+    while i <= capacity:
+        tree[i] += delta
+        i += i & -i
+    return delta
+
+
+def _py_fenwick_rebuild(tree: np.ndarray, prob_cache: np.ndarray, priorities: np.ndarray, alpha: float, size: int, capacity: int) -> float:
+    """Rebuild Fenwick tree and cache from priorities; returns total mass."""
+    tree.fill(0.0)
+    if size == 0:
+        prob_cache.fill(0.0)
+        return 0.0
+    prob_cache[:size] = priorities[:size] ** alpha
+    prob_cache[size:] = 0.0
+    for idx in range(size):
+        val = prob_cache[idx]
+        i = idx + 1
+        while i <= capacity:
+            tree[i] += val
+            i += i & -i
+    return float(prob_cache[:size].sum())
+
+
+def _py_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, masses: np.ndarray) -> np.ndarray:
+    """Vectorized prefix search: masses -> indices."""
+    out = np.empty(masses.shape, dtype=np.int64)
+    # Largest power of two <= capacity
+    bit = 1
+    while bit <= capacity:
+        bit <<= 1
+    bit >>= 1
+    for j in range(masses.shape[0]):
+        mass = masses[j]
+        idx = 0
+        b = bit
+        while b != 0:
+            nxt = idx + b
+            if nxt <= capacity and mass >= tree[nxt]:
+                mass -= tree[nxt]
+                idx = nxt
+            b >>= 1
+        out[j] = idx if size == 0 else min(idx, size - 1)
+    return out
+
+
+def _py_fenwick_batch_update(
+    tree: np.ndarray,
+    prob_cache: np.ndarray,
+    indices: np.ndarray,
+    priorities: np.ndarray,
+    alpha: float,
+    capacity: int,
+) -> float:
+    """Batch update Fenwick tree + cache; returns total delta added to the tree sum."""
+    total_delta = 0.0
+    n = indices.shape[0]
+    for j in range(n):
+        idx = int(indices[j])
+        pr = float(priorities[j])
+        new_val = pr ** alpha
+        old_val = prob_cache[idx]
+        delta = new_val - old_val
+        if abs(delta) < 1e-12:
+            continue
+        prob_cache[idx] = new_val
+        i = idx + 1  # 1-indexed tree
+        while i <= capacity:
+            tree[i] += delta
+            i += i & -i
+        total_delta += delta
+    return total_delta
+
+
+_fenwick_update_helper = _py_fenwick_update
+_fenwick_rebuild_helper = _py_fenwick_rebuild
+_fenwick_find_indices_helper = _py_fenwick_find_prefix_indices
+_fenwick_batch_update_helper = _py_fenwick_batch_update
+
+if numba is not None:
+    _fenwick_update_helper = numba.njit(cache=True, fastmath=False)(_py_fenwick_update)
+    _fenwick_rebuild_helper = numba.njit(cache=True, fastmath=False)(_py_fenwick_rebuild)
+    _fenwick_find_indices_helper = numba.njit(cache=True, fastmath=False)(_py_fenwick_find_prefix_indices)
+    _fenwick_batch_update_helper = numba.njit(cache=True, fastmath=False)(_py_fenwick_batch_update)
 
 
 class CircularReplayBuffer:
@@ -354,12 +454,11 @@ class PrioritizedReplay(object):
         self._nstep_accums = [CircularNStepBuffer(n_step, gamma) for _ in range(parallel_env)]
         self.iter_ = 0
 
-        # Caches
-        self._prob_alpha_cache = None  # type: Optional[np.ndarray]
-        self._cumsum_cache = None  # type: Optional[np.ndarray]
-        self._prob_sum_cache = None
-        self._cache_valid = False
-        self._cumsum_valid = False
+        # Priority caches / sampling tree (Fenwick for O(log N) updates & queries)
+        self._prob_alpha_cache = np.zeros(capacity, dtype=np.float32)
+        self._prob_sum_cache: float = 0.0
+        self._tree = np.zeros(capacity + 1, dtype=np.float64)  # 1-indexed
+        self._cache_valid = False  # flipped to True after first build or alpha change rebuild
 
         print("🚀 High-Performance PrioritizedReplay initialized:")
         print(f"  - Capacity: {capacity:,}")
@@ -378,8 +477,6 @@ class PrioritizedReplay(object):
         self.states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
         self.next_states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
         self.actions = np.empty((self.capacity,) + action_shape, dtype=np.float32)
-        self._prob_alpha_cache = np.empty(self.capacity, dtype=np.float32)
-        self._cumsum_cache = np.empty(self.capacity, dtype=np.float32)
         print("✅ PER arrays initialized successfully")
 
     def beta_by_frame(self, frame_idx):
@@ -407,12 +504,48 @@ class PrioritizedReplay(object):
         self.next_states[self.pos] = next_state
         self.dones[self.pos] = done
         self.priorities[self.pos] = self.max_priority
+        self._fenwick_update(self.pos, self.max_priority)
         self.pos = (self.pos + 1) % self.capacity
         if self.size < self.capacity:
             self.size += 1
         else:
             self.full = True
-        self._cache_valid = False
+        self._cache_valid = True
+
+    def _fenwick_update(self, idx: int, priority: float):
+        """Update Fenwick tree and cache for a single index."""
+        if idx < 0 or idx >= self.capacity:
+            return
+        delta = _fenwick_update_helper(self._tree, self._prob_alpha_cache, idx, priority, self.alpha, self.capacity)
+        self._prob_sum_cache += delta
+
+    def _fenwick_prefix_sum(self, idx: int) -> float:
+        """Return prefix sum up to and including idx (1-indexed input)."""
+        s = 0.0
+        i = idx
+        while i > 0:
+            s += self._tree[i]
+            i -= i & -i
+        return s
+
+    def _fenwick_find_prefix_index(self, mass: float) -> int:
+        """Find smallest index such that prefix sum >= mass."""
+        idx = 0
+        bit = 1 << (self.capacity.bit_length() - 1)
+        while bit != 0:
+            next_idx = idx + bit
+            if next_idx <= self.capacity and mass >= self._tree[next_idx]:
+                mass -= self._tree[next_idx]
+                idx = next_idx
+            bit >>= 1
+        return min(idx, max(0, self.size - 1))
+
+    def _rebuild_tree(self):
+        """Rebuild Fenwick tree when alpha changes or after a bulk reset."""
+        self._prob_sum_cache = _fenwick_rebuild_helper(
+            self._tree, self._prob_alpha_cache, self.priorities, self.alpha, self.size, self.capacity
+        )
+        self._cache_valid = True
 
     def sample(self):
         if self.size == 0:
@@ -420,17 +553,14 @@ class PrioritizedReplay(object):
         if self.size < self.batch_size:
             raise ValueError(f"Not enough samples: {self.size} < {self.batch_size}")
         assert self.states is not None and self.actions is not None and self.next_states is not None
-        assert self._prob_alpha_cache is not None and self._cumsum_cache is not None
         self.frame_count += 1
-        update_threshold = max(10, self.batch_size // 4)
-        if not self._cache_valid or (hasattr(self, '_update_counter') and self._update_counter > update_threshold):
-            self._update_probability_cache()
-            self._update_counter = 0
-        if not self._cumsum_valid:
-            self._update_cumsum_cache()
-        total = self._cumsum_cache[self.size - 1]
+        if not self._cache_valid:
+            self._rebuild_tree()
+        total = self._prob_sum_cache
+        if total <= 0.0:
+            total = 1e-8  # safeguard against degenerate totals
         random_vals = self.rng.uniform(0, total, self.batch_size)
-        indices = np.searchsorted(self._cumsum_cache[:self.size], random_vals)
+        indices = _fenwick_find_indices_helper(self._tree, self.capacity, self.size, random_vals)
         indices = np.clip(indices, 0, self.size - 1)
         beta = self.beta_by_frame(self.frame_count)
         if total > 0:
@@ -459,26 +589,6 @@ class PrioritizedReplay(object):
         weights = torch.from_numpy(weights).unsqueeze(1).to(self.device, non_blocking=True)
         return states, actions, rewards, next_states, dones, indices, weights
 
-    def _update_probability_cache(self):
-        if self.size == 0:
-            return
-        if self._prob_alpha_cache is None:
-            self._prob_alpha_cache = np.empty(self.capacity, dtype=np.float32)
-        if self._cumsum_cache is None:
-            self._cumsum_cache = np.empty(self.capacity, dtype=np.float32)
-        priorities_slice = self.priorities[:self.size]
-        self._prob_alpha_cache[:self.size] = priorities_slice ** self.alpha
-        self._cache_valid = True
-        self._cumsum_valid = False
-
-    def _update_cumsum_cache(self):
-        if self.size == 0 or not self._cache_valid:
-            return
-        if self._prob_alpha_cache is None or self._cumsum_cache is None:
-            return
-        np.cumsum(self._prob_alpha_cache[:self.size], out=self._cumsum_cache[:self.size])
-        self._cumsum_valid = True
-
     def update_priorities(self, batch_indices, batch_priorities):
         if not isinstance(batch_indices, np.ndarray):
             batch_indices = np.array(batch_indices, dtype=np.int32)
@@ -494,9 +604,18 @@ class PrioritizedReplay(object):
         new_max = np.max(batch_priorities)
         if new_max > self.max_priority:
             self.max_priority = new_max
-        self._cache_valid = False
-        self._cumsum_valid = False
-        self._update_counter = getattr(self, '_update_counter', 0) + 1
+        batch_indices_contig = np.ascontiguousarray(batch_indices, dtype=np.int64)
+        batch_priorities_contig = np.ascontiguousarray(batch_priorities, dtype=np.float64)
+        delta_total = _fenwick_batch_update_helper(
+            self._tree,
+            self._prob_alpha_cache,
+            batch_indices_contig,
+            batch_priorities_contig,
+            self.alpha,
+            self.capacity,
+        )
+        self._prob_sum_cache += float(delta_total)
+        self._cache_valid = True
 
     def __len__(self):
         return self.size

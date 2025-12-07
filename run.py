@@ -27,6 +27,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from src.agent import Agent
+from src.agent_evaluation import benchmark_evaluation, evaluate_agent
 from src.fdm_swing_pricer import price_swing_option_fdm
 from src.lsm_swing_pricer import price_swing_option_lsm
 
@@ -37,64 +38,6 @@ from src.swing_env import SwingOptionEnv
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
-
-
-def signed_zero_aware_pct_change(initial: float, new: float) -> float:
-    """
-    Compute the signed, zero-aware percentage change between an initial and new value.
-
-    This handles positive/negative inputs as well as sign flips without raising divide-by-zero
-    errors. When the baseline is zero and the new value is non-zero, the function returns an
-    appropriately signed infinity.
-
-    Examples
-    --------
-    >>> signed_zero_aware_pct_change(-3.0, 0.47)
-    115.7
-    >>> signed_zero_aware_pct_change(2.0, 3.0)
-    50.0
-    >>> signed_zero_aware_pct_change(2.0, 0.0)
-    -100.0
-    >>> signed_zero_aware_pct_change(3.0, -2.0)
-    -166.7
-    """
-
-    a = np.asarray(initial, dtype=float)
-    b = np.asarray(new, dtype=float)
-    a, b = np.broadcast_arrays(a, b)
-
-    result = np.empty_like(a, dtype=float)
-
-    zero_mask = a == 0.0
-    both_zero_mask = zero_mask & (b == 0.0)
-    nonzero_mask = ~zero_mask
-    new_zero_mask = nonzero_mask & (b == 0.0)
-    same_sign_mask = nonzero_mask & (np.sign(a) == np.sign(b)) & ~new_zero_mask
-
-    result[both_zero_mask] = 0.0
-
-    inf_mask = zero_mask & ~both_zero_mask
-    if np.any(inf_mask):
-        result[inf_mask] = np.sign(b[inf_mask]) * np.inf
-
-    if np.any(new_zero_mask):
-        # Drop from non-zero baseline to zero -> -100% (or +100% if baseline was negative)
-        result[new_zero_mask] = -np.sign(a[new_zero_mask]) * 100.0
-
-    if np.any(same_sign_mask):
-        result[same_sign_mask] = ((b - a) / a * 100.0)[same_sign_mask]
-
-    cross_mask = nonzero_mask & ~same_sign_mask & ~new_zero_mask
-    if np.any(cross_mask):
-        result[cross_mask] = (
-            np.sign(b[cross_mask])
-            * (np.abs(b[cross_mask]) + np.abs(a[cross_mask]))
-            / np.abs(a[cross_mask])
-            * 100.0
-        )
-
-    rounded = np.round(result, 1)
-    return float(rounded) if rounded.shape == () else rounded
 
 
 class AsyncCSVWriter:
@@ -182,6 +125,22 @@ class ConfigManager:
         )
         parser.add_argument(
             "-n_paths_eval", type=int, default=1, help="Number of evaluation runs performed, default = 1"
+        )
+        parser.add_argument(
+            "--eval_batch_size",
+            type=int,
+            default=512,
+            help="Batch size for batched evaluation inference (default: 512, auto-clamped to n_paths_eval).",
+        )
+        parser.add_argument(
+            "--profile_eval",
+            action="store_true",
+            help="Profile the evaluation path with cProfile and emit results to profilelogs/.",
+        )
+        parser.add_argument(
+            "--eval_benchmark",
+            action="store_true",
+            help="Run a standalone evaluation benchmark (no training) using current args.",
         )
         parser.add_argument(
             "-seed", type=int, default=0, help="Seed for the env and torch network weights, default is 0"
@@ -843,186 +802,6 @@ class LoggingManager:
         return lsm_file
 
 
-def evaluate_swing_option(
-    agent: Agent,
-    eval_env: SwingOptionEnv,
-    writer: SummaryWriter,
-    path: int,
-    evaluations_dir: str,
-    lsm_price: float,
-    csv_writer: Optional[AsyncCSVWriter] = None,
-) -> List[float]:
-    """
-    Evaluate swing option price using the evaluation environment dataset
-    Now includes detailed CSV logging for each path
-
-    Args:
-        agent: Trained D4PG agent
-        eval_env: Swing option environment for evaluation (contains dataset)
-        writer: TensorBoard writer for logging
-        path: Current training path/episode number
-        evaluations_dir: Directory to save evaluation CSV files
-        csv_writer: AsyncCSVWriter instance for non-blocking CSV writes
-
-    Returns:
-        List[float]: List of all episode returns
-    """
-    discounted_returns = []
-    exercise_stats = []
-
-    # Get number of paths from eval_env dataset
-    n_paths = eval_env.S.shape[0]
-    
-    # Define state column names based on SwingOptionEnv._get_observation()
-            #     spot_price - self.contract.strike,  # spot_minus_strike (S_t - K)
-            # self.q_exercised / self.contract.Q_max,  # Normalized cumulative exercise
-            # q_remaining / self.contract.Q_max,  # Normalized remaining capacity
-            # time_to_maturity / self.contract.maturity,  # Normalized time to maturity
-            # normalized_time,  # Progress through contract
-            # spot_price, # Spot Price
-            # X_t,  # Mean-reverting component
-            # Y_t,  # Jump component  
-            # # self.recent_volatility,  # Recent realized volatility
-            # days_since_exercise / self.contract.n_rights  # Normalized refraction time
-    state_columns = [
-        'spot_minus_strike',      # spot_price - strike
-        'q_exercised_norm',     # q_exercised / Q_max  
-        'q_remaining_norm',     # q_remaining / Q_max
-        'time_to_maturity_norm', # time_to_maturity / maturity
-        'normalized_time',      # current_step / n_rights
-        'spot',                 # S_t
-        'X_t',                  # Mean-reverting component
-        'Y_t',                  # Jump component
-        # 'recent_volatility',    # Recent realized volatility
-        'days_since_exercise_norm'  # days_since_exercise / n_rights
-    ]
-    
-    # CSV headers
-    csv_headers = ['path', 'time_step'] + state_columns + ['q_t', 'exercise_cost', 'reward']
-    
-    # Prepare CSV file path
-    csv_filename = f"rl_episode_{path}.csv"
-    csv_filepath = os.path.join(evaluations_dir, csv_filename)
-
-    # Collect all path data for batch writing
-    all_path_data = []
-
-    for i in range(n_paths):
-        state, _ = eval_env.reset()
-        
-        disc_return = 0.0
-        total_exercised = 0.0
-        exercise_count = 0
-        step = 0
-        
-        # Store path data for CSV
-        path_data = []
-
-        while True:
-            # Get action from agent
-            action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
-            action_v = np.clip(action, 0.0, 1.0)  # Ensure valid action range
-            
-            # Step environment
-            next_state, reward, terminated, truncated, info = eval_env.step(action_v)
-            
-            # Store step data for CSV (with optimizations)
-            # Round values to reduce file size while preserving precision
-            step_row = [
-                i,  # path_n (int)
-                step,  # step (int)
-                round(state[0], 6),  # spot_price_norm
-                round(state[1], 6),  # q_exercised_norm  
-                round(state[2], 6),  # q_remaining_norm
-                round(state[3], 6),  # time_to_maturity_norm
-                round(state[4], 6),  # normalized_time
-                round(state[5], 6),  # X_t
-                round(state[6], 6),  # Y_t
-                round(state[7], 6),  # recent_volatility
-                round(state[8], 6),  # days_since_exercise_norm
-                round(info.get("q_actual", 0), 6),  # action (extract scalar from array and round)
-                round(info.get("exercise_cost", 0.0), 6),
-                round(reward, 6)   # reward
-            ]
-            path_data.append(step_row)
-            
-            # Update tracking variables
-            disc_return += reward  # Reward already includes discounting
-            if info.get("q_actual", 0) > 1e-6:
-                exercise_count += 1
-                total_exercised += info["q_actual"]
-            step += 1
-            
-            state = next_state
-
-            if terminated or truncated:
-                break
-        
-        # Add this path's data to the collection
-        all_path_data.extend(path_data)
-
-        discounted_returns.append(disc_return)
-        exercise_stats.append(
-            {"total_exercised": total_exercised, "exercise_count": exercise_count, "steps": step}
-        )
-
-    # Write all data to CSV asynchronously (non-blocking)
-    if csv_writer and all_path_data:
-        csv_writer.write_csv(csv_filepath, all_path_data, csv_headers)
-    elif all_path_data:
-        # Fallback: write synchronously if no async writer provided
-        try:
-            with open(csv_filepath, 'w', newline='') as f:
-                writer_csv = csv.writer(f)
-                writer_csv.writerow(csv_headers)
-                writer_csv.writerows(all_path_data)
-        except Exception as e:
-            print(f"Warning: Failed to write CSV file {csv_filepath}: {e}")
-
-    # reset the eval_env._episode_counter to -1 so future resets work correctly
-    eval_env._episode_counter = -1
-
-    # Calculate statistics
-    option_price = np.mean(discounted_returns)
-    price_std = np.std(discounted_returns)
-    avg_exercised = np.mean([s["total_exercised"] for s in exercise_stats])
-    avg_exercises = np.mean([s["exercise_count"] for s in exercise_stats])
-    confidence_95 = 1.96 * price_std / np.sqrt(n_paths)
-
-    if path is not None:
-        # Legacy logs
-        writer.add_scalar("Swing_Option_Price", option_price, path)
-        writer.add_scalar("Price_Std", price_std, path)
-        writer.add_scalar("Avg_Total_Exercised", avg_exercised, path)
-        writer.add_scalar("Avg_Exercise_Count", avg_exercises, path)
-
-        # Grouped Pricing metrics (same tab)
-        price_delta = option_price - float(lsm_price)
-        price_delta_pct = signed_zero_aware_pct_change(float(lsm_price), option_price)
-        writer.add_scalar("Pricing/RL_Price", option_price, path)
-        writer.add_scalar("Pricing/LSM_Price", float(lsm_price), path)
-        writer.add_scalar("Pricing/Delta_Price", price_delta, path)
-        writer.add_scalar("Pricing/Delta_Percent", price_delta_pct, path)
-
-        # Print detailed evaluation results
-        print(f"\n{'=' * 50}")
-        print(f"EVALUATION RESULTS (Episode {path})")
-        print(f"{'=' * 50}")
-        print(f"Option Price: {option_price:.3f} ± {confidence_95:.3f}")
-        print(f"Price Std Dev: {price_std:.3f}")
-        print(f"Avg Total Exercised: {avg_exercised:.3f}")
-        print(f"Avg Exercise Count: {avg_exercises:.1f}")
-        print(f"Evaluation Runs: {n_paths}")
-        print(f"Min Return: {min(discounted_returns):.3f}")
-        print(f"Max Return: {max(discounted_returns):.3f}")
-        if csv_writer:
-            print(f"CSV saved: {csv_filename} (async)")
-        else:
-            print(f"CSV saved: {csv_filename}")
-        print(f"{'=' * 50}")
-
-    return discounted_returns
-
 
 def generate_datasets(
     stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int
@@ -1219,7 +998,7 @@ def run_training(
 
     # Initial evaluation of DRL agent without any training - if eval_every > 0
     if not args.eval_every == -1:
-        evaluate_swing_option(
+        evaluate_agent(
             agent=agent,
             eval_env=eval_env,
             writer=tensorboard_writer,
@@ -1227,6 +1006,8 @@ def run_training(
             evaluations_dir=evaluations_dir,
             lsm_price=lsm_price,
             csv_writer=csv_writer,
+            eval_batch_size=args.eval_batch_size,
+            profile=args.profile_eval,
         )
     for current_path in range(1, args.n_paths + 1):
         # Fix 3: Update episode count in PER for proper beta annealing
@@ -1339,7 +1120,7 @@ def run_training(
         if should_eval_after:
             print(f"\n🔍 Starting evaluation after {current_path} episodes completed...")
             print("   Using VALIDATION dataset (same paths used for all evaluations)")
-            evaluate_swing_option(
+            evaluate_agent(
                 agent=agent,
                 eval_env=eval_env,
                 writer=tensorboard_writer,
@@ -1347,6 +1128,8 @@ def run_training(
                 evaluations_dir=evaluations_dir,
                 lsm_price=lsm_price,
                 csv_writer=csv_writer,
+                eval_batch_size=args.eval_batch_size,
+                profile=args.profile_eval,
             )
 
 
@@ -1355,6 +1138,9 @@ def main():
     # Parse arguments and setup
     parser = ConfigManager.create_parser()
     args = parser.parse_args()
+
+    if args.eval_batch_size < 1:
+        raise ValueError("eval_batch_size must be >= 1")
 
     # Setup PyTorch optimizations
     ConfigManager.setup_pytorch_optimizations(args)
@@ -1526,7 +1312,25 @@ def main():
     if args.saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
         print("WARNING: Pre-generated paths not available for saved model evaluation.")
-    else:
+    
+    if args.eval_benchmark:
+        print("\nRunning standalone evaluation benchmark (evaluation only)...")
+        benchmark_evaluation(
+            agent=agent,
+            eval_env=eval_env,
+            writer=tensorboard_writer,
+            evaluations_dir=evaluations_dir,
+            lsm_price=mean_lsm_price,
+            csv_writer=csv_writer,
+            eval_batch_size=args.eval_batch_size,
+            profile=args.profile_eval,
+        )
+        eval_env.close()
+        csv_writer.stop()
+        TrainingManager.timer(t0, time.time())
+        return
+
+    if args.saved_model is None:
         # Run training
         run_training(
             agent=agent,

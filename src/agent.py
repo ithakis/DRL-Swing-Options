@@ -101,6 +101,10 @@ class Agent:
         self.target_policy_clip = target_policy_clip
         self.action_reg_weight = action_reg_weight
         self.action_reg_cutoff = max(0, int(action_reg_cutoff))
+        # Diagnostics/logging cadence (skip most steps to cut overhead; does not affect training)
+        self.diagnostics_interval = max(100, int(self.LEARN_EVERY * 50))
+        self.per_stats_interval = max(self.LEARN_EVERY * 200, self.diagnostics_interval)
+        self.td_quantile_interval = max(100, int(self.LEARN_EVERY * 50))
 
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers).to(device)
@@ -129,6 +133,16 @@ class Agent:
         )
         self.critic_ema_decay = critic_ema_decay
         self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
+
+        # Cache parameter lists and data views to reduce per-step iteration overhead
+        self._actor_params = list(self.actor_local.parameters())
+        self._critic_params = list(self.critic_local.parameters())
+        self._actor_target_params = list(self.actor_target.parameters())
+        self._critic_target_params = list(self.critic_target.parameters())
+        self._actor_target_data = [p.data for p in self._actor_target_params]
+        self._critic_target_data = [p.data for p in self._critic_target_params]
+        self._actor_local_data = [p.data for p in self._actor_params]
+        self._critic_local_data = [p.data for p in self._critic_params]
 
         actor_params = sum(p.numel() for p in self.actor_local.parameters())
         critic_params = sum(p.numel() for p in self.critic_local.parameters())
@@ -272,17 +286,16 @@ class Agent:
             g['lr'] = min(max_critic, g['lr'] * boost)
 
     def act(self, state: np.ndarray, add_noise: bool = True):
-        state_t = torch.from_numpy(state).float().to(self.device)
-        self.actor_local.eval()
-        with torch.no_grad():
+        # Avoid train()/eval() toggling (expensive) while keeping inference_mode for no-grad
+        state_t = torch.as_tensor(state, device=self.device, dtype=torch.float32)
+        with torch.inference_mode():
             action = self.actor_local(state_t).cpu().numpy()
-        self.actor_local.train()
-        if add_noise and self.noise is not None:
-            scale = max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
-            action += self.noise.sample() * scale
-        elif add_noise and self.noise is None:
-            scale = max((self.epsilon ** self.noise_anneal_power) * self.noise_sigma, self.min_action_noise)
-            action += np.random.normal(0, scale, size=action.shape)
+        if add_noise:
+            scale = self.get_noise_scale()
+            if self.noise is not None:
+                action += self.noise.sample() * scale
+            else:
+                action += np.random.normal(0, scale, size=action.shape)
         return np.clip(action, -1.0, 1.0)
 
     def get_noise_scale(self) -> float:
@@ -308,7 +321,7 @@ class Agent:
             writer.add_scalar("Actor_loss", losses[1], timestamp)
         if last_batch:
             self._log_batch_diagnostics(last_batch, timestamp, writer)
-        if self.per and hasattr(self.memory, 'get_priority_stats') and timestamp % (self.LEARN_EVERY * 20) == 0:
+        if self.per and hasattr(self.memory, 'get_priority_stats') and timestamp % self.per_stats_interval == 0:
             for k, v in self.memory.get_priority_stats().items():
                 writer.add_scalar(f"PER/{k}", v, timestamp)
 
@@ -338,30 +351,31 @@ class Agent:
         if self.per:
             td = q_target - q_expected
             critic_loss = (td.pow(2) * weights).mean()
-            with torch.no_grad():
-                abs_td = td.abs().flatten()
-                if abs_td.numel() > 10:
-                    self._last_td_percentiles = (
-                        torch.quantile(abs_td, 0.5).item(),
-                        torch.quantile(abs_td, 0.9).item(),
-                        torch.quantile(abs_td, 0.99).item()
-                    )
+            if self.step_counter % self.td_quantile_interval == 0:
+                with torch.no_grad():
+                    abs_td = td.abs().flatten()
+                    if abs_td.numel() > 10:
+                        self._last_td_percentiles = (
+                            torch.quantile(abs_td, 0.5).item(),
+                            torch.quantile(abs_td, 0.9).item(),
+                            torch.quantile(abs_td, 0.99).item()
+                        )
             priorities = td.abs().detach().clamp_min(1e-6)
         else:
             critic_loss = F.mse_loss(q_expected, q_target)
             priorities = None
-        self.critic_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
-        self._clip_gradients(self.critic_local.parameters(), self.critic_grad_clip, self.critic_grad_clip_type)
+        self._clip_gradients(self._critic_params, self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
         q_val = self.critic_local(states, actions_pred)
         reg_weight = self.action_reg_weight if (self.action_reg_cutoff == 0 or self._episode_count <= self.action_reg_cutoff) else 0.0
         reg = reg_weight * actions_pred.pow(2).mean()
         actor_loss = -q_val.mean() + reg
-        self.actor_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
-        self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
+        self._clip_gradients(self._actor_params, self.actor_grad_clip, self.actor_grad_clip_type)
         self.actor_optimizer.step()
         self._updates_done += 1
         if self.step_counter % 200 == 0:
@@ -428,13 +442,14 @@ class Agent:
         if self.per and hasattr(self.memory, 'update_priorities'):
             pr = td_error.mean(dim=(1, 2)).abs().clamp_min(1e-6).detach().cpu().numpy()
             self.memory.update_priorities(idx, pr)
-        with torch.no_grad():
-            flat = q_targets.view(q_targets.size(0), -1)
-            q10 = torch.quantile(flat, 0.1, dim=1).mean().item()
-            q50 = torch.quantile(flat, 0.5, dim=1).mean().item()
-            q90 = torch.quantile(flat, 0.9, dim=1).mean().item()
-            self._last_iqn_spread = (q10, q50, q90, (q90 - q10))
-        if self.step_counter % 200 == 0:
+        if self.step_counter % self.td_quantile_interval == 0:
+            with torch.no_grad():
+                flat = q_targets.view(q_targets.size(0), -1)
+                q10 = torch.quantile(flat, 0.1, dim=1).mean().item()
+                q50 = torch.quantile(flat, 0.5, dim=1).mean().item()
+                q90 = torch.quantile(flat, 0.9, dim=1).mean().item()
+                self._last_iqn_spread = (q10, q50, q90, (q90 - q10))
+        if self.step_counter % self.diagnostics_interval == 0:
             with torch.no_grad():
                 tgt_q, _ = self.critic_target(states, self.actor_target(states), self.N)
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
@@ -453,9 +468,22 @@ class Agent:
     def soft_update(self, local, target):
         tau = self._compute_tau()
         with torch.no_grad():
-            for tp, lp in zip(target.parameters(), local.parameters()):
-                tp.data.mul_(1 - tau)
-                tp.data.add_(lp.data, alpha=tau)
+            if local is self.critic_local and target is self.critic_target:
+                tgt_params = self._critic_target_data
+                src_params = self._critic_local_data
+            elif local is self.actor_local and target is self.actor_target:
+                tgt_params = self._actor_target_data
+                src_params = self._actor_local_data
+            else:
+                tgt_params = [p.data for p in target.parameters()]
+                src_params = [p.data for p in local.parameters()]
+            try:
+                torch._foreach_mul_(tgt_params, 1 - tau)
+                torch._foreach_add_(tgt_params, src_params, alpha=tau)
+            except Exception:
+                for tp, lp in zip(tgt_params, src_params):
+                    tp.mul_(1 - tau)
+                    tp.add_(lp, alpha=tau)
 
     def _compute_tau(self) -> float:
         return self.t
@@ -516,6 +544,8 @@ class Agent:
         return self.critic_ema_state if self.critic_ema_state is not None else self.critic_local.state_dict()
 
     def _log_batch_diagnostics(self, batch, ts, writer):
+        if ts % self.diagnostics_interval != 0:
+            return
         states, actions, rewards, next_states, dones, idx, weights = batch
         if torch.is_tensor(actions):
             with torch.no_grad():

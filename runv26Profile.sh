@@ -82,7 +82,7 @@ args=(
     --mu_J=0.3                 # Mean jump size (30% jumps)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_v26_11" -seed 11 
+python run.py "${args[@]}" -name "SwingOption_20_v26_v2_11" -seed 11 
 # python run.py "${args[@]}" -name "SwingOption_20_v26_12" -seed 12 &
 # python run.py "${args[@]}" -name "SwingOption_20_v26_13" -seed 13 &
 # python run.py "${args[@]}" -name "SwingOption_20_v26_14" -seed 14
