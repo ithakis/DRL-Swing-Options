@@ -20,11 +20,7 @@ args=(
     -learn_every=2           # How often to update networks (in steps): lower = more frequent updates
     -learn_number=1          # Number of learning updates per step: higher = more aggressive learning
     -iqn=0                   # Use distributional IQN critic: 1=enable (uncertainty-aware), 0=standard critic
-    -noise=gauss             # Action noise type: 'gauss' = Gaussian, 'ou' = Ornstein-Uhlenbeck (exploration)
-    --noise_sigma=1.0          # Scale exploration noise (decays with epsilon)
-    --noise_anneal_power=1.0   # Exponent tying noise std to epsilon
-    -epsilon=0.3             # Initial epsilon for exploration noise (probability of random action)
-    -epsilon_decay=0.99994   # Epsilon decay rate per episode (1.0 = no decay, <1.0 = decaying exploration)
+    -noise_sigma0=1.0          # Scale exploration noise (decays with epsilon)
     -per=1                   # Enable Prioritized Experience Replay: 1=on, 0=off
     --min_replay_size=15000  # Minimum buffer size before learning starts (stabilizes early training)
     --max_replay_size=200000 # Maximum replay buffer size (memory/variance tradeoff)

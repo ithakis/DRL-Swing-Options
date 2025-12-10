@@ -4,6 +4,46 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
 
 ---
 
+## Update (v33+)
+
+- Action regularization (`action_reg_weight`, `action_reg_cutoff`) has been removed from the codebase; references below are kept only as historical notes for pre-v33 runs.
+- Hidden activations now default to **SiLU**; actor outputs use the **tanh01** head (maps [-1, 1] → [0, 1]). A 1,024-episode warmup pass estimates the untrained policy mean/std and shifts/scales the output layer so `E[action] ≈ Q_max / n_rights` and ~95% of mass stays in [0, 1] (sigma solved via brentq/bisection). This prevents initial saturation without any action L2.
+- **v33 vs. v26 (4 seeds each, green vs. gray in the attached TensorBoard plots)**:
+  - Pricing/Delta_Percent: v33 climbs out of the initial drawdown much faster and is less volatile through the first ~5k episodes; finals cluster in the -1.2 to -2.6% band (v26: -0.5 to -2.2% with one slower seed). Average100 ramps earlier for v33, converging to ~2.5–2.6.
+  - Action variance: Action_variance_mean stays tighter (~0.16–0.17 vs. v26 drifting above 0.19), Actions_at_upper_pct is visibly lower, and Actions_at_lower_pct remains at 0 (no lower-bound collapse). Target_drift decays faster for v33.
+- Exercise behavior: Avg_Exercise_Count stabilizes around 9–10 vs. v26’s 6–8; Avg_Total_Exercised holds ~11.5–12.2 (v26 sits lower early and recovers slowly).
+- Loss/TD metrics: Actor_loss declines more smoothly; TD_Error percentiles and PER priorities rise steadily without the spikes seen in weaker v26 seeds, indicating healthier replay focus.
+- Mid-Late Training Dynamics (open): Having solved the early stage dynamics I then wanted to push the algorithm to the limits from around 15k episodes which it seems to plateau or even worsen. I have understood that I need to tune the interaction between exploration (normal noise added to the actor NN output), the priority in the prioritized experience replay network, and the learning rate of the networks. This remains open and will spend a couple of days to better understand the interaction.
+
+## v34: Pre-squash exploration noise
+- Change: Exploration noise is applied in pre-squash logit space; actor outputs tanh01 → [0,1]; schedule = plateau (`noise_sigma0=1.3`) for 3.2k episodes then hyperbolic decay toward `noise_floor=0.32`. Legacy OU/epsilon/noise_type plumbing was removed; TD3 target smoothing is unchanged.
+- Motivation: Preserve healthy action variance without boundary saturation from post-squash noise collapse.
+- CSV evidence (v34CSVResults; delta CSV for seed 12 unavailable):  
+  - Delta_Percent (seeds 11/13/14): at ~20k → [-1.7, -0.9, -2.7], end → [-1.0, -0.4, -1.3]; std shrank 0.74 → 0.37.  
+  - Average100 (seeds 11/12/13/14): at ~20k → [2.79, 2.88, 2.43, 2.37], end → [2.63, 2.74, 2.59, 2.51]; std shrank 0.22 → 0.08; seeds 11/12 drifted down after 20k while 13/14 rose.
+- Observed dynamics (TensorBoard/logs): action_variance_mean climbs past 0.2 late with Actions_at_upper_pct rising; PER priority_std re-accelerates after ~400k; target_drift lowest so far; TD percentiles rise smoothly but diverge per seed mid/late.
+- Likely causes of post-20k divergence (ranked):  
+  1) PER outlier focus late (alpha_final=0.4, beta_final=0.8) → rising priority_std and seed-dependent TD spikes.  
+  2) High pre-squash noise floor (0.32) sustains sizable post-squash noise, amplifying action variance near bounds.  
+  3) Actor/critic LR (2.2e-4 / 1.2e-4) with shallow decay (final_lr_fraction=0.95) keeps late steps relatively large, interacting with PER skew.  
+  4) PER ramp (5k–15k) may still let prioritization bite while critic is adapting to the new noise regime.
+
+## v35 plan: reduce late PER bias and noise-driven spread
+- Parameter changes vs. v34:
+  - per_alpha_final 0.32 (from 0.4) and per_alpha_ramp_end 18k (from 15k) to soften/delay prioritization; per_beta_final 0.95 (from 0.8) to increase IS correction late.
+  - noise_floor 0.24 (from 0.32) to temper late action variance while keeping the early plateau intact.
+  - lr_a 2.0e-4 (from 2.2e-4), lr_c 1.1e-4 (from 1.2e-4), final_lr_fraction 0.90 (from 0.95) to shrink late-step sizes.
+- Expected signals if v35 works:
+  - Delta_Percent seeds converge tighter by 32k (aim std < ~0.25) with flat or improving slopes after 20k.
+  - Average100 keeps flat/slightly up slopes after 20k (no reversals for strong early seeds); dispersion below v34.
+  - Action_variance_mean stabilizes ~0.18–0.19; Actions_at_upper_pct flattens instead of rising.
+  - PER priority_std growth slows after ~400k; priority_mean settles below v34’s ~0.42–0.45 band.
+
+### Action variance progression (v23 → v26 → v33)
+- **v23**: Used early action L2 (cutoff ~4k) to fight boundary lock-in; helped two seeds but one still collapsed and delta hovered around -1.2 to -18 across seeds. Saturation risk persisted despite strong early regularization.
+- **v26**: Switched to tanh01 output mapped to [0, 1], boosted exploration floor (noise_floor 0.18, plateau 3.2k), and scheduled PER (alpha ramp 5k→15k). This eliminated collapse without action L2; actions_at_upper_pct dropped into the low 20s%, and delta_percent improved to roughly -0.5 to -1.1 on best seeds.
+- **v33**: Added SiLU throughout the MLPs plus the calibrated output scaling/bias (targeting Q_max/n_rights and 95% mass in [0,1]). Action_variance_mean tightened (~0.16–0.17), actions_at_upper_pct slid further down, and Avg_Exercise_Count/Avg_Total_Exercised rose by ~1–2 units vs. v26 while maintaining stable TD/priority profiles. This combo keeps early behavior diverse without any action regularization.
+
 ## Version-by-Version Notes (concise chronology)
 
 - **v1–v4**: Early baselines (not fully documented in this chat). Larger networks, default noise/epsilon, no action regularization; occasional stuck policies and high variance.
@@ -79,9 +119,6 @@ Key outcomes:
 - **tau**: 0.003–0.0035 moderate smoothing. Too fast drifts targets; too slow slows adaptation.
 - **target_policy_noise / target_policy_clip**: Default 0.1 / 0.25 (TD3-style) to smooth targets; set to 0 to disable.
 
-### Action Regularization
-- **action_reg_weight**: Small L2 on actions (default 1e-3) discourages saturation. Increase slightly (up to ~2e-3) if boundary lock-in persists.
-
 ### Batch / Replay
 - **batch_size**: Batch 64 was most robust; batch 128 needs lower LRs and higher noise floor.
 - **min_replay_size**: Larger with bigger batch (e.g., 24k) to ensure diversity at start.
@@ -101,7 +138,6 @@ Worth tuning:
 - Learning rates and final_lr_fraction (especially when changing batch size).
 - PER hyperparameters: alpha, beta_start, priority floor/clip.
 - tau (target update speed) within a narrow band (0.003–0.0035).
-- action_reg_weight if saturation persists.
 
 ---
 
@@ -110,7 +146,7 @@ Worth tuning:
 1) **Exploration schedule (noise/epsilon)**: Prevents early collapse to boundary actions. High initial sigma + sufficient plateau + meaningful noise floor are critical.
 2) **Learning rate and decay**: If decayed too fast, late-stage refinement stalls; if too high, instability. Coupled with batch size.
 3) **PER strength**: Too strong → over-focus, flattening learning; too weak → slower convergence. Moderate alpha (~0.5) worked best.
-4) **Min action noise / action reg**: Key to avoiding saturation and stuck policies.
+4) **Min action noise + activations**: Min noise floors plus the tanh01 actor head and SiLU hidden layers keep action variance healthy without extra regularization.
 5) **Batch size vs. LR**: Larger batches need lower LRs and larger warmup buffers.
 
 Tuning approach:
@@ -118,7 +154,7 @@ Tuning approach:
 - Adjust exploration first (sigma, floor, decay, plateau) if you see boundary saturation or mid-run dips.
 - Adjust LR decay (final_lr_fraction) if late improvement stalls.
 - Lightly adjust PER (alpha) if priorities are too flat or over-spiky.
-- Only then tweak action_reg_weight or tau within small ranges.
+- Only then tweak tau within a narrow range if target drift looks off.
 
 ---
 
@@ -149,3 +185,11 @@ You can read runv18 logs by changing the tensorboard path in the bash script (e.
 - Lower critic loss late can indicate stable targets and smoother value estimates; good when paired with healthy action variance and improving delta.
 - If critic loss is low but PER priorities/variance are high and action variance drops, it may signal over-smoothing or over-confident critic with insufficient exploration, leading to suboptimal delta.
 - Better late delta in this project correlated with: (1) moderate PER (alpha ~0.35–0.4) after a uniform early phase; (2) maintained action variance (min_action_noise ≥0.18); (3) sufficient LR late (final_lr_fraction ≥0.95); (4) PER priority stats not spiking excessively (priority_std moderate).
+
+---
+
+## Postscript: Reverted v26_v2–v6 experiments (failed, not kept)
+- Changes tried: forcing episodes to run full horizon (no early stop at Q_max), adding gross/net payoff features to state, multiple PER/noise/regularization schedules (v26_v2–v6).
+- Outcomes: higher Actions_at_upper_pct, action variance collapses in some seeds, delta_percent worse than v1 baseline, occasional late divergence; critic loss often stayed low so it was not a good health signal.
+- Likely causes: longer episodes increased update density; early PER schedules/clipping and strong early regularization either flattened priorities or starved critics; exploration floors/schedules were insufficient to avoid boundary lock-in.
+- Status: codebase reverted to pre-experiment (v1) behavior; keep these notes to avoid repeating the same avenues without deeper changes.

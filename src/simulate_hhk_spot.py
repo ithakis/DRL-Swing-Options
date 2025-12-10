@@ -19,6 +19,7 @@ def simulate_hhk_spot(
     mu_J: float,
     f: Callable[[float], float],
     seed: Optional[int] = None,
+    dtype: np.dtype | str = np.float32,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Hambly–Howison–Kluge spot model with antithetic variance reduction.
@@ -32,28 +33,31 @@ def simulate_hhk_spot(
     X : (n_paths, n_steps+1)     diffusive OU paths
     Y : (n_paths, n_steps+1)     spike (jump‑OU) paths
     """
+    dtype = np.dtype(dtype)
+    dtype_scalar = dtype.type
+
     rng = np.random.default_rng(seed)
-    dt  = T / n_steps
-    t   = np.linspace(0.0, T, n_steps + 1)
+    dt  = dtype_scalar(T / n_steps)
+    t   = np.linspace(0.0, dtype_scalar(T), n_steps + 1, dtype=dtype)
 
     # ── Diffusive OU driver (Sobol) ───────────────────────────────────────────
     if seed is not None: np.random.seed(seed)
     sampler = qmc.Sobol(d=n_steps, scramble=True)
-    z_x     = norm.ppf(np.clip(sampler.random(n_paths), 1e-12, 1-1e-12))
+    z_x     = norm.ppf(np.clip(sampler.random(n_paths), 1e-12, 1-1e-12)).astype(dtype, copy=False)
 
-    e_m     = np.exp(-alpha * dt)
-    var_m   = sigma**2 * (1.0 - e_m**2) / (2.0 * alpha)
-    sqrt_vm = np.sqrt(var_m)
+    e_m     = dtype_scalar(np.exp(-alpha * dt))
+    var_m   = dtype_scalar(sigma**2 * (1.0 - e_m**2) / (2.0 * alpha))
+    sqrt_vm = np.sqrt(var_m, dtype=dtype)
 
-    e_dt = np.exp(-beta * dt)                 # common factor in jump weight
+    e_dt = dtype_scalar(np.exp(-beta * dt))                 # common factor in jump weight
 
     # ── Allocate output arrays ────────────────────────────────────────────────
-    X = np.empty((n_paths, n_steps + 1), dtype=np.float64)
+    X = np.empty((n_paths, n_steps + 1), dtype=dtype)
     Y = np.zeros_like(X)
     S = np.empty_like(X)
 
-    X[:, 0] = np.log(S0) - f(0.0)   # ensure S starts at S0
-    S[:, 0] = S0
+    X[:, 0] = dtype_scalar(np.log(S0) - f(0.0))   # ensure S starts at S0
+    S[:, 0] = dtype_scalar(S0)
 
     # ── Pre‑draw Poisson counts ───────────────────────────────────────────────
     counts = rng.poisson(lam * dt, size=(n_steps, n_paths // 2))
@@ -65,7 +69,7 @@ def simulate_hhk_spot(
         X[:, k] = e_m * X[:, k - 1] + sqrt_vm * z_x[:, k - 1]
 
         # --- spike OU with antithetic variance reduction ----------------------
-        jump_inc = np.zeros(n_paths, dtype=np.float64)
+        jump_inc = np.zeros(n_paths, dtype=dtype)
         
         # Antithetic variance reduction for multiple paths
         c_k = counts[k - 1]                       # (n_paths//2,)
@@ -73,15 +77,15 @@ def simulate_hhk_spot(
 
         if pos_idx.size:                          # skip if no jumps
             n_tot = c_k[pos_idx].sum()            # total #jumps this step
-            U = rng.uniform(0.0, dt, size=n_tot)  # arrival times
-            V = rng.random(n_tot)                 # uniforms for Exp marks
-            V_bar = 1.0 - V                       # antithetic uniforms
+            U = rng.uniform(0.0, dt, size=n_tot).astype(dtype, copy=False)  # arrival times
+            V = rng.random(n_tot).astype(dtype, copy=False)                 # uniforms for Exp marks
+            V_bar = dtype_scalar(1.0) - V                                   # antithetic uniforms
 
             # exponential jump sizes (antithetic)
-            J1 = -mu_J * np.log(V)
-            J2 = -mu_J * np.log(V_bar)
+            J1 = (-mu_J * np.log(V)).astype(dtype, copy=False)
+            J2 = (-mu_J * np.log(V_bar)).astype(dtype, copy=False)
 
-            decay = e_dt * np.exp(beta * U)       # e^{-β(dt-U)}
+            decay = (e_dt * np.exp(beta * U)).astype(dtype, copy=False)       # e^{-β(dt-U)}
 
             # map each draw to its pair id
             pair_ids = np.repeat(pos_idx, c_k[pos_idx])

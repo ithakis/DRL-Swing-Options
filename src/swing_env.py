@@ -93,7 +93,8 @@ class SwingOptionEnv(gym.Env):
     def __init__(self, 
                  contract: SwingContract,
                  hhk_params: Dict,
-                 dataset:Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]):
+                 dataset:Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                 obs_dtype: Optional[np.dtype] = None):
         """
         Initialize swing option environment
         
@@ -111,13 +112,14 @@ class SwingOptionEnv(gym.Env):
         # Unpack dataset into individual components for easier access
         self.t, self.S, self.X, self.Y = dataset
         self.max_episode_steps = self.contract.n_rights
+        self.obs_dtype = np.dtype(obs_dtype) if obs_dtype is not None else np.float32
         
         # Action space: normalized exercise quantity [0, 1]
         self.action_space = Box(
             low=0.0, 
             high=1.0, 
             shape=(1,), 
-            dtype=np.float32
+            dtype=self.obs_dtype
         )
         
         # State space dimensions
@@ -128,7 +130,7 @@ class SwingOptionEnv(gym.Env):
             low=-np.inf, 
             high=np.inf, 
             shape=(state_dim,), 
-            dtype=np.float32
+            dtype=self.obs_dtype
         )
         
         # Episode tracking - Will be incremented to 0 on first reset()
@@ -137,7 +139,8 @@ class SwingOptionEnv(gym.Env):
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Take one step in the environment"""
-        action_value = float(action[0])
+        # Safely extract scalar action to avoid NumPy deprecation warnings
+        action_value = float(np.asarray(action).reshape(-1)[0])
 
         # Denormalize action to contract quantity
         q_proposed = self.contract.denormalize_action(action_value)
@@ -275,7 +278,7 @@ class SwingOptionEnv(gym.Env):
             Y_t,  # Jump component  
             # self.recent_volatility,  # Recent realized volatility
             days_since_exercise / self.contract.n_rights  # Normalized refraction time
-        ], dtype=np.float32)
+        ], dtype=self.obs_dtype)
         return state
     
     def _calculate_recent_volatility(self, current_idx: int, lookback: int = 10) -> float:

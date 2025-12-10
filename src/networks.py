@@ -13,7 +13,7 @@ Updated for PyTorch 2.8+ and Python 3.11 with modern best practices:
 """
 
 import math
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -103,6 +103,21 @@ def weight_init_orthogonal(layers: List[nn.Module], gain: float = 1.0) -> None:
             torch.nn.init.zeros_(layer.bias)
 
 
+def _build_activation(activation: str) -> Tuple[Callable[[], nn.Module], float]:
+    """Return an activation factory and recommended gain for initialization."""
+    act = activation.lower()
+    if act == "relu":
+        return lambda: nn.ReLU(inplace=True), math.sqrt(2.0)
+    if act == "leaky_relu":
+        negative_slope = 0.01
+        gain = nn.init.calculate_gain("leaky_relu", negative_slope)
+        return lambda: nn.LeakyReLU(negative_slope=negative_slope, inplace=True), gain
+    if act == "silu":
+        # torch init does not expose a SiLU-specific gain; use ReLU-equivalent
+        return lambda: nn.SiLU(inplace=True), math.sqrt(2.0)
+    raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
+
+
 class Actor(nn.Module):
     """Actor (Policy) network for continuous control.
     
@@ -117,7 +132,11 @@ class Actor(nn.Module):
         seed: int,
         hidden_size: int = 64,
         n_layers: int = 2,
-        device: Optional[Union[str, torch.device]] = None
+        device: Optional[Union[str, torch.device]] = None,
+        action_output: str = "tanh01",
+        target_action_mean: Optional[float] = 0.5,
+        target_action_std: Optional[float] = math.sqrt(1.0 / 12.0),
+        activation: str = "silu",
     ) -> None:
         """Initialize the Actor network.
         
@@ -128,6 +147,11 @@ class Actor(nn.Module):
             hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 policy)
             n_layers: Number of hidden layers (default: 2)
             device: Device to place the network on (cuda/cpu)
+            action_output: Output activation. One of {"tanh", "tanh01", "sigmoid"}.
+                "tanh01" maps tanh output from [-1, 1] to [0, 1] (default).
+            target_action_mean: Optional target mean for initialization (used only if provided).
+            target_action_std: Optional target std for initialization (used only if provided).
+            activation: Hidden-layer activation ("silu" default; supports "relu" and "leaky_relu").
         """
         super().__init__()
 
@@ -145,6 +169,11 @@ class Actor(nn.Module):
 
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.action_output = action_output.lower()
+        self.target_action_mean = target_action_mean
+        self.target_action_std = target_action_std
+        self.activation_name = activation.lower()
+        self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
 
         layers: List[nn.Sequential] = []
         input_dim = state_size
@@ -152,7 +181,7 @@ class Actor(nn.Module):
             block = nn.Sequential(
                 nn.Linear(input_dim, hidden_size, bias=True),
                 nn.LayerNorm(hidden_size),  # LayerNorm is more stable than BatchNorm in RL
-                nn.ReLU(inplace=True)
+                self._activation_factory()
             )
             layers.append(block)
             input_dim = hidden_size
@@ -171,16 +200,16 @@ class Actor(nn.Module):
     def reset_parameters(self) -> None:
         """Reset network parameters using D4PG-recommended initialization.
         
-        Uses orthogonal initialization for hidden layers (gain=√2 for ReLU)
-        and small uniform initialization for the final layer to start with
+        Uses orthogonal initialization for hidden layers with an activation-appropriate
+        gain and small uniform initialization for the final layer to start with
         small, centered actions near the data manifold.
         """
-        # Orthogonal initialization for hidden layers with ReLU gain
+        # Orthogonal initialization for hidden layers with activation-appropriate gain
         # Only initialize Linear layers, not LayerNorm
         linear_layers = [block[0] for block in self.hidden_layers]  # index 0 = Linear
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+                torch.nn.init.orthogonal_(layer.weight, gain=self._activation_gain)
                 torch.nn.init.zeros_(layer.bias)
 
         # Small uniform initialization for final layer (actor output)
@@ -214,13 +243,32 @@ class Actor(nn.Module):
             state: Input state tensor of shape (batch_size, state_size)
             
         Returns:
-            Action tensor of shape (batch_size, action_size) in range [-1, 1]
+            Action tensor of shape (batch_size, action_size); range depends on
+            action_output ("tanh": [-1, 1], "tanh01"/"sigmoid": [0, 1])
         """
         x = state
         for block in self.hidden_layers:
             x = block(x)
 
-        return torch.tanh(self.fc4(x))
+        out = self.fc4(x)
+        return self._apply_output_activation(out)
+
+    def forward_preact(self, state: Tensor) -> Tensor:
+        """Forward pass up to the final linear layer (pre-activation outputs)."""
+        x = state
+        for block in self.hidden_layers:
+            x = block(x)
+        return self.fc4(x)
+
+    def _apply_output_activation(self, out: Tensor) -> Tensor:
+        """Apply the configured output activation."""
+        if self.action_output == "tanh":
+            return torch.tanh(out)
+        if self.action_output == "tanh01":
+            return 0.5 * (torch.tanh(out) + 1.0)
+        if self.action_output == "sigmoid":
+            return torch.sigmoid(out)
+        raise ValueError(f"Unsupported action_output '{self.action_output}'. Expected one of 'tanh', 'tanh01', 'sigmoid'.")
 
 
 class Critic(nn.Module):
@@ -236,7 +284,8 @@ class Critic(nn.Module):
         seed: int,
         hidden_size: int = 64,
         n_layers: int = 2,
-        device: Optional[Union[str, torch.device]] = None
+        device: Optional[Union[str, torch.device]] = None,
+        activation: str = "silu"
     ) -> None:
         """Initialize the Critic network.
         
@@ -247,6 +296,7 @@ class Critic(nn.Module):
             hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 critic)
             n_layers: Number of hidden layers (default: 2)
             device: Device to place the network on (cuda/cpu)
+            activation: Hidden-layer activation ("silu" default; supports "relu" and "leaky_relu").
         """
         super().__init__()
 
@@ -264,24 +314,26 @@ class Critic(nn.Module):
 
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.activation_name = activation.lower()
+        self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
 
         self.state_encoder = nn.Sequential(
             nn.Linear(state_size, hidden_size, bias=True),
             nn.LayerNorm(hidden_size),  # LayerNorm stabilizes training in RL
-            nn.ReLU(inplace=True)
+            self._activation_factory()
         )
 
         self.action_layer = nn.Sequential(
             nn.Linear(hidden_size + action_size, hidden_size, bias=True),
             nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True)
+            self._activation_factory()
         )
 
         self.post_layers = nn.ModuleList(
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size, bias=True),
                 nn.LayerNorm(hidden_size),
-                nn.ReLU(inplace=True)
+                self._activation_factory()
             )
             for _ in range(n_layers - 2)
         )
@@ -300,17 +352,17 @@ class Critic(nn.Module):
     def reset_parameters(self) -> None:
         """Reset network parameters using D4PG-recommended initialization.
         
-        Uses orthogonal initialization for hidden layers (gain=√2 for ReLU)
+        Uses orthogonal initialization for hidden layers with activation-aware gain
         and specific initialization for the final layer to produce neutral
         Q-values initially, improving distributional critic stability.
         """
-        # Orthogonal initialization for hidden layers with ReLU gain
+        # Orthogonal initialization for hidden layers with activation-aware gain
         # Only initialize Linear layers, not LayerNorm
         linear_layers = [self.state_encoder[0], self.action_layer[0]]
         linear_layers.extend(block[0] for block in self.post_layers)
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+                torch.nn.init.orthogonal_(layer.weight, gain=self._activation_gain)
                 torch.nn.init.zeros_(layer.bias)
 
         # Initialize final layer to produce neutral Q-values
@@ -413,7 +465,7 @@ class IQN(nn.Module):
             'pis',
             torch.tensor(
                 [np.pi * i for i in range(1, self.n_cos + 1)],
-                dtype=torch.float32
+                dtype=torch.get_default_dtype()
             ).view(1, 1, self.n_cos)
         )
         

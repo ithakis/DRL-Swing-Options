@@ -517,3 +517,19 @@ You now have two additional, targeted refactoring tasks. Apply them carefully so
 
 Apply these two tasks as **small, surgical refactors** focused on `src/swing_env.py`, any state-building helpers in evaluation/training code, and `README.md`. Do not introduce new conceptual algorithms or change the economic meaning of the swing option – just adjust termination logic and expose the gross/net payoffs as explicit features.
 
+---
+## Deep Research Prompt: NN Architecture Tuning
+
+Act as an expert RL/NAS researcher using OpenAI Deep Research with GitHub access to this repository (`alexanderithakis/DRL-Swing-Options`). Your goal is to decide whether changing the policy/value network architectures would materially improve sample efficiency or runtime without altering the algorithmic intent (D4PG/DDPG with PER, optional IQN). Keep advice concise and targeted.
+
+### Project context to inspect
+- Core code: `src/networks.py` (Actor/Critic/IQN), `src/agent.py` (D4PG agent wiring, PER, noise), `run.py` (CLI defaults, device setup), `src/agent_evaluation.py` (batched eval), `src/swing_env.py` (state/action spec), `runv26.sh` (current production hyperparams: 2×64 LayerNorm+ReLU MLPs, `-iqn=0`, `-layer_size=64`, batch size 128, PER soft, gamma=1, Gaussian noise + epsilon).
+- State vector (current env): 9 features `[S-K, q_exercised/Q_max, q_remaining/Q_max, TTM_norm, t_norm, S, X_t, Y_t, days_since_last_exercise_norm]`; action is normalized exercise in [0,1].
+- Actor: n_layers=2, hidden_size default 64, LayerNorm+ReLU blocks, tanh head to 1 action. Critic: state encoder (64), concat action -> 64 -> head; LayerNorm on hidden layers; `critic_layers` ≥2. Optional IQN critic uses cosine embeddings + LayerNorm with `layer_size` width.
+- Initialization: orthogonal for hidden, small uniform head; weight decay defaults actor 5e-5, critic 1e-4; gradient clipping optional; PER Fenwick tree; target smoothing tau configurable; Munchausen/IQN off in runv26.
+
+### What to deliver
+- Prioritized, evidence-based recommendations on NN architecture tweaks (width/depth, activations, normalization choices, residual/skip connections, distributional critic usage, action/state encoders, shared trunk vs separate heads) with file/line references.
+- For each proposal: expected upside (sample efficiency, stability, runtime on CPU/M1), risks/regression surface, and minimal patch outline (e.g., which modules/flags to add or adjust). Call out if LayerNorm cost is a bottleneck and whether fused/alternative norms or removing norms is safe given current training noise.
+- Suggest 3–6 concrete experiment variants (include exact CLI overrides for `run.py` / `runv26.sh`) plus a quick validation plan (short run args, metrics to compare: option price, exercised volume stats, TD error).
+- If the best guidance is to keep the current 2×64 design, say so and justify (e.g., overfitting risk, eval stability). Prefer crisp bullets over long prose.

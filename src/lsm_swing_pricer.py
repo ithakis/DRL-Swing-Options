@@ -258,7 +258,8 @@ def price_swing_option_lsm(
         Destination for CSV log of optimal exercises.
     """
     t, S, _, _ = dataset
-    prices = S  # all decision prices (including initial spot at t=0)
+    # Upcast to float64 for numerical stability and numba JIT friendliness
+    prices = np.asarray(S, dtype=np.float64)  # all decision prices (including initial spot at t=0)
     n_paths, n_steps = prices.shape
     assert n_steps == contract.n_rights, "Mismatch between paths and contract rights"
 

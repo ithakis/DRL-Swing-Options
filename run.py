@@ -12,6 +12,7 @@ Author: Senior AI RL Developer
 import argparse
 import csv
 import json
+import math
 import multiprocessing as mp
 import os
 import shutil
@@ -26,6 +27,14 @@ import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+# Optional SciPy for sigma root finding; fall back to pure Python if unavailable
+try:
+    from scipy.optimize import brentq  # type: ignore
+    from scipy.stats import norm  # type: ignore
+except Exception:  # pragma: no cover - SciPy is optional
+    brentq = None
+    norm = None
+
 from src.agent import Agent
 from src.agent_evaluation import benchmark_evaluation, evaluate_agent
 from src.fdm_swing_pricer import price_swing_option_fdm
@@ -38,6 +47,178 @@ from src.swing_env import SwingOptionEnv
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
+
+
+def _normal_cdf(x: float, mean: float, std: float) -> float:
+    """Compute the normal CDF with minimal dependencies."""
+    return 0.5 * (1.0 + math.erf((x - mean) / (std * math.sqrt(2.0))))
+
+
+def _bisect_root(fn, lo: float, hi: float, tol: float = 1e-6, max_iter: int = 100) -> float:
+    """Simple bisection root finder for monotonic functions."""
+    flo = fn(lo)
+    fhi = fn(hi)
+    if flo == 0:
+        return lo
+    if fhi == 0:
+        return hi
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        fmid = fn(mid)
+        if abs(fmid) < tol or (hi - lo) < tol:
+            return mid
+        if flo * fmid <= 0:
+            hi = mid
+            fhi = fmid
+        else:
+            lo = mid
+            flo = fmid
+    return 0.5 * (lo + hi)
+
+
+def _compute_target_sigma(target_mean: float, mass: float = 0.95) -> float:
+    """
+    Solve for sigma such that P(0 <= X <= 1) = mass for X ~ N(target_mean, sigma^2).
+    Uses SciPy's brentq if available, otherwise falls back to bisection.
+    """
+    def mass_diff(s: float) -> float:
+        if s <= 0:
+            return -mass
+        if norm is not None:
+            return norm.cdf((1 - target_mean) / s) - norm.cdf((-target_mean) / s) - mass
+        # Pure Python CDF
+        return _normal_cdf(1.0, target_mean, s) - _normal_cdf(0.0, target_mean, s) - mass
+
+    if brentq is not None and norm is not None:
+        try:
+            return float(brentq(mass_diff, 1e-6, 10.0, maxiter=100))
+        except Exception:
+            pass
+    return float(_bisect_root(mass_diff, 1e-6, 10.0, tol=1e-6, max_iter=200))
+
+
+def _inverse_action_activation(action_val: float, activation: str) -> float:
+    """Map action in output space back to pre-activation."""
+    act = action_val
+    if activation == "tanh01":
+        a = float(np.clip(act, 1e-6, 1.0 - 1e-6))
+        return float(np.arctanh(2 * a - 1.0))
+    if activation == "sigmoid":
+        a = float(np.clip(act, 1e-6, 1.0 - 1e-6))
+        return float(np.log(a / (1.0 - a)))
+    if activation == "tanh":
+        a = float(np.clip(act, -1.0 + 1e-6, 1.0 - 1e-6))
+        return float(np.arctanh(a))
+    raise ValueError(f"Unsupported activation '{activation}'")
+
+
+def _activation_slope_at_preact(preact_mean: float, activation: str) -> float:
+    """Compute the local slope of the action activation at a given pre-activation mean."""
+    if activation == "tanh01":
+        return 0.5 * (1.0 - math.tanh(preact_mean) ** 2)
+    if activation == "sigmoid":
+        s = 1.0 / (1.0 + math.exp(-preact_mean))
+        return s * (1.0 - s)
+    if activation == "tanh":
+        return 1.0 - math.tanh(preact_mean) ** 2
+    raise ValueError(f"Unsupported activation '{activation}'")
+
+
+def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: int = 1024, mass: float = 0.95) -> None:
+    """
+    Use the first `episodes` rollouts (no training) to shift/scale the actor head so that
+    the average action matches Q_max / n_rights and 95% of the mass stays within [0,1].
+    Training still starts from episode 0 after resetting the environment counter.
+    """
+    if episodes <= 0:
+        return
+
+    # Determine target mean in normalized action space
+    contract = env.contract
+    per_step_q = contract.Q_max / contract.n_rights
+    target_mean_action = float(np.clip(contract.normalize_action(per_step_q), 0.0, 1.0))
+    target_std_action = _compute_target_sigma(target_mean_action, mass=mass)
+
+    # Limit warmup to available paths
+    available_paths = env.S.shape[0] if hasattr(env, "S") else episodes
+    warmup_eps = min(episodes, available_paths)
+
+    sum_act = 0.0
+    sum_act2 = 0.0
+    sum_preact = 0.0
+    sum_preact2 = 0.0
+    total_steps = 0
+
+    actor = agent.actor_local
+    # Support older Actor definitions without an explicit action_output attribute
+    action_output = getattr(actor, "action_output", "tanh")
+    setattr(actor, "action_output", action_output)
+    action_low = float(env.action_space.low[0])
+    action_high = float(env.action_space.high[0])
+
+    for ep in range(warmup_eps):
+        state, _ = env.reset()
+        while True:
+            action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
+            # action may be a nested array; extract scalar safely
+            action_scalar = float(np.asarray(action).reshape(-1)[0])
+            action_clipped = float(np.clip(action_scalar, action_low, action_high))
+
+            preact_val = _inverse_action_activation(action_clipped, action_output)
+
+            sum_act += action_clipped
+            sum_act2 += action_clipped * action_clipped
+            sum_preact += preact_val
+            sum_preact2 += preact_val * preact_val
+            total_steps += 1
+
+            next_state, _, terminated, truncated, _ = env.step(
+                np.array([action_clipped], dtype=np.float32)
+            )
+            state = next_state
+            if terminated or truncated:
+                break
+
+    if total_steps == 0:
+        return
+
+    obs_mean_action = sum_act / total_steps
+    obs_var_action = max(0.0, sum_act2 / total_steps - obs_mean_action ** 2)
+    obs_std_action = math.sqrt(obs_var_action)
+
+    obs_mean_preact = sum_preact / total_steps
+    obs_var_preact = max(0.0, sum_preact2 / total_steps - obs_mean_preact ** 2)
+    obs_std_preact = math.sqrt(obs_var_preact)
+
+    desired_preact_mean = _inverse_action_activation(target_mean_action, action_output)
+    slope = max(_activation_slope_at_preact(desired_preact_mean, action_output), 1e-6)
+    desired_preact_std = target_std_action / slope
+
+    with torch.no_grad():
+        head = actor.fc4
+        scale = desired_preact_std / (obs_std_preact + 1e-8) if obs_std_preact > 0 else 1.0
+        head.weight.mul_(scale)
+        head.bias.mul_(scale)
+
+        current_mean_after_scale = obs_mean_preact * scale
+        head.bias.add_(desired_preact_mean - current_mean_after_scale)
+
+    # Mirror calibration to target network
+    agent.actor_target.load_state_dict(agent.actor_local.state_dict())
+
+    # Reset environment episode counter so training starts from episode 0
+    env._episode_counter = -1
+    env.current_step = 0
+    env.q_exercised = 0.0
+
+    # Reset agent state for training
+    agent.reset()
+
+    print(
+        f"Warmup calibration over {warmup_eps} episodes: "
+        f"obs_mean={obs_mean_action:.4f}, obs_std={obs_std_action:.4f} -> "
+        f"target_mean={target_mean_action:.4f}, target_std={target_std_action:.4f}"
+    )
 
 
 class AsyncCSVWriter:
@@ -260,35 +441,22 @@ class ConfigManager:
             help="Use distributional IQN Critic if set to 1, default = 0 (no IQN)",
         )
         parser.add_argument(
-            "-noise",
-            type=str,
-            choices=["ou", "gauss"],
-            default="OU",
-            help="Choose noise type: ou = OU-Noise, gauss = Gaussian noise, default ou",
-        )
-        parser.add_argument(
-            "--noise_sigma",
+            "-noise_sigma0",
             type=float,
             default=1.0,
-            help="Scale of exploration noise; decays with epsilon (default: 1.0)",
+            help="Initial pre-squash noise std (applied before action squashing)",
         )
         parser.add_argument(
-            "--noise_anneal_power",
-            type=float,
-            default=1.0,
-            help="Exponent tying noise std to epsilon (default: 1.0 = linear)",
-        )
-        parser.add_argument(
-            "--noise_plateau",
-            type=int,
-            default=0,
-            help="Episodes to hold epsilon/noise at the initial level before decay begins (default: 0)",
-        )
-        parser.add_argument(
-            "--min_action_noise",
+            "-noise_floor",
             type=float,
             default=0.05,
-            help="Minimum noise scale applied in act() to avoid zero-variance policies (default: 0.05)",
+            help="Minimum pre-squash noise std after decay",
+        )
+        parser.add_argument(
+            "-noise_plateau",
+            type=int,
+            default=0,
+            help="Episodes to hold the initial pre-squash noise level before decay",
         )
 
         # Network and Learning Parameters
@@ -339,16 +507,11 @@ class ConfigManager:
             help="Number of hidden layers in the critic network (default: 2; must be >=2)",
         )
         parser.add_argument(
-            "-epsilon",
-            type=float,
-            default=0.3,
-            help="Initial epsilon for exploration noise (default: 0.3)",
-        )
-        parser.add_argument(
-            "-epsilon_decay",
-            type=float,
-            default=1.0,
-            help="Epsilon decay rate per episode (default: 1.0)",
+            "--activation",
+            type=str,
+            default="silu",
+            choices=["relu", "leaky_relu", "silu"],
+            help="Activation function for actor/critic MLPs (default: silu)",
         )
         parser.add_argument(
             "--final_lr_fraction",
@@ -367,18 +530,6 @@ class ConfigManager:
             type=float,
             default=1e-7,
             help="Minimum learning rate floor (default: 1e-7)",
-        )
-        parser.add_argument(
-            "--action_reg_weight",
-            type=float,
-            default=1e-3,
-            help="L2 penalty weight on actions to discourage boundary saturation (default: 1e-3)",
-        )
-        parser.add_argument(
-            "--action_reg_cutoff",
-            type=int,
-            default=0,
-            help="Apply action L2 penalty only up to this episode (0 = always on, default 0)",
         )
         parser.add_argument(
             "--actor_grad_clip",
@@ -489,7 +640,7 @@ class ConfigManager:
             type=int,
             default=1,
             choices=[0, 1],
-            help="Use float32 precision for better performance, default=1 (YES!)",
+            help="Use float32 precision for simulation, tensors, and buffers (default: 1). Set 0 for float64.",
         )
 
         return parser
@@ -497,8 +648,10 @@ class ConfigManager:
     @staticmethod
     def setup_pytorch_optimizations(args: argparse.Namespace) -> None:
         """Setup PyTorch optimizations based on arguments"""
+        dtype_choice = "float32" if args.fp32 else "float64"
+        torch.set_default_dtype(torch.float32 if dtype_choice == "float32" else torch.float64)
         # Apply float32 optimization if enabled
-        if args.fp32:
+        if dtype_choice == "float32":
             torch.set_default_dtype(torch.float32)
             print("Using float32 precision for improved performance")
         else:
@@ -977,6 +1130,8 @@ def run_training(
     total_steps = 0
     last_update_time = time.time()
     last_update_count = agent.updates_done
+    last_eval_price: Optional[float] = None
+    last_avg_exercised: Optional[float] = None
 
     print(f"\n{'=' * 60}")
     print("STARTING RL AGENT TRAINING")
@@ -998,7 +1153,7 @@ def run_training(
 
     # Initial evaluation of DRL agent without any training - if eval_every > 0
     if not args.eval_every == -1:
-        evaluate_agent(
+        eval_summary = evaluate_agent(
             agent=agent,
             eval_env=eval_env,
             writer=tensorboard_writer,
@@ -1009,6 +1164,8 @@ def run_training(
             eval_batch_size=args.eval_batch_size,
             profile=args.profile_eval,
         )
+        last_eval_price = eval_summary.option_price
+        last_avg_exercised = eval_summary.avg_total_exercised
     for current_path in range(1, args.n_paths + 1):
         # Fix 3: Update episode count in PER for proper beta annealing
         agent.update_episode_count(current_path)
@@ -1083,24 +1240,23 @@ def run_training(
         tensorboard_writer.add_scalar("Updates_Per_Second", updates_per_second, current_path)
         tensorboard_writer.add_scalar("Total_Steps", total_steps, current_path)
         tensorboard_writer.add_scalar("Path_Length", path_steps, current_path)
-        # Exploration diagnostics: epsilon and effective noise scale
-        noise_scale = agent.get_noise_scale() if hasattr(agent, "get_noise_scale") else max(
-            (agent.epsilon ** agent.noise_anneal_power) * agent.noise_sigma, agent.min_action_noise
-        )
-        tensorboard_writer.add_scalar("Exploration/Epsilon", agent.epsilon, current_path)
-        tensorboard_writer.add_scalar("Exploration/Noise_Scale", noise_scale, current_path)
-        plateau_flag = 1 if hasattr(agent, "noise_plateau") and current_path <= agent.noise_plateau else 0
-        tensorboard_writer.add_scalar("Exploration/Plateau_Active", plateau_flag, current_path)
+        try:
+            pre_noise_sigma = agent._pre_noise_sigma()
+            tensorboard_writer.add_scalar("Exploration/Pre_Action_Noise", pre_noise_sigma, current_path)
+        except Exception:
+            pass
         
         # Log learning rates for monitoring decay
         if agent.actor_scheduler is not None:
             tensorboard_writer.add_scalar("Learning_Rate/Actor", agent.actor_optimizer.param_groups[0]['lr'], current_path)
             tensorboard_writer.add_scalar("Learning_Rate/Critic", agent.critic_optimizer.param_groups[0]['lr'], current_path)
 
+        last_price_display = f"{last_eval_price:.3f}" if last_eval_price is not None else "No Data"
+        last_q_display = f"{last_avg_exercised:.3f}" if last_avg_exercised is not None else "No Data"
+
         print(
-            f"Path {current_path}/{args.n_paths} | Return = {episode_return:.3f} | "
-            f"Steps = {path_steps} | Paths/sec = {paths_per_sec:.1f} | "
-            f"Steps/sec = {steps_per_sec:.0f} | Updates/sec = {updates_per_second:.1f}"
+            f"Path {current_path}/{args.n_paths} | Last Price = {last_price_display} | "
+            f"E[Q_t] = {last_q_display} | Average100 = {avg_100:.3f} | Paths/sec = {paths_per_sec:.1f}"
         )
 
         # Post-training evaluation logic
@@ -1120,7 +1276,7 @@ def run_training(
         if should_eval_after:
             print(f"\n🔍 Starting evaluation after {current_path} episodes completed...")
             print("   Using VALIDATION dataset (same paths used for all evaluations)")
-            evaluate_agent(
+            eval_summary = evaluate_agent(
                 agent=agent,
                 eval_env=eval_env,
                 writer=tensorboard_writer,
@@ -1131,6 +1287,8 @@ def run_training(
                 eval_batch_size=args.eval_batch_size,
                 profile=args.profile_eval,
             )
+            last_eval_price = eval_summary.option_price
+            last_avg_exercised = eval_summary.avg_total_exercised
 
 
 def main():
@@ -1144,6 +1302,8 @@ def main():
 
     # Setup PyTorch optimizations
     ConfigManager.setup_pytorch_optimizations(args)
+    dtype_choice = "float32" if args.fp32 else "float64"
+    np_dtype = np.float32 if args.fp32 else np.float64
 
     # Seed setup
     seed = args.seed
@@ -1175,6 +1335,7 @@ def main():
         "lam": args.lam,
         "mu_J": args.mu_J,
         "f": no_seasonal_function,
+        "dtype": np_dtype,
     }
 
     # Generate training and evaluation datasets:
@@ -1187,9 +1348,9 @@ def main():
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds)
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype)
     eval_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds)
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype)
 
     ## Create Experiment Directory
     exp_dir = 'logs/' + args.name # experiment dir
@@ -1200,9 +1361,11 @@ def main():
 
     # Price with Monte Carlo - LSM Benchmark
     evaluations_dir = exp_dir + '/evaluations'
+    # LSM benchmark uses float64 for numba/SVD stability
+    lsm_ds = tuple(np.asarray(arr, dtype=np.float64) for arr in eval_ds)
     mean_lsm_price, (th5q_price,th95q_price) = price_swing_option_lsm(
         contract=swing_contract,
-        dataset=eval_ds,
+        dataset=lsm_ds,
         poly_degree=args.lsm_degree,
         basis_type=args.lsm_basis,
         reg_type=args.lsm_reg,
@@ -1252,11 +1415,6 @@ def main():
         per=args.per,
         munchausen=args.munchausen,
         distributional=args.iqn,
-        noise_type=args.noise,
-        noise_sigma=args.noise_sigma,
-        noise_anneal_power=args.noise_anneal_power,
-        noise_plateau=args.noise_plateau,
-        min_action_noise=args.min_action_noise,
         random_seed=seed,
         hidden_size=args.layer_size,
         actor_hidden_size=actor_hidden_size,
@@ -1277,8 +1435,9 @@ def main():
         LR_CRITIC=args.lr_c,
         LEARN_EVERY=args.learn_every,
         LEARN_NUMBER=args.learn_number,
-        epsilon=args.epsilon,
-        epsilon_decay=args.epsilon_decay,
+        noise_sigma0=args.noise_sigma0,
+        noise_floor=args.noise_floor,
+        noise_plateau=args.noise_plateau,
         device=device,
         paths=args.n_paths,
         min_replay_size=args.min_replay_size,
@@ -1304,14 +1463,16 @@ def main():
         actor_grad_clip_type=args.actor_grad_clip_type,
         critic_grad_clip_type=args.critic_grad_clip_type,
         grad_clip_norm_type=args.grad_clip_norm_type,
-        action_reg_weight=args.action_reg_weight,
-        action_reg_cutoff=args.action_reg_cutoff,
+        activation=args.activation,
     )
     t0 = time.time()
 
     if args.saved_model is not None:
         agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
         print("WARNING: Pre-generated paths not available for saved model evaluation.")
+    else:
+        # Warm up the actor using the first 1024 episodes (no training) to match average action
+        warmup_calibrate_actor_outputs(agent, train_env, episodes=1024, mass=0.95)
     
     if args.eval_benchmark:
         print("\nRunning standalone evaluation benchmark (evaluation only)...")

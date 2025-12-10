@@ -37,6 +37,7 @@ This implementation combines:
 - Model build logs report the chosen widths/depths and parameter counts for both actor and critic to simplify experiment tracking.
 - Configurable gradient clipping for actor/critic (`--actor_grad_clip`, `--critic_grad_clip`) with norm/value modes; disabled by default for speed, but available when stability demands it.
 - Convex per-exercise cost term controllable via `--c_cost` and `--gamma_cost`, shared between the RL environment and LSM benchmark (defaults keep the cost disabled).
+- Default hidden activation switched to **SiLU** (configurable via `--activation {relu, leaky_relu, silu}`) to smooth gradients and improve initial action variance.
 
 ## Mathematical Framework
 
@@ -187,6 +188,77 @@ This launches multiple seeds with 32,768 training episodes and comprehensive eva
 - **Network sizing**: `-layer_size` remains the global width knob (default 64 for a lightweight 2×64 baseline). Override per-network widths with `--actor_hidden_size` / `--critic_hidden_size`.
 - **Depth control**: Set `--actor_layers` and `--critic_layers` (defaults: 2). The critic enforces at least two layers so that actions are merged after the state encoder.
 - **Run diagnostics**: Model construction prints optimizer configuration plus actor/critic parameter counts so logs capture the exact architecture used in each run.
+- **Activations**: Default hidden activation is **SiLU** (`--activation {relu, leaky_relu, silu}`), paired with a `tanh01` actor head (maps [-1,1] → [0,1]).
+
+### Key CLI Flags (`run.py`)
+
+Flags are grouped by what they primarily control; all defaults are chosen to reproduce the paper-style monthly swing setup and can be overridden from the command line.
+
+- **Training loop & evaluation**
+  - `-n_paths`, `-eval_every`, `-n_paths_eval`: number of training episodes, evaluation frequency, and evaluation sample size.  
+  - `-seed`: RNG seed for env and networks.  
+  - `--eval_batch_size`, `--eval_benchmark`, `--profile_eval`: batched evaluation throughput, evaluation-only runs, and cProfile of the eval path.
+
+- **Swing contract & LSM benchmark**
+  - `--strike`, `--maturity`, `--n_rights`, `--q_min`, `--q_max`, `--Q_min`, `--Q_max`, `--risk_free_rate`, `--min_refraction_periods`: financial contract and exercise/refraction constraints shared by RL and LSM/FDM.  
+  - `--c_cost`, `--gamma_cost`: convex per-exercise cost term.  
+  - `--lsm_basis`, `--lsm_degree`, `--lsm_reg`, `--lsm_reg_alpha`: LSM polynomial family, degree, and regularization.
+
+- **HHK stochastic process**
+  - `--S0`, `--alpha`, `--sigma`, `--beta`, `--lam`, `--mu_J`: parameters of the 2-factor OU-with-jumps HHK model used to generate spot paths.
+
+- **Algorithm switches (D4PG/DDPG variants)**
+  - `--device`: `"cpu"` or `"gpu"` (CUDA if available).  
+  - `-per` plus `--per_alpha`, `--per_beta_start`, `--per_beta_frames`, `--per_alpha_final`, `--per_beta_final`, `--per_alpha_ramp_start`, `--per_alpha_ramp_end`, `--per_alpha_sigmoid`, `--per_priority_floor`, `--per_priority_clip_pct`: enable and schedule Prioritized Experience Replay.  
+  - `-munchausen`: toggle Munchausen RL term in the critic target.  
+  - `-iqn`: switch between standard critic and distributional IQN critic.  
+  - `-nstep`, `--gamma`, `-t/--t`: N-step bootstrapping, discount factor, and Polyak target update rate.
+
+- **Exploration noise**
+  - Pre-squash Gaussian noise: `-noise_sigma0` (plateau std), `-noise_plateau` (episodes to hold σ0), `-noise_floor` (hyperbolic asymptote). Noise is added to the actor pre-activation, then squashed to [0,1].
+
+- **Network architecture & optimization**
+  - `-layer_size`: legacy width knob for both networks (default `64` → 2×64 MLPs).  
+  - `--actor_hidden_size`, `--critic_hidden_size`: per-network widths overriding `-layer_size`.  
+  - `--actor_layers`, `--critic_layers`: hidden depth (actor ≥1, critic ≥2).  
+  - `--activation`: hidden-layer nonlinearity for actor/critic/IQN (`silu` default; `relu` or `leaky_relu` optional); actor head remains `tanh01`, critic/IQN heads remain linear.  
+  - `-lr_a`, `-lr_c`: actor and critic learning rates.  
+  - `--optimizer`: `adam` or `adamw` (default).  
+  - `--weight_decay_actor`, `--weight_decay_critic`: decoupled weight decay; norms and biases are excluded automatically.  
+  - `--final_lr_fraction`, `--warmup_frac`, `--min_lr`: cosine-style LR warm-up and decay schedule controls.  
+  - `--actor_grad_clip`, `--critic_grad_clip`, `--actor_grad_clip_type`, `--critic_grad_clip_type`, `--grad_clip_norm_type`: optional gradient clipping configuration.  
+  - `--max_replay_size`, `--min_replay_size`, `-bs/--batch_size`: replay buffer capacity, warm-up length, and batch size.
+
+- **System & performance**
+  - `-n_cores`: cap on CPU cores used for PyTorch and environment stepping (defaults to all cores).  
+  - `--compile`: opt-in `torch.compile` for actor/critic/IQN.  
+  - `--fp32`: keep float32 default (1) or fall back to PyTorch’s default dtype (0).  
+  - `--saved_model`: load a saved actor for evaluation-only or continued training runs.
+
+### Exploration Noise (Pre-Squash)
+- Actions: `a = 0.5*(tanh(u) + 1)`, with Gaussian exploration injected in `u` (pre-activation) then squashed to [0,1]; this keeps noise effective near bounds.
+- Local sensitivity: `da/du = 0.5 * sech^2(u)`, so post-squash std ≈ `σ_a ≈ 0.5 * sech^2(u) * σ_u`. At `u=0`, `σ_a ≤ 0.5 σ_u`; as `|u|` grows, saturation dampens `σ_a`.
+- Schedule (v34 baseline): plateau `σ_u = σ0 = 1.3` for 3,200 episodes, then hyperbolic decay toward `σ_floor = 0.32`  
+  `σ_u(e) = σ_floor + (σ0 - σ_floor) / (1 + max(0, e - plateau) / plateau)`. v35 keeps the same shape with `σ_floor = 0.24`.
+
+```mermaid
+%%{init: {'theme':'base'}}%%
+line
+  title Pre-squash noise σ_u (plateau + hyperbolic decay)
+  xAxis Episodes
+  yAxis σ_u
+  series
+    label σ_u
+    data 0:1.30, 3200:1.30, 10000:0.63, 20000:0.48, 32768:0.42
+```
+
+| Episode | σ_u (v34) |
+| --- | --- |
+| 1 | 1.30 |
+| 3,200 (plateau end) | 1.30 |
+| 10,000 | ≈0.63 |
+| 20,000 | ≈0.48 |
+| 32,768 | ≈0.42 |
 
 ## Algorithm Features
 

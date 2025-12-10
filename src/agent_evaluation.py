@@ -108,7 +108,7 @@ def _build_state_batch(
     normalized_time = steps / contract.n_rights
     days_since_exercise = np.where(last_exercise_step >= 0, steps - last_exercise_step, steps)
 
-    state = np.empty((batch_size, 9), dtype=np.float32)
+    state = np.empty((batch_size, 9), dtype=S.dtype)
     state[:, 0] = spot_price - contract.strike
     state[:, 1] = q_exercised / contract.Q_max
     state[:, 2] = q_remaining / contract.Q_max
