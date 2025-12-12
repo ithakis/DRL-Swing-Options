@@ -34,7 +34,8 @@ class Agent:
                  per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 0.0,
                  per_alpha_final: Optional[float] = None, per_alpha_ramp_start: int = 0, per_alpha_ramp_end: int = 0,
                  per_beta_final: Optional[float] = None, per_alpha_sigmoid: bool = False,
-                 final_lr_fraction=1.0, total_episodes=None, warmup_frac=0.05, min_lr=1e-7,
+                 final_lr_fraction=1.0, total_episodes=None, warmup_frac: float = 0.05, warmup_episodes: Optional[int] = None, min_lr=1e-7,
+                 lr_schedule_episodes: Optional[int] = None,
                  actor_grad_clip: float = 0.0, critic_grad_clip: float = 0.0,
                  actor_grad_clip_type: str = "none", critic_grad_clip_type: str = "none",
                  grad_clip_norm_type: float = 2.0,
@@ -43,6 +44,7 @@ class Agent:
                  target_policy_noise: float = 0.1,
                  target_policy_clip: float = 0.25,
                  activation: str = "silu",
+                 log_interval_scale: float = 1.0,
                  **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
@@ -85,6 +87,9 @@ class Agent:
         if optimizer_name not in {"adam", "adamw"}:
             raise ValueError(f"Unsupported optimizer '{optimizer}'. Choose from 'adam', 'adamw'.")
         optim_cls = optim.AdamW if optimizer_name == "adamw" else optim.Adam
+        # AdamW betas tuned for actor/critic; fall back to library defaults for Adam.
+        self.actor_betas = (0.9, 0.99) if optimizer_name == "adamw" else None
+        self.critic_betas = (0.85, 0.99) if optimizer_name == "adamw" else None
 
         self.actor_hidden_size = actor_hidden_size
         self.critic_hidden_size = critic_hidden_size
@@ -99,10 +104,16 @@ class Agent:
         self.noise_plateau = max(0, int(noise_plateau))
         self.target_policy_noise = target_policy_noise
         self.target_policy_clip = target_policy_clip
+        self.log_interval_scale = max(1, int(round(log_interval_scale))) if log_interval_scale and log_interval_scale > 0 else 1
         # Diagnostics/logging cadence (skip most steps to cut overhead; does not affect training)
-        self.diagnostics_interval = max(100, int(self.LEARN_EVERY * 50))
-        self.per_stats_interval = max(self.LEARN_EVERY * 200, self.diagnostics_interval)
-        self.td_quantile_interval = max(100, int(self.LEARN_EVERY * 50))
+        base_diag_interval = max(100, int(self.LEARN_EVERY * 50))
+        base_td_interval = max(100, int(self.LEARN_EVERY * 50))
+        base_per_stats_interval = max(self.LEARN_EVERY * 200, base_diag_interval)
+        self.diagnostics_interval = int(base_diag_interval * self.log_interval_scale)
+        self.per_stats_interval = int(base_per_stats_interval * self.log_interval_scale)
+        self.td_quantile_interval = int(base_td_interval * self.log_interval_scale)
+        self.per_step_log_interval = int(max(1, self.LEARN_EVERY * self.log_interval_scale))
+        self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
         self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers, activation=self.activation).to(device)
         self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers, activation=self.activation).to(device)
@@ -112,6 +123,7 @@ class Agent:
             optim_cls=optim_cls,
             lr=LR_ACTOR,
             weight_decay=weight_decay_actor,
+            betas=self.actor_betas,
         )
 
         if distributional:
@@ -128,6 +140,7 @@ class Agent:
             optim_cls=optim_cls,
             lr=LR_CRITIC,
             weight_decay=weight_decay_critic,
+            betas=self.critic_betas,
         )
         self.critic_ema_decay = critic_ema_decay
         self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
@@ -175,10 +188,11 @@ class Agent:
                                                 device=device, seed=random_seed, gamma=GAMMA, use_memmap=BUFFER_SIZE > 500000)
 
         self.final_lr_fraction = final_lr_fraction
-        self.total_episodes = total_episodes or 10000
+        schedule_horizon = lr_schedule_episodes if lr_schedule_episodes is not None else total_episodes
+        self.total_episodes = max(1, int(schedule_horizon)) if schedule_horizon is not None else 65000
         self.warmup_frac = warmup_frac
+        self.warmup_episodes = max(1, int(warmup_episodes)) if warmup_episodes is not None else max(1, int(self.total_episodes * warmup_frac))
         self.min_lr = min_lr
-        warmup_episodes = int(self.total_episodes * warmup_frac)
 
         self.grad_clip_norm_type = grad_clip_norm_type
         if actor_grad_clip_type == "none" or not actor_grad_clip or actor_grad_clip <= 0:
@@ -198,12 +212,16 @@ class Agent:
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
                 return 1.0
-            if step < warmup_episodes:
-                return (step + 1) / max(1, warmup_episodes)
-            decay_steps = step - warmup_episodes
-            total_decay = max(1, self.total_episodes - warmup_episodes)
-            frac = final_lr_fraction ** (decay_steps / total_decay)
-            return max(min_lr / init_lr, frac)
+            episode = step + 1  # align scheduler step with 1-based episode indexing
+            if episode <= self.warmup_episodes:
+                scale = episode / self.warmup_episodes
+            elif episode < self.total_episodes:
+                t = (episode - self.warmup_episodes) / max(1, self.total_episodes - self.warmup_episodes)
+                cosine = 0.5 * (1.0 + math.cos(math.pi * t))
+                scale = final_lr_fraction + (1.0 - final_lr_fraction) * cosine
+            else:
+                scale = final_lr_fraction
+            return max(min_lr / init_lr, scale)
 
         if final_lr_fraction < 1.0:
             self.actor_scheduler = optim.lr_scheduler.LambdaLR(self.actor_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_ACTOR))
@@ -219,7 +237,7 @@ class Agent:
         self._last_iqn_spread = None
         self._episode_count = 0
 
-    def _build_optimizer(self, model: torch.nn.Module, optim_cls, lr: float, weight_decay: float):
+    def _build_optimizer(self, model: torch.nn.Module, optim_cls, lr: float, weight_decay: float, betas: Optional[Tuple[float, float]] = None):
         """Create optimizer with sensible weight decay exclusions."""
         params_decay = []
         params_no_decay = []
@@ -238,9 +256,13 @@ class Agent:
         if params_no_decay:
             param_groups.append({"params": params_no_decay, "weight_decay": 0.0})
 
+        optim_kwargs = {"lr": lr}
+        if betas is not None:
+            optim_kwargs["betas"] = betas
+
         if not param_groups:
-            return optim_cls(model.parameters(), lr=lr, weight_decay=0.0)
-        return optim_cls(param_groups, lr=lr)
+            return optim_cls(model.parameters(), weight_decay=0.0, **optim_kwargs)
+        return optim_cls(param_groups, **optim_kwargs)
 
     def _clip_gradients(self, parameters: Iterable[torch.nn.Parameter], clip_value: Optional[float], clip_type: str):
         """Apply gradient clipping according to the configured strategy. No-op when clip_value<=0 (default)."""
@@ -292,6 +314,10 @@ class Agent:
             return torch.sigmoid(preact)
         return torch.tanh(preact)
 
+    def _should_log(self, timestamp: int, interval: int) -> bool:
+        interval = max(1, int(interval))
+        return timestamp % interval == 0
+
     def act(self, state: np.ndarray, add_noise: bool = True):
         # Avoid train()/eval() toggling (expensive) while keeping inference_mode for no-grad
         state_t = torch.as_tensor(state, device=self.device, dtype=torch.get_default_dtype())
@@ -308,9 +334,11 @@ class Agent:
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         self.step_counter += 1
         self.memory.add(state, action, reward, next_state, done)
+        writer_available = writer is not None
+        log_step = timestamp  # keep TB index aligned with true environment step count
         if len(self.memory) < self.min_replay_size or len(self.memory) <= self.BATCH_SIZE:
-            if timestamp % 1000 == 0:
-                writer.add_scalar("Collection_Progress", len(self.memory) / self.min_replay_size * 100, timestamp)
+            if writer_available and self._should_log(timestamp, self.collection_progress_interval):
+                writer.add_scalar("Collection_Progress", len(self.memory) / self.min_replay_size * 100, log_step)
             return
         if timestamp % self.LEARN_EVERY != 0:
             return
@@ -319,14 +347,14 @@ class Agent:
         for _ in range(self.LEARN_NUMBER):
             last_batch = self.memory.sample()
             losses = self.learn(last_batch, self.GAMMA)
-        if losses:
-            writer.add_scalar("Critic_loss", losses[0], timestamp)
-            writer.add_scalar("Actor_loss", losses[1], timestamp)
-        if last_batch:
-            self._log_batch_diagnostics(last_batch, timestamp, writer)
-        if self.per and hasattr(self.memory, 'get_priority_stats') and timestamp % self.per_stats_interval == 0:
+        if losses and writer_available and self._should_log(timestamp, self.per_step_log_interval):
+            writer.add_scalar("Critic_loss", losses[0], log_step)
+            writer.add_scalar("Actor_loss", losses[1], log_step)
+        if last_batch and writer_available and self._should_log(timestamp, self.per_step_log_interval):
+            self._log_batch_diagnostics(last_batch, log_step, writer)
+        if self.per and hasattr(self.memory, 'get_priority_stats') and writer_available and self._should_log(timestamp, self.per_stats_interval):
             for k, v in self.memory.get_priority_stats().items():
-                writer.add_scalar(f"PER/{k}", v, timestamp)
+                writer.add_scalar(f"PER/{k}", v, log_step)
 
     def learn_(self, experiences, gamma) -> Tuple[float, float]:
         states, actions, rewards, next_states, dones, idx, weights = experiences

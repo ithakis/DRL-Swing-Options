@@ -229,7 +229,7 @@ def price_swing_option_lsm(
     reg_alpha: float = 1e-6,
     n_bootstrap: int = 1000,
     seed: Optional[int] = None,
-    csv_path: str = "swing_option_lsm_paths.csv",
+    csv_path: Optional[str] = "swing_option_lsm_paths.csv",
     _print_results: bool = False,
 ) -> Tuple[float, Tuple[float, float]]:
     """Price swing option using the Longstaff–Schwartz method.
@@ -255,7 +255,7 @@ def price_swing_option_lsm(
     seed : int, optional
         Random seed for bootstrap.
     csv_path : str, optional
-        Destination for CSV log of optimal exercises.
+        Destination for CSV log of optimal exercises (set to None to disable writing).
     """
     t, S, _, _ = dataset
     # Upcast to float64 for numerical stability and numba JIT friendliness
@@ -422,8 +422,9 @@ def price_swing_option_lsm(
                     "exercise_cost": pay_cost,
                 }
             )
-    # if _print_results: print(f'csv_path: {csv_path}')
-    pd.DataFrame(records).to_csv(csv_path, index=False)
+    if csv_path:
+        # if _print_results: print(f'csv_path: {csv_path}')
+        pd.DataFrame(records).to_csv(csv_path, index=False)
 
     price_estimate = path_payoffs.mean()
     rng = np.random.default_rng(seed)

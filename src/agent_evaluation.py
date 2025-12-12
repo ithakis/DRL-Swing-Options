@@ -519,7 +519,7 @@ def benchmark_evaluation(
     agent,
     eval_env,
     writer,
-    evaluations_dir: str,
+    evaluations_dir: Optional[str],
     lsm_price: Optional[float],
     csv_writer: Optional[Any],
     eval_batch_size: int = 1,

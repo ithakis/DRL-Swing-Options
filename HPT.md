@@ -13,6 +13,8 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
   - Action variance: Action_variance_mean stays tighter (~0.16–0.17 vs. v26 drifting above 0.19), Actions_at_upper_pct is visibly lower, and Actions_at_lower_pct remains at 0 (no lower-bound collapse). Target_drift decays faster for v33.
 - Exercise behavior: Avg_Exercise_Count stabilizes around 9–10 vs. v26’s 6–8; Avg_Total_Exercised holds ~11.5–12.2 (v26 sits lower early and recovers slowly).
 - Loss/TD metrics: Actor_loss declines more smoothly; TD_Error percentiles and PER priorities rise steadily without the spikes seen in weaker v26 seeds, indicating healthier replay focus.
+- Housekeeping: keep runvXX scripts identical except for parameter/value changes and version labels; preserve the comment blocks when copying to new versions.
+- Housekeeping (inline comments): carry over inline comments that annotate params in runvXX scripts and update them when values change; avoid dropping them between versions.
 - Mid-Late Training Dynamics (open): Having solved the early stage dynamics I then wanted to push the algorithm to the limits from around 15k episodes which it seems to plateau or even worsen. I have understood that I need to tune the interaction between exploration (normal noise added to the actor NN output), the priority in the prioritized experience replay network, and the learning rate of the networks. This remains open and will spend a couple of days to better understand the interaction.
 
 ## v34: Pre-squash exploration noise
@@ -38,6 +40,55 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
   - Average100 keeps flat/slightly up slopes after 20k (no reversals for strong early seeds); dispersion below v34.
   - Action_variance_mean stabilizes ~0.18–0.19; Actions_at_upper_pct flattens instead of rising.
   - PER priority_std growth slows after ~400k; priority_mean settles below v34’s ~0.42–0.45 band.
+
+## v35 results
+- Delta_Percent: converges and tightens late; one seed lags early/mid but catches up toward the end. Dispersion late smaller than v34; improvement aligns with lower LR/stronger IS.
+- Average100: broadly similar to v34; the lagging seed shows up here as well but others track close to v34.
+- Actor loss: higher mid/late vs. v34 (consistent with lower LR/stronger PER bias correction).
+- Critic loss: similar overall; slightly higher early and slightly lower late than v34.
+- PER: priority_mean/priority_std trend higher mid/late despite softer alpha; clipping not present in v35 (added in v36).
+- Target drift: lower in late stages; directionally positive for stability.
+- Epsilon: not used; perceived “lower epsilon” is the decaying pre-squash noise schedule.
+
+## v36: PER clipping + softer late bias, higher noise floor
+- Parameter changes vs. v35: added priority clipping at 99.5 pct; per_alpha_final lowered to 0.30 with a longer ramp to 20k; beta_final raised to 1.0; noise_floor bumped to 0.26; lr_a/lr_c trimmed to 1.9e-4/1.05e-4 (same final_lr_fraction=0.90); alpha ramp start unchanged (5k).
+- Delta_Percent: climbs faster early and reaches a slightly higher plateau than v35; seed spread is narrower than v35 late but still visible within the same episode (stochastic rewards likely widening the bands). Residual mid-run wiggles suggest a bit more late focusing could help.
+- Average100: most seeds higher in mid–late stages than v35; one seed sits ~0.05–0.1 below the cluster, pointing to under-updating for that run.
+- Losses/TD: critic_loss is lower in early–mid (then similar late); actor_loss trends slightly higher/less negative with one higher seed. TD percentiles sit below v35 across p50/p90/p99, consistent with smaller effective PER weights + lower LRs.
+- PER stats: priority_max is effectively flat (clip + beta_final=1 pushed PER toward uniform); priority_mean/std markedly lower vs. v35; entropy similar. PER is now almost neutral—good for stability, but may be under-weighting hard samples.
+- Policy/behavior: action_variance_mean similar to v35; actions_at_upper_pct higher (noise_floor 0.26) but no collapse. Avg_Exercise_Count/Avg_Total_Exercised drift lower than v35, implying a slightly more conservative exercise policy while still improving delta.
+- Stability: target_drift unchanged vs. v35; noise schedule unchanged aside from the higher floor.
+- Open items for next iteration: need a mechanism to pull the weakest seed up and tighten within-episode variance—likely by reintroducing mild PER focus without large spikes (e.g., slightly higher alpha_final or a gentler clip like 99.0) or a touch more late LR while keeping beta_final high. Could also test rolling the noise_floor back toward 0.24 if upper-bound pressure starts to increase.
+
+## v37: Cosine LR schedule (long horizon)
+- Change: Replace linear LR decay with a 5% warmup into cosine decay over a 65k-episode horizon; floor at 5% of initial LR (final_lr_fraction=0.05), warmup_frac=0.05, lr_schedule_episodes=65000. Training still stops at 32k.
+- Rationale: Keep aggressive learning through 32k (LR ≈0.56·η₀ at 32k) while allowing a seamless extension to ~65k episodes without retuning; should improve late stability without hurting mid-run updates.
+- What stayed the same: PER/noise schedules, optimizers, and all other hyperparameters from v36. LR logging remains in TensorBoard to visualize the new cosine curve.
+
+## v38: Cosine LR with fixed warmup episodes + slightly stronger late PER
+- Config deltas vs. v37: warmup_episodes=1024 (explicit), lr_a/lr_c back to 2.0e-4/1.1e-4, final_lr_fraction=0.08 (cosine horizon 65k), per_alpha_final=0.33, per_beta_final=0.98, priority_clip_pct=99.7. Noise unchanged (sigma0 1.3, floor 0.26).
+- Delta_Percent (blue): mid/late levels improve vs. v37 and v36; most seeds finish ~-1 to -1.8, one lagging around -2.2/-2.5. Seed spread narrower than v37, similar/slightly better than v36; early ramp marginally slower than v37 but catches up by ~12–15k.
+- Average100 (not shown): climbs steadily with a late plateau a touch above v37; the lagging Delta seed mirrors a small gap here.
+- Policy variance: action_variance_mean settles ~0.19–0.21 with actions_at_upper_pct in mid-20s/low-30s—higher than v36, lower than v37—keeping exploration without boundary push.
+- TD/losses: TD p50/p90/p99 track close to v37 with slightly lower p99 spread late; critic_loss is among the lowest late, actor_loss smooth with no late bumps.
+- PER stats: priority_mean/std above v36 but below v37; priority_max capped by the 99.7 clip; entropy stable. PER focus increased without reintroducing spikes.
+- Exercise behavior: Avg_Exercise_Count declines more slowly than v37 (stays ~9–9.5 vs. magenta drifting toward ~8–8.5); Avg_Total_Exercised remains ~11.5–12.5 with similar noise. No collapse observed.
+
+## v39 plan: soften late PER and decay LRs faster to tighten seed spread
+- Script changes (from v38): final_lr_fraction=0.20, lr_schedule_episodes=40000 (faster decay by 32k); per_alpha_final=0.20 with ramp_end=25000 (longer, softer PER); keep warmup_episodes=1024 and existing noise/per settings otherwise the same.
+- Optimizer (code-level): set AdamW betas to actor (0.9, 0.99) and critic (0.85, 0.99) to let the critic adapt faster to PER-driven variance while keeping the actor smoother.
+- Expectation: lower PER bias late plus quicker LR decay (~20–30% of initial LR by episode 32k) should reduce priority_std/TD p99 spread and pull weaker seeds toward the pack, trading a bit of peak LR for tighter convergence and lower seed-to-seed variance.
+
+## v40: Warmup calibration targets std=0.05 directly
+- Change: the 1,024-episode warmup now measures the untrained policy’s mean/std and rescales the actor head so `E[action]` hits `Q_max / n_rights` and `Std[action]` is fixed at 0.05. Removed the previous “99% mass in [0,1]” solver; still noise-free during warmup and mirrored to the target net.
+- Motivation: avoid relying on Gaussian mass assumptions and lock in a consistent, small exploration scale at startup; should reduce seed-to-seed variance in early behavior and keep actions away from bounds before noise is added.
+- Expected signals: action_variance_mean near 0.0025 at episode 0 (before added exploration noise), smoother initial TD errors, and fewer early action-at-upper spikes; downstream effects on delta spread to be validated against v39.
+- Results vs. v39 (green=v39, orange=v40): Delta_Percent/Avg100 similar late, but v40 shows wider early/mid spread and slightly higher TD p90/p99; action_variance_mean and Actions_at_upper_pct are higher and more dispersed, and Avg_Exercise_Count drifts lower. PER priority_mean/std trend higher for v40. Net: calibration helped early neutralization but the larger 0.05 std plus the same LR let seeds separate mid-run.
+
+## v41 plan: tighter init std + lower peak LRs
+- Code change: warmup target std reduced 10× (0.005) to start policies closer together and lessen early action variance before noise is added.
+- Script change: lower peak LRs while keeping the same schedule (warmup 1,024; cosine to 20% by 40k): actor LR 1.6e-4 (from 2.0e-4), critic LR 9.0e-5 (from 1.1e-4). All PER/noise/tau/clip settings remain as v40.
+- Rationale: images show mid-run divergence in action variance/Actions_at_upper_pct and TD p90/p99; lowering both the initial std and peak LRs should curb early overshoot and tighten seed spread without altering late decay behavior.
 
 ### Action variance progression (v23 → v26 → v33)
 - **v23**: Used early action L2 (cutoff ~4k) to fight boundary lock-in; helped two seeds but one still collapsed and delta hovered around -1.2 to -18 across seeds. Saturation risk persisted despite strong early regularization.

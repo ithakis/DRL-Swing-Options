@@ -76,7 +76,7 @@ def _bisect_root(fn, lo: float, hi: float, tol: float = 1e-6, max_iter: int = 10
     return 0.5 * (lo + hi)
 
 
-def _compute_target_sigma(target_mean: float, mass: float = 0.95) -> float:
+def _compute_target_sigma(target_mean: float, mass: float = 0.99) -> float:
     """
     Solve for sigma such that P(0 <= X <= 1) = mass for X ~ N(target_mean, sigma^2).
     Uses SciPy's brentq if available, otherwise falls back to bisection.
@@ -124,10 +124,10 @@ def _activation_slope_at_preact(preact_mean: float, activation: str) -> float:
     raise ValueError(f"Unsupported activation '{activation}'")
 
 
-def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: int = 1024, mass: float = 0.95) -> None:
+def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: int = 1024) -> None:
     """
     Use the first `episodes` rollouts (no training) to shift/scale the actor head so that
-    the average action matches Q_max / n_rights and 95% of the mass stays within [0,1].
+    the average action matches Q_max / n_rights and the action std is scaled to 0.05.
     Training still starts from episode 0 after resetting the environment counter.
     """
     if episodes <= 0:
@@ -137,7 +137,7 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     contract = env.contract
     per_step_q = contract.Q_max / contract.n_rights
     target_mean_action = float(np.clip(contract.normalize_action(per_step_q), 0.0, 1.0))
-    target_std_action = _compute_target_sigma(target_mean_action, mass=mass)
+    target_std_action = 0.005
 
     # Limit warmup to available paths
     available_paths = env.S.shape[0] if hasattr(env, "S") else episodes
@@ -327,6 +327,20 @@ class ConfigManager:
             "-seed", type=int, default=0, help="Seed for the env and torch network weights, default is 0"
         )
         parser.add_argument("-name", type=str, help="Name of the run (default: SwingOption_{timestamp})")
+        parser.add_argument(
+            "--disable_csv_logging",
+            type=int,
+            choices=[0, 1],
+            default=0,
+            help="Disable all CSV logging outputs (training/evaluation/LSM). Set 1 to disable, 0 to allow.",
+        )
+        parser.add_argument(
+            "--limit_logging_frequency",
+            type=int,
+            choices=[0, 1],
+            default=0,
+            help="Reduce per-step TensorBoard logging frequency by 10x to shrink event files. Set 1 to enable, 0 to disable.",
+        )
 
         # Swing Option Contract Parameters
         parser.add_argument(
@@ -520,10 +534,16 @@ class ConfigManager:
             help="Final learning rate as fraction of initial LR (1.0=no decay, 0.1=decay to 10%)",
         )
         parser.add_argument(
-            "--warmup_frac",
-            type=float,
-            default=0.05,
-            help="Fraction of total episodes for LR warm-up (default: 0.05 = 5%)",
+            "--warmup_episodes",
+            type=int,
+            default=1024,
+            help="Number of episodes for LR warm-up (ramps to full LR by this episode; default: 1024).",
+        )
+        parser.add_argument(
+            "--lr_schedule_episodes",
+            type=int,
+            default=65000,
+            help="Episode horizon for LR warmup+cosine schedule (can exceed training length; default: 65000).",
         )
         parser.add_argument(
             "--min_lr",
@@ -1145,6 +1165,7 @@ def run_training(
     start_time = time.time()
     episode_times = deque(maxlen=50)
     episode_steps = deque(maxlen=50)
+    episode_durations = deque(maxlen=100)
     # Legacy placeholders removed: no safe training or diagnostics logging
 
     # eval_every should not be 0, either -1 or >0
@@ -1169,6 +1190,7 @@ def run_training(
     for current_path in range(1, args.n_paths + 1):
         # Fix 3: Update episode count in PER for proper beta annealing
         agent.update_episode_count(current_path)
+        path_start_time = time.time()
         
         # Use pre-generated training path for this episode (1:1 mapping, no cycling)
         path_idx = current_path - 1  # Direct mapping: episode i uses training path i
@@ -1206,6 +1228,7 @@ def run_training(
 
         # Step learning rate schedulers at the end of each episode
         agent.step_lr_schedulers(current_path)
+        episode_durations.append(time.time() - path_start_time)
 
         # Calculate performance metrics
         paths_per_sec, steps_per_sec = TrainingManager.calculate_performance_metrics(
@@ -1254,8 +1277,17 @@ def run_training(
         last_price_display = f"{last_eval_price:.3f}" if last_eval_price is not None else "No Data"
         last_q_display = f"{last_avg_exercised:.3f}" if last_avg_exercised is not None else "No Data"
 
+        eta_str = ""
+        if current_path % 100 == 0 and len(episode_durations) > 0:
+            avg_dur = sum(episode_durations) / len(episode_durations)
+            remaining = max(0, args.n_paths - current_path)
+            eta_seconds = remaining * avg_dur
+            eta_hours = int(eta_seconds // 3600)
+            eta_minutes = int((eta_seconds % 3600) // 60)
+            eta_str = f" ({eta_hours:02d}:{eta_minutes:02d})"
+
         print(
-            f"Path {current_path}/{args.n_paths} | Last Price = {last_price_display} | "
+            f"Path {current_path}/{args.n_paths}{eta_str} | Last Price = {last_price_display} | "
             f"E[Q_t] = {last_q_display} | Average100 = {avg_100:.3f} | Paths/sec = {paths_per_sec:.1f}"
         )
 
@@ -1299,6 +1331,11 @@ def main():
 
     if args.eval_batch_size < 1:
         raise ValueError("eval_batch_size must be >= 1")
+
+    disable_csv_logging = bool(args.disable_csv_logging)
+    limit_logging_frequency = bool(args.limit_logging_frequency)
+    csv_logging_enabled = not disable_csv_logging
+    log_interval_scale = 10 if limit_logging_frequency else 1
 
     # Setup PyTorch optimizations
     ConfigManager.setup_pytorch_optimizations(args)
@@ -1353,16 +1390,19 @@ def main():
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype)
 
     ## Create Experiment Directory
-    exp_dir = 'logs/' + args.name # experiment dir
-    shutil.rmtree(exp_dir, ignore_errors=True) # Remove old experiment directory if it exists
-    os.makedirs(exp_dir) # create new experiment directory
-    # create "evaluations" subdirectory
-    os.makedirs(exp_dir + '/evaluations', exist_ok=True) # create new /evaluations subdirectory
+    evaluations_dir: Optional[str] = None
+    if csv_logging_enabled:
+        exp_dir = os.path.join("logs", args.name) # experiment dir
+        shutil.rmtree(exp_dir, ignore_errors=True) # Remove old experiment directory if it exists
+        os.makedirs(exp_dir, exist_ok=True) # create new experiment directory
+        # create "evaluations" subdirectory
+        evaluations_dir = os.path.join(exp_dir, "evaluations")
+        os.makedirs(evaluations_dir, exist_ok=True) # create new /evaluations subdirectory
 
     # Price with Monte Carlo - LSM Benchmark
-    evaluations_dir = exp_dir + '/evaluations'
     # LSM benchmark uses float64 for numba/SVD stability
     lsm_ds = tuple(np.asarray(arr, dtype=np.float64) for arr in eval_ds)
+    lsm_csv_path = os.path.join(evaluations_dir, "lsm.csv") if evaluations_dir else None
     mean_lsm_price, (th5q_price,th95q_price) = price_swing_option_lsm(
         contract=swing_contract,
         dataset=lsm_ds,
@@ -1371,7 +1411,7 @@ def main():
         reg_type=args.lsm_reg,
         reg_alpha=args.lsm_reg_alpha,
         seed=seed+1,
-        csv_path=evaluations_dir + '/lsm.csv'
+        csv_path=lsm_csv_path
     )
     print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")
     # Price with Quantlib - Finite Differences Method
@@ -1395,9 +1435,13 @@ def main():
     tensorboard_writer = SummaryWriter("runs/" + args.name)
     
     # Initialize AsyncCSVWriter for non-blocking CSV logging
-    csv_writer = AsyncCSVWriter()
-    csv_writer.start()
-    print("✅ AsyncCSVWriter initialized for evaluation logging")
+    csv_writer: Optional[AsyncCSVWriter] = None
+    if csv_logging_enabled:
+        csv_writer = AsyncCSVWriter()
+        csv_writer.start()
+        print("✅ AsyncCSVWriter initialized for evaluation logging")
+    else:
+        print("CSV logging disabled; skipping CSV writer initialization")
 
     # Get environment specs
     action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
@@ -1455,8 +1499,8 @@ def main():
         per_beta_final=args.per_beta_final,
         per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
         final_lr_fraction=args.final_lr_fraction,
-        total_episodes=args.n_paths,
-        warmup_frac=args.warmup_frac,
+        lr_schedule_episodes=args.lr_schedule_episodes,
+        warmup_episodes=args.warmup_episodes,
         min_lr=args.min_lr,
         actor_grad_clip=args.actor_grad_clip,
         critic_grad_clip=args.critic_grad_clip,
@@ -1464,6 +1508,7 @@ def main():
         critic_grad_clip_type=args.critic_grad_clip_type,
         grad_clip_norm_type=args.grad_clip_norm_type,
         activation=args.activation,
+        log_interval_scale=log_interval_scale,
     )
     t0 = time.time()
 
@@ -1472,7 +1517,7 @@ def main():
         print("WARNING: Pre-generated paths not available for saved model evaluation.")
     else:
         # Warm up the actor using the first 1024 episodes (no training) to match average action
-        warmup_calibrate_actor_outputs(agent, train_env, episodes=1024, mass=0.95)
+        warmup_calibrate_actor_outputs(agent, train_env, episodes=1024)
     
     if args.eval_benchmark:
         print("\nRunning standalone evaluation benchmark (evaluation only)...")
@@ -1487,7 +1532,9 @@ def main():
             profile=args.profile_eval,
         )
         eval_env.close()
-        csv_writer.stop()
+        if csv_writer:
+            csv_writer.stop()
+            print("✅ AsyncCSVWriter stopped - all CSV files written")
         TrainingManager.timer(t0, time.time())
         return
 
@@ -1514,8 +1561,9 @@ def main():
     eval_env.close()
     
     # Stop the CSV writer and wait for any pending writes
-    csv_writer.stop()
-    print("✅ AsyncCSVWriter stopped - all CSV files written")
+    if csv_writer:
+        csv_writer.stop()
+        print("✅ AsyncCSVWriter stopped - all CSV files written")
     
     TrainingManager.timer(t0, t1)
 
