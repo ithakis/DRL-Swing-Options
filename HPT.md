@@ -90,6 +90,17 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
 - Script change: lower peak LRs while keeping the same schedule (warmup 1,024; cosine to 20% by 40k): actor LR 1.6e-4 (from 2.0e-4), critic LR 9.0e-5 (from 1.1e-4). All PER/noise/tau/clip settings remain as v40.
 - Rationale: images show mid-run divergence in action variance/Actions_at_upper_pct and TD p90/p99; lowering both the initial std and peak LRs should curb early overshoot and tighten seed spread without altering late decay behavior.
 
+## v41 results (red vs. v39/v40 in green/yellow)
+- Delta_Percent: early ramp matches v40, mid/late spread tighter; one seed that led briefly drifted slightly late (likely eval noise). Overall convergence is smoother with less oscillation.
+- LR traces: reduced peaks as intended; smoother decay tracks match the v41 cosine with lower max.
+- TD errors: p50/p90/p99 sit slightly below v40; the p90 tail for v40 (yellow) runs higher—v41 cuts late TD variance.
+- Average100: overlays are virtually identical late; early/mid trajectories are smoother and slightly less noisy.
+- Exercise metrics: Avg_Exercise_Count drifts lower but stays clustered; Avg_Total_Exercised oscillates in a tighter band—no collapse.
+- Policy stats: action_variance_mean and Actions_at_upper_pct bands are narrower and centered lower than v40; Actions_at_lower_pct stays at 0.
+- Target drift: continues to decay smoothly; v41 aligns with or below v40 late.
+- PER stats: priority_mean/std sit below v40 late, indicating softer sampling skew; entropy/clip unchanged.
+- Losses: actor/critic losses descend more smoothly with smaller spread, consistent with lower step sizes and smaller init std.
+
 ### Action variance progression (v23 → v26 → v33)
 - **v23**: Used early action L2 (cutoff ~4k) to fight boundary lock-in; helped two seeds but one still collapsed and delta hovered around -1.2 to -18 across seeds. Saturation risk persisted despite strong early regularization.
 - **v26**: Switched to tanh01 output mapped to [0, 1], boosted exploration floor (noise_floor 0.18, plateau 3.2k), and scheduled PER (alpha ramp 5k→15k). This eliminated collapse without action L2; actions_at_upper_pct dropped into the low 20s%, and delta_percent improved to roughly -0.5 to -1.1 on best seeds.
