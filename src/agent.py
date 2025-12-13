@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import math
 
 try:
@@ -44,7 +43,10 @@ class Agent:
                  target_policy_noise: float = 0.1,
                  target_policy_clip: float = 0.25,
                  activation: str = "silu",
+                 norm_type: str = "layernorm",
+                 use_compile: bool = False,
                  log_interval_scale: float = 1.0,
+                 replay_memmap: bool = False,
                  **kwargs):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
@@ -83,6 +85,28 @@ class Agent:
         if self.activation not in {"relu", "leaky_relu", "silu"}:
             raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
 
+        self.norm_type = (norm_type or "layernorm").lower()
+        if self.norm_type not in {"layernorm", "rmsnorm", "none"}:
+            raise ValueError(f"Unsupported norm_type '{norm_type}'. Choose from 'layernorm', 'rmsnorm', or 'none'.")
+
+        self.use_compile = bool(use_compile)
+        self._actor_forward_preact = None
+        self._compile_kwargs = {"mode": "reduce-overhead"}
+        if getattr(self.device, "type", "cpu") != "cuda":
+            # Avoid Inductor CUDA-graph related logging/overhead on non-CUDA devices.
+            self._compile_kwargs["options"] = {"triton.cudagraphs": False}
+
+        def _compile(obj):
+            if not (self.use_compile and hasattr(torch, "compile")):
+                return obj
+            try:
+                return torch.compile(obj, **self._compile_kwargs)  # type: ignore[misc]
+            except TypeError:
+                # Older torch.compile builds may not accept 'options'.
+                kwargs = dict(self._compile_kwargs)
+                kwargs.pop("options", None)
+                return torch.compile(obj, **kwargs)  # type: ignore[misc]
+
         optimizer_name = optimizer.lower()
         if optimizer_name not in {"adam", "adamw"}:
             raise ValueError(f"Unsupported optimizer '{optimizer}'. Choose from 'adam', 'adamw'.")
@@ -103,7 +127,8 @@ class Agent:
         self.noise_floor = float(noise_floor)
         self.noise_plateau = max(0, int(noise_plateau))
         self.target_policy_noise = target_policy_noise
-        self.target_policy_clip = target_policy_clip
+        # Clipping functionality is intentionally disabled; keep attribute for backward-compat.
+        self.target_policy_clip = None
         self.log_interval_scale = max(1, int(round(log_interval_scale))) if log_interval_scale and log_interval_scale > 0 else 1
         # Diagnostics/logging cadence (skip most steps to cut overhead; does not affect training)
         base_diag_interval = max(100, int(self.LEARN_EVERY * 50))
@@ -115,9 +140,41 @@ class Agent:
         self.per_step_log_interval = int(max(1, self.LEARN_EVERY * self.log_interval_scale))
         self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
-        self.actor_local = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers, activation=self.activation).to(device)
-        self.actor_target = Actor(state_size, action_size, random_seed, hidden_size=actor_hidden_size, n_layers=actor_layers, activation=self.activation).to(device)
+        self.actor_local = Actor(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=actor_hidden_size,
+            n_layers=actor_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+        ).to(device)
+        self.actor_target = Actor(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=actor_hidden_size,
+            n_layers=actor_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+        ).to(device)
         self.actor_target.load_state_dict(self.actor_local.state_dict())
+        self._actor_action_output = getattr(self.actor_local, "action_output", "tanh")
+        self._actor_apply_profitability_gate = getattr(self.actor_local, "apply_profitability_gate", None)
+
+        if self.use_compile and hasattr(torch, "compile"):
+            try:
+                self._actor_local_orig = self.actor_local
+                self.actor_local = _compile(self.actor_local)
+                self.actor_target = _compile(self.actor_target)
+                # Compile the hot-path used by act(), which calls forward_preact directly.
+                self._actor_forward_preact = _compile(self._actor_local_orig.forward_preact)
+            except Exception:
+                self.use_compile = False
+                self._actor_forward_preact = None
+        if self._actor_forward_preact is None:
+            self._actor_forward_preact = self.actor_local.forward_preact
+
         self.actor_optimizer = self._build_optimizer(
             model=self.actor_local,
             optim_cls=optim_cls,
@@ -128,13 +185,56 @@ class Agent:
 
         if distributional:
             self.N = 32
-            self.critic_local = IQN(state_size, action_size, layer_size=critic_hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
-            self.critic_target = IQN(state_size, action_size, layer_size=critic_hidden_size, device=device, seed=random_seed, dueling=False, N=self.N).to(device)
+            self.critic_local = IQN(
+                state_size,
+                action_size,
+                layer_size=critic_hidden_size,
+                device=device,
+                seed=random_seed,
+                dueling=False,
+                N=self.N,
+                norm_type=self.norm_type,
+            ).to(device)
+            self.critic_target = IQN(
+                state_size,
+                action_size,
+                layer_size=critic_hidden_size,
+                device=device,
+                seed=random_seed,
+                dueling=False,
+                N=self.N,
+                norm_type=self.norm_type,
+            ).to(device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
-            self.critic_local = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers, activation=self.activation).to(device)
-            self.critic_target = Critic(state_size, action_size, random_seed, hidden_size=critic_hidden_size, n_layers=critic_layers, activation=self.activation).to(device)
+            self.critic_local = Critic(
+                state_size,
+                action_size,
+                random_seed,
+                hidden_size=critic_hidden_size,
+                n_layers=critic_layers,
+                activation=self.activation,
+                norm_type=self.norm_type,
+            ).to(device)
+            self.critic_target = Critic(
+                state_size,
+                action_size,
+                random_seed,
+                hidden_size=critic_hidden_size,
+                n_layers=critic_layers,
+                activation=self.activation,
+                norm_type=self.norm_type,
+            ).to(device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
+
+        if self.use_compile and hasattr(torch, "compile"):
+            try:
+                self._critic_local_orig = self.critic_local
+                self.critic_local = _compile(self.critic_local)
+                self.critic_target = _compile(self.critic_target)
+            except Exception:
+                self.use_compile = False
+
         self.critic_optimizer = self._build_optimizer(
             model=self.critic_local,
             optim_cls=optim_cls,
@@ -176,16 +276,18 @@ class Agent:
 
         if per:
             self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step,
-                                            parallel_env=1, alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames)
+                                            parallel_env=1, alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames,
+                                            use_memmap=bool(replay_memmap))
             # Configure PER priority stability
             try:
                 self.memory.min_priority = per_priority_floor
-                self.memory.priority_clip_pct = per_priority_clip_pct
             except Exception:
                 pass
         else:
             self.memory = CircularReplayBuffer(buffer_size=BUFFER_SIZE, batch_size=BATCH_SIZE, n_step=n_step, parallel_env=1,
-                                                device=device, seed=random_seed, gamma=GAMMA, use_memmap=BUFFER_SIZE > 500000)
+                                                device=device, seed=random_seed, gamma=GAMMA, use_memmap=bool(replay_memmap) or BUFFER_SIZE > 500000)
+        self._per_update_priorities = bool(per) and hasattr(self.memory, "update_priorities")
+        self._per_has_priority_stats = bool(per) and hasattr(self.memory, "get_priority_stats")
 
         self.final_lr_fraction = final_lr_fraction
         schedule_horizon = lr_schedule_episodes if lr_schedule_episodes is not None else total_episodes
@@ -194,20 +296,12 @@ class Agent:
         self.warmup_episodes = max(1, int(warmup_episodes)) if warmup_episodes is not None else max(1, int(self.total_episodes * warmup_frac))
         self.min_lr = min_lr
 
+        # Clipping functionality (grad clipping) is intentionally disabled.
         self.grad_clip_norm_type = grad_clip_norm_type
-        if actor_grad_clip_type == "none" or not actor_grad_clip or actor_grad_clip <= 0:
-            self.actor_grad_clip = None
-            self.actor_grad_clip_type = "none"
-        else:
-            self.actor_grad_clip = actor_grad_clip
-            self.actor_grad_clip_type = actor_grad_clip_type if actor_grad_clip_type in {"norm", "value"} else "norm"
-        if critic_grad_clip_type == "none" or not critic_grad_clip or critic_grad_clip <= 0:
-            self.critic_grad_clip = None
-            self.critic_grad_clip_type = "none"
-        else:
-            self.critic_grad_clip = critic_grad_clip
-            self.critic_grad_clip_type = critic_grad_clip_type if critic_grad_clip_type in {"norm", "value"} else "norm"
-        # Default behavior keeps clipping disabled; users can enable it via positive thresholds.
+        self.actor_grad_clip = None
+        self.actor_grad_clip_type = "none"
+        self.critic_grad_clip = None
+        self.critic_grad_clip_type = "none"
 
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
@@ -264,15 +358,6 @@ class Agent:
             return optim_cls(model.parameters(), weight_decay=0.0, **optim_kwargs)
         return optim_cls(param_groups, **optim_kwargs)
 
-    def _clip_gradients(self, parameters: Iterable[torch.nn.Parameter], clip_value: Optional[float], clip_type: str):
-        """Apply gradient clipping according to the configured strategy. No-op when clip_value<=0 (default)."""
-        if clip_value is None or clip_value <= 0:
-            return
-        if clip_type == "norm":
-            clip_grad_norm_(parameters, clip_value, norm_type=self.grad_clip_norm_type)
-        elif clip_type == "value":
-            clip_grad_value_(parameters, clip_value)
-
     def update_episode_count(self, episode: int):
         """Update internal episode counter (used for PER beta annealing in caller)."""
         self._episode_count = episode
@@ -307,7 +392,7 @@ class Agent:
 
     def _squash(self, preact: torch.Tensor) -> torch.Tensor:
         """Map pre-activation values to action space matching actor output activation."""
-        action_output = getattr(self.actor_local, "action_output", "tanh")
+        action_output = self._actor_action_output
         if action_output == "tanh01":
             return 0.5 * (torch.tanh(preact) + 1.0)
         if action_output == "sigmoid":
@@ -319,17 +404,25 @@ class Agent:
         return timestamp % interval == 0
 
     def act(self, state: np.ndarray, add_noise: bool = True):
+        self._maybe_init_profitability_params()
         # Avoid train()/eval() toggling (expensive) while keeping inference_mode for no-grad
         state_t = torch.as_tensor(state, device=self.device, dtype=torch.get_default_dtype())
         with torch.inference_mode():
-            preact = self.actor_local.forward_preact(state_t)
+            preact = self._actor_forward_preact(state_t)  # type: ignore[misc]
             if add_noise:
                 sigma = self._pre_noise_sigma()
                 if sigma > 0:
                     preact = preact + torch.randn_like(preact) * sigma
-            action_t = self._squash(preact)
+            # Exploration noise is applied pre-gate; the executed action is always profitability-gated.
+            q_raw = self._squash(preact)
+            apply_gate = self._actor_apply_profitability_gate
+            if apply_gate is not None:
+                action_t = apply_gate(q_raw=q_raw, state=state_t)
+            else:
+                action_t = q_raw
         action = action_t.cpu().numpy()
-        return np.clip(action, 0.0, 1.0)
+        np.clip(action, 0.0, 1.0, out=action)
+        return action
 
     def step(self, state, action, reward, next_state, done, timestamp, writer):
         self.step_counter += 1
@@ -352,24 +445,32 @@ class Agent:
             writer.add_scalar("Actor_loss", losses[1], log_step)
         if last_batch and writer_available and self._should_log(timestamp, self.per_step_log_interval):
             self._log_batch_diagnostics(last_batch, log_step, writer)
-        if self.per and hasattr(self.memory, 'get_priority_stats') and writer_available and self._should_log(timestamp, self.per_stats_interval):
+        if self._per_has_priority_stats and writer_available and self._should_log(timestamp, self.per_stats_interval):
             for k, v in self.memory.get_priority_stats().items():
                 writer.add_scalar(f"PER/{k}", v, log_step)
 
     def learn_(self, experiences, gamma) -> Tuple[float, float]:
+        self._maybe_init_profitability_params()
         states, actions, rewards, next_states, dones, idx, weights = experiences
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
+        if states.device != self.device:
+            states = states.to(self.device)
+        if actions.device != self.device:
+            actions = actions.to(self.device)
+        if rewards.device != self.device:
+            rewards = rewards.to(self.device)
+        if next_states.device != self.device:
+            next_states = next_states.to(self.device)
+        if dones.device != self.device:
+            dones = dones.to(self.device)
         if weights is not None:
-            weights = weights.to(self.device)
+            if weights.device != self.device:
+                weights = weights.to(self.device)
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
             if self.target_policy_noise and self.target_policy_noise > 0:
-                noise = (torch.randn_like(next_actions) * self.target_policy_noise).clamp(-self.target_policy_clip, self.target_policy_clip)
-                next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+                # No clipping of target policy noise (intentional).
+                noise = (torch.randn_like(next_actions) * self.target_policy_noise)
+                next_actions = next_actions + noise
             q_next = self.critic_target(next_states, next_actions)
             if not self.munchausen:
                 q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
@@ -397,14 +498,12 @@ class Agent:
             priorities = None
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
-        self._clip_gradients(self._critic_params, self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
         actions_pred = self.actor_local(states)
         q_val = self.critic_local(states, actions_pred)
         actor_loss = -q_val.mean()
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
-        self._clip_gradients(self._actor_params, self.actor_grad_clip, self.actor_grad_clip_type)
         self.actor_optimizer.step()
         self._updates_done += 1
         if self.step_counter % 200 == 0:
@@ -414,11 +513,12 @@ class Agent:
         self.soft_update(self.critic_local, self.critic_target)
         self.soft_update(self.actor_local, self.actor_target)
         self._update_ema_buffers()
-        if self.per and priorities is not None and hasattr(self.memory, 'update_priorities'):
+        if self._per_update_priorities and priorities is not None:
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
         return critic_loss.item(), actor_loss.item()
 
     def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
+        self._maybe_init_profitability_params()
         states, actions, rewards, next_states, dones, idx, weights = experiences
         states = states.to(self.device)
         actions = actions.to(self.device)
@@ -430,8 +530,9 @@ class Agent:
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
             if self.target_policy_noise and self.target_policy_noise > 0:
-                noise = (torch.randn_like(next_actions) * self.target_policy_noise).clamp(-self.target_policy_clip, self.target_policy_clip)
-                next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+                # No clipping of target policy noise (intentional).
+                noise = (torch.randn_like(next_actions) * self.target_policy_noise)
+                next_actions = next_actions + noise
             qt_next, _ = self.critic_target(next_states, next_actions, self.N)
             qt_next = qt_next.transpose(1, 2)
             if not self.munchausen:
@@ -452,7 +553,6 @@ class Agent:
             critic_loss = quantile_loss.mean()
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        self._clip_gradients(self.critic_local.parameters(), self.critic_grad_clip, self.critic_grad_clip_type)
         self.critic_optimizer.step()
 
         actions_pred = self.actor_local(states)
@@ -460,7 +560,6 @@ class Agent:
         actor_loss = -q_pred.mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        self._clip_gradients(self.actor_local.parameters(), self.actor_grad_clip, self.actor_grad_clip_type)
         self.actor_optimizer.step()
         self._updates_done += 1
         if self.per and hasattr(self.memory, 'update_priorities'):
@@ -559,6 +658,65 @@ class Agent:
         self.memory.set_frame_count(0)
         self.memory._cache_valid = False
         self.memory._cumsum_valid = False
+
+    def _maybe_init_profitability_params(self) -> None:
+        """Best-effort init of Actor profitability gate params from an env/contract in the call stack.
+
+        Keeps changes localized (no extra wiring): if an object with a `.contract` is present in
+        the caller stack (e.g., run_training(train_env=...)), we pull q/cost params from it.
+        """
+        if getattr(self, "_profitability_params_initialized", False):
+            return
+
+        # Allow explicit wiring by setting self.contract or self.env externally.
+        contract = getattr(self, "contract", None)
+        if contract is None:
+            env = getattr(self, "env", None)
+            contract = getattr(env, "contract", None) if env is not None else None
+
+        if contract is None:
+            import inspect
+
+            frame = inspect.currentframe()
+            try:
+                while frame is not None:
+                    for obj in frame.f_locals.values():
+                        cand = getattr(obj, "contract", None)
+                        if cand is None and hasattr(obj, "unwrapped"):
+                            cand = getattr(getattr(obj, "unwrapped", None), "contract", None)
+                        if cand is None:
+                            cand = obj
+                        if all(hasattr(cand, k) for k in ("q_min", "q_max", "c_cost", "gamma_cost")):
+                            contract = cand
+                            break
+                    if contract is not None:
+                        break
+                    frame = frame.f_back
+            finally:
+                del frame
+
+        if contract is None:
+            return
+
+        try:
+            q_min = float(getattr(contract, "q_min"))
+            q_max = float(getattr(contract, "q_max"))
+            c_cost = float(getattr(contract, "c_cost"))
+            gamma_cost = float(getattr(contract, "gamma_cost"))
+        except Exception:
+            return
+
+        for actor in (self.actor_local, self.actor_target):
+            if hasattr(actor, "set_profitability_params"):
+                actor.set_profitability_params(
+                    q_min=q_min,
+                    q_max=q_max,
+                    c_cost=c_cost,
+                    gamma_cost=gamma_cost,
+                    s_minus_k_index=0,  # SwingOptionEnv puts (S-K) at state[0]
+                )
+
+        self._profitability_params_initialized = True
 
     def get_critic_eval_state(self):
         """Return EMA-smoothed critic parameters for evaluation if available."""

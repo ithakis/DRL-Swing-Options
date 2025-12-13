@@ -38,6 +38,65 @@ This implementation combines:
 - Configurable gradient clipping for actor/critic (`--actor_grad_clip`, `--critic_grad_clip`) with norm/value modes; disabled by default for speed, but available when stability demands it.
 - Convex per-exercise cost term controllable via `--c_cost` and `--gamma_cost`, shared between the RL environment and LSM benchmark (defaults keep the cost disabled).
 - Default hidden activation switched to **SiLU** (configurable via `--activation {relu, leaky_relu, silu}`) to smooth gradients and improve initial action variance.
+- **v42 architecture**: profitability-constrained actor output using a hard gate + Straight-Through Estimator (STE), with exploration noise applied pre-gate so the executed policy never exercises unprofitably.
+
+## Neural Network Architecture (v42)
+
+### Actor: profitability-gated continuous policy
+
+The actor is a lightweight MLP (default `2×64`, `LayerNorm` + `SiLU`) with a `tanh01` output head producing a normalized proposal `q_raw ∈ [0,1]`. In v42 we add an **actor-level feasibility layer** that enforces a *hard* profitability constraint for swing exercise with convex costs:
+
+- Immediate profit used for gating:
+  - `Pi(q) = q * relu(S - K) - c_cost * q**gamma_cost`
+- The actor output is gated as:
+  - if `Pi(q_raw) <= 0` → execute `q = 0`
+  - else → execute `q = q_raw`
+
+To avoid killing gradients in the masked region, the hard gate uses a **Straight-Through Estimator (STE)**: the forward pass uses the hard-gated action, while the backward pass propagates gradients as if the ungated `q_raw` was used.
+
+Implementation lives in:
+- `src/networks.py` (`Actor.apply_profitability_gate`, `Actor.forward_raw_and_gated`)
+- `src/agent.py` (`Agent.act` applies noise pre-gate, then gates)
+
+### Exploration: noise is applied pre-gate
+
+Exploration noise is added in pre-activation space (before the `tanh01` squash) to form `q_raw`, and then the profitability gate is applied. Noise is **never** applied after gating. This keeps exploration effective near the profitability boundary while ensuring the environment never receives an unprofitable exercise due to noise.
+
+### Why choose this over env-only masking?
+
+The environment already applies a safety mask (sets `q=0` when realized net payoff is non-positive). However, env-only masking can create an off-policy learning mismatch: the replay buffer contains the proposed action while the environment executes a different masked action. That tends to flatten value gradients near the true profitability boundary (“mask-banging”) and increases seed-to-seed variability.
+
+By moving the constraint into the actor:
+- executed actions are feasible-by-construction,
+- the critic is trained on actions consistent with the resulting rewards/next-states,
+- the actor is optimized for the *executed* policy (not a policy that is later corrected downstream),
+- seed robustness improves, especially late.
+
+### Empirical impact (v42 vs v41)
+
+Across the v41/v42 3-seed comparison runs, v42 shows:
+- noticeably tighter late-stage seed-to-seed variance in `Pricing/Delta_Percent`,
+- cleaner bands for `Policy/Action_variance_mean` and `Policy/Actions_at_upper_pct`,
+- more stable/consistent exercise behavior metrics (less regime-dependent variance),
+- small shifts in PER/TD-error statistics consistent with learning a sharper (more correct) boundary rather than exploiting a masked degeneracy.
+
+For a detailed discussion of the metric-by-metric differences and the evaluation-noise interpretation, see `HPT.md` (v42 section).
+
+### Related work (similar ideas)
+
+This design combines two well-known patterns:
+
+1) **Feasibility / safety layers** that enforce constraints by construction (often via projection or post-processing of actions), e.g.:
+   - Dalal et al. (2018), *Safe Exploration in Continuous Action Spaces* (safety layer style constraints)
+   - Achiam et al. (2017), *Constrained Policy Optimization* (constraint satisfaction as a first-class objective)
+   - Amos & Kolter (2017), *OptNet* (differentiable optimization layers; a heavier-weight alternative to hard gating)
+
+2) **Straight-through estimators** to train through discrete / non-differentiable decisions:
+   - Bengio et al. (2013), *Estimating or Propagating Gradients Through Stochastic Neurons*
+   - Courbariaux et al. (2015), *BinaryConnect* (popularizing STE in practice)
+   - Jang et al. (2017) / Maddison et al. (2017), *Gumbel-Softmax / Concrete distributions* (stochastic relaxations; alternative to hard STE gating)
+
+Our v42 choice is the “engineering-optimal” point for this repo: a minimal, transparent feasibility constraint that preserves gradient flow without introducing additional Lagrange multipliers, constraint critics, or high-variance estimators.
 
 ## Mathematical Framework
 
@@ -222,6 +281,7 @@ Flags are grouped by what they primarily control; all defaults are chosen to rep
   - `--actor_hidden_size`, `--critic_hidden_size`: per-network widths overriding `-layer_size`.  
   - `--actor_layers`, `--critic_layers`: hidden depth (actor ≥1, critic ≥2).  
   - `--activation`: hidden-layer nonlinearity for actor/critic/IQN (`silu` default; `relu` or `leaky_relu` optional); actor head remains `tanh01`, critic/IQN heads remain linear.  
+  - `--norm`: normalization layer in actor/critic/IQN MLPs (`layernorm` default; `rmsnorm` or `none`).  
   - `-lr_a`, `-lr_c`: actor and critic learning rates.  
   - `--optimizer`: `adam` or `adamw` (default).  
   - `--weight_decay_actor`, `--weight_decay_critic`: decoupled weight decay; norms and biases are excluded automatically.  

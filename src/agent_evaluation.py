@@ -158,6 +158,8 @@ def _evaluate_swing_batch(
     contract,
     dataset: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     batch_indices: Sequence[int],
+    *,
+    collect_path_data: bool,
 ) -> Tuple[List[float], List[Dict[str, Any]], List[List[float]]]:
     """Evaluate a batch of paths with batched policy inference."""
     _, S, X, Y = dataset
@@ -173,7 +175,7 @@ def _evaluate_swing_batch(
     exercise_count = np.zeros(batch_size, dtype=np.int64)
     done = np.zeros(batch_size, dtype=bool)
 
-    log_rows: List[np.ndarray] = []
+    log_rows: List[np.ndarray] = [] if collect_path_data else []
 
     while not np.all(done):
         active_idx = np.nonzero(~done)[0]
@@ -218,19 +220,20 @@ def _evaluate_swing_batch(
         exercised_mask = q_actual > 1e-6
         last_exercise_step[active_idx[exercised_mask]] = active_steps[exercised_mask]
 
-        # Log step data per path before state advances
-        step_numbers = step_counts[active_idx]
-        rows = np.column_stack(
-            (
-                active_paths,
-                step_numbers,
-                state_batch,
-                q_actual,
-                exercise_cost,
-                discounted_reward,
+        if collect_path_data:
+            # Log step data per path before state advances
+            step_numbers = step_counts[active_idx]
+            rows = np.column_stack(
+                (
+                    active_paths,
+                    step_numbers,
+                    state_batch,
+                    q_actual,
+                    exercise_cost,
+                    discounted_reward,
+                )
             )
-        )
-        log_rows.append(rows)
+            log_rows.append(rows)
 
         # Apply environment transitions
         q_exercised[active_idx] += q_actual
@@ -249,20 +252,18 @@ def _evaluate_swing_batch(
     exercise_stats: List[Dict[str, Any]] = []
     all_path_data: List[List[float]] = []
 
-    if log_rows:
+    if collect_path_data and log_rows:
         stacked_rows = np.concatenate(log_rows, axis=0)
         order = np.lexsort((stacked_rows[:, 1], stacked_rows[:, 0]))
         all_path_data.extend(stacked_rows[order].tolist())
 
-    for local_idx, path_id in enumerate(batch_indices_arr.tolist()):
+    for local_idx in range(batch_size):
         discounted_returns.append(float(episode_return[local_idx]))
-        exercise_stats.append(
-            {
-                "total_exercised": float(total_exercised[local_idx]),
-                "exercise_count": int(exercise_count[local_idx]),
-                "steps": int(step_counts[local_idx]),
-            }
-        )
+        exercise_stats.append({
+            "total_exercised": float(total_exercised[local_idx]),
+            "exercise_count": int(exercise_count[local_idx]),
+            "steps": int(step_counts[local_idx]),
+        })
 
     return discounted_returns, exercise_stats, all_path_data
 
@@ -379,17 +380,23 @@ def _evaluate_swing_agent(
 
     discounted_returns: List[float] = []
     exercise_stats: List[Dict[str, Any]] = []
-    all_path_data: List[List[float]] = []
+    collect_path_data = bool(evaluations_dir)
+    all_path_data: List[List[float]] = [] if collect_path_data else []
 
     for start in range(0, n_paths, batch_size):
         end = min(start + batch_size, n_paths)
         batch_indices = list(range(start, end))
         batch_returns, batch_stats, batch_rows = _evaluate_swing_batch(
-            agent, eval_env.contract, dataset, batch_indices
+            agent,
+            eval_env.contract,
+            dataset,
+            batch_indices,
+            collect_path_data=collect_path_data,
         )
         discounted_returns.extend(batch_returns)
         exercise_stats.extend(batch_stats)
-        all_path_data.extend(batch_rows)
+        if collect_path_data:
+            all_path_data.extend(batch_rows)
 
     eval_env._episode_counter = -1
 
@@ -400,7 +407,7 @@ def _evaluate_swing_agent(
     confidence_95 = float(1.96 * price_std / np.sqrt(n_paths))
     csv_filename = None
 
-    if evaluations_dir:
+    if evaluations_dir and collect_path_data:
         os.makedirs(evaluations_dir, exist_ok=True)
         csv_filename = f"rl_episode_{path if path is not None else 0}.csv"
         csv_filepath = os.path.join(evaluations_dir, csv_filename)

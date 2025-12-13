@@ -118,6 +118,32 @@ def _build_activation(activation: str) -> Tuple[Callable[[], nn.Module], float]:
     raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
 
 
+class _RMSNorm(nn.Module):
+    """Minimal RMSNorm fallback for older PyTorch builds."""
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-8) -> None:
+        super().__init__()
+        self.eps = float(eps)
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+
+    def forward(self, x: Tensor) -> Tensor:
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        return x / rms * self.weight
+
+
+def _build_norm(norm_type: str, hidden_size: int) -> nn.Module:
+    norm = (norm_type or "layernorm").lower()
+    if norm in {"layernorm", "ln", "layer_norm"}:
+        return nn.LayerNorm(hidden_size)
+    if norm in {"rmsnorm", "rms", "rms_norm"}:
+        if hasattr(nn, "RMSNorm"):
+            return nn.RMSNorm(hidden_size)  # type: ignore[attr-defined]
+        return _RMSNorm(hidden_size)
+    if norm in {"none", "identity", "no"}:
+        return nn.Identity()
+    raise ValueError("Unsupported norm_type. Choose from {'layernorm', 'rmsnorm', 'none'}.")
+
+
 class Actor(nn.Module):
     """Actor (Policy) network for continuous control.
     
@@ -137,6 +163,7 @@ class Actor(nn.Module):
         target_action_mean: Optional[float] = 0.5,
         target_action_std: Optional[float] = math.sqrt(1.0 / 12.0),
         activation: str = "silu",
+        norm_type: str = "layernorm",
     ) -> None:
         """Initialize the Actor network.
         
@@ -174,13 +201,14 @@ class Actor(nn.Module):
         self.target_action_std = target_action_std
         self.activation_name = activation.lower()
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
+        self.norm_type = norm_type.lower()
 
         layers: List[nn.Sequential] = []
         input_dim = state_size
         for _ in range(n_layers):
             block = nn.Sequential(
                 nn.Linear(input_dim, hidden_size, bias=True),
-                nn.LayerNorm(hidden_size),  # LayerNorm is more stable than BatchNorm in RL
+                _build_norm(self.norm_type, hidden_size),
                 self._activation_factory()
             )
             layers.append(block)
@@ -190,6 +218,17 @@ class Actor(nn.Module):
         self.fc4 = nn.Linear(input_dim, action_size)
         # Initialize weights
         self.reset_parameters()
+
+        # --- Profitability constraint (hard gate + STE) ---
+        # These are configured by the Agent/env wiring via set_profitability_params().
+        # Defaults mirror SwingContract defaults (q in [0,1], no convex cost).
+        self._profit_s_minus_k_index: int = 0
+        self._profit_q_min: float = 0.0
+        self._profit_q_max: float = 1.0
+        self._profit_q_range: float = 1.0
+        self._profit_c_cost: float = 0.0
+        self._profit_gamma_cost: float = 1.0
+        self._profitability_params_set: bool = False
 
         # Move to device
         self.to(self.device)
@@ -246,12 +285,8 @@ class Actor(nn.Module):
             Action tensor of shape (batch_size, action_size); range depends on
             action_output ("tanh": [-1, 1], "tanh01"/"sigmoid": [0, 1])
         """
-        x = state
-        for block in self.hidden_layers:
-            x = block(x)
-
-        out = self.fc4(x)
-        return self._apply_output_activation(out)
+        _, q_gated = self.forward_raw_and_gated(state)
+        return q_gated
 
     def forward_preact(self, state: Tensor) -> Tensor:
         """Forward pass up to the final linear layer (pre-activation outputs)."""
@@ -259,6 +294,78 @@ class Actor(nn.Module):
         for block in self.hidden_layers:
             x = block(x)
         return self.fc4(x)
+
+    def forward_raw(self, state: Tensor) -> Tensor:
+        """Forward pass returning the unconstrained action q_raw (pre profitability-gate)."""
+        return self._apply_output_activation(self.forward_preact(state))
+
+    def set_profitability_params(
+        self,
+        *,
+        q_min: float,
+        q_max: float,
+        c_cost: float,
+        gamma_cost: float,
+        s_minus_k_index: int = 0,
+    ) -> None:
+        """Configure the hard profitability gate parameters.
+
+        The environment uses normalized actions in [0,1] which are denormalized via:
+            q_actual = q_min + q_norm * (q_max - q_min)
+
+        The immediate (undiscounted) profit used for gating is:
+            Pi(q_actual) = q_actual * relu(S - K) - c_cost * q_actual**gamma_cost
+        """
+        self._profit_s_minus_k_index = int(s_minus_k_index)
+        self._profit_q_min = float(q_min)
+        self._profit_q_max = float(q_max)
+        self._profit_q_range = float(q_max) - float(q_min)
+        self._profit_c_cost = float(c_cost)
+        self._profit_gamma_cost = float(gamma_cost)
+        self._profitability_params_set = True
+
+    def forward_raw_and_gated(self, state: Tensor) -> Tuple[Tensor, Tensor]:
+        """Return both q_raw and the profitability-gated action q_gated (STE)."""
+        q_raw = self.forward_raw(state)
+        q_gated = self.apply_profitability_gate(q_raw=q_raw, state=state)
+        return q_raw, q_gated
+
+    def apply_profitability_gate(self, *, q_raw: Tensor, state: Tensor) -> Tensor:
+        """Apply a hard profitability gate with a straight-through estimator (STE).
+
+        Forward: executes q=0 whenever immediate profit <= 0.
+        Backward: gradients flow as-if q=q_raw (STE via detach trick).
+        """
+        idx = self._profit_s_minus_k_index
+        s_minus_k = state[..., idx: idx + 1]
+
+        q_min = self._profit_q_min
+        q_range = getattr(self, "_profit_q_range", self._profit_q_max - self._profit_q_min)
+        c_cost = self._profit_c_cost
+        gamma_cost = self._profit_gamma_cost
+
+        # Fast paths for the common SwingOptionEnv configuration:
+        # - action_output in [0,1] (tanh01/sigmoid) => q_actual >= q_min
+        # - q_min >= 0 and c_cost == 0 => profit > 0 iff (S-K) > 0
+        if c_cost == 0.0 and q_min >= 0.0 and self.action_output in ("tanh01", "sigmoid"):
+            mask = (s_minus_k > 0.0).to(dtype=q_raw.dtype)
+            q_forward = q_raw * mask
+            return q_raw + (q_forward - q_raw).detach()
+
+        payoff_per_unit = torch.relu(s_minus_k)
+        q_actual = q_min + q_raw * q_range
+
+        if gamma_cost == 1.0:
+            # profit = q_actual * (payoff_per_unit - c_cost)
+            profit = q_actual * (payoff_per_unit - c_cost)
+        elif gamma_cost == 2.0:
+            profit = q_actual * payoff_per_unit - c_cost * torch.square(q_actual)
+        else:
+            profit = q_actual * payoff_per_unit - c_cost * q_actual.pow(gamma_cost)
+
+        mask = (profit > 0.0).to(dtype=q_raw.dtype)
+        q_forward = q_raw * mask
+        return q_raw + (q_forward - q_raw).detach()
 
     def _apply_output_activation(self, out: Tensor) -> Tensor:
         """Apply the configured output activation."""
@@ -285,7 +392,8 @@ class Critic(nn.Module):
         hidden_size: int = 64,
         n_layers: int = 2,
         device: Optional[Union[str, torch.device]] = None,
-        activation: str = "silu"
+        activation: str = "silu",
+        norm_type: str = "layernorm",
     ) -> None:
         """Initialize the Critic network.
         
@@ -316,23 +424,24 @@ class Critic(nn.Module):
         self.n_layers = n_layers
         self.activation_name = activation.lower()
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
+        self.norm_type = norm_type.lower()
 
         self.state_encoder = nn.Sequential(
             nn.Linear(state_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),  # LayerNorm stabilizes training in RL
+            _build_norm(self.norm_type, hidden_size),
             self._activation_factory()
         )
 
         self.action_layer = nn.Sequential(
             nn.Linear(hidden_size + action_size, hidden_size, bias=True),
-            nn.LayerNorm(hidden_size),
+            _build_norm(self.norm_type, hidden_size),
             self._activation_factory()
         )
 
         self.post_layers = nn.ModuleList(
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size, bias=True),
-                nn.LayerNorm(hidden_size),
+                _build_norm(self.norm_type, hidden_size),
                 self._activation_factory()
             )
             for _ in range(n_layers - 2)
@@ -427,7 +536,8 @@ class IQN(nn.Module):
         N: int,
         dueling: bool = False,
         device: Optional[Union[str, torch.device]] = None,
-        n_cos: int = 64
+        n_cos: int = 64,
+        norm_type: str = "layernorm",
     ) -> None:
         """Initialize the IQN network.
         
@@ -459,6 +569,7 @@ class IQN(nn.Module):
         self.n_cos = n_cos
         self.layer_size = layer_size
         self.dueling = dueling
+        self.norm_type = norm_type.lower()
         
         # Precompute pi values for cosine embeddings
         self.register_buffer(
@@ -469,16 +580,16 @@ class IQN(nn.Module):
             ).view(1, 1, self.n_cos)
         )
         
-        # Network architecture with LayerNorm
+        # Network architecture with configurable normalization
         self.head = nn.Sequential(
             nn.Linear(self.action_size + self.input_shape, layer_size, bias=True),
-            nn.LayerNorm(layer_size),
+            _build_norm(self.norm_type, layer_size),
             nn.ReLU(inplace=True)
         )
         self.cos_embedding = nn.Linear(self.n_cos, layer_size)
         self.ff_1 = nn.Sequential(
             nn.Linear(layer_size, layer_size, bias=True),
-            nn.LayerNorm(layer_size),
+            _build_norm(self.norm_type, layer_size),
             nn.ReLU(inplace=True)
         )
         self.ff_2 = nn.Linear(layer_size, 1)

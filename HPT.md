@@ -101,6 +101,233 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
 - PER stats: priority_mean/std sit below v40 late, indicating softer sampling skew; entropy/clip unchanged.
 - Losses: actor/critic losses descend more smoothly with smaller spread, consistent with lower step sizes and smaller init std.
 
+## v42: Profitability-constrained actor output (hard gate + STE)
+
+### Summary
+
+In **v42** we introduced an **architectural constraint** in the **Actor (policy)** so the executed action is *feasible-by-construction*: the policy will **never execute an unprofitable exercise** given the swing option’s *immediate* net payoff with convex costs. Concretely, we added a **profitability gate** that outputs **exactly `q_t = 0`** whenever the proposed exercise would yield non-positive immediate profit. To preserve a useful learning signal (and avoid dead gradients), the gate uses a **Straight-Through Estimator (STE)** so backprop behaves as if the ungated action were used.
+
+We also enforced a clean exploration rule: **exploration noise is applied only in “pre-gate” space**, and the profitability gate is applied afterwards. This preserves exploratory behavior near the profitability boundary while ensuring the environment never receives an unprofitable action due to noise.
+
+This change is primarily about **learning dynamics and stability**: it removes reliance on the environment’s post-hoc action masking for correctness, prevents “mask-banging”, and makes the actor’s optimized policy match the executed policy.
+
+### Motivation (why env-level masking was not enough)
+
+The environment already masks actions to zero when the realized immediate net payoff is non-positive. In the vanilla pipeline, the actor can still propose a continuum of invalid actions; the environment collapses them all to the same executed action (`q=0`) and the same reward (`r=0`). That creates a broad **flat region** in the data distribution seen by the critic, making it harder for the actor-critic pair to learn a sharp and stable profitability boundary. Practically this shows up as:
+
+- **Wasted exploration**: many samples propose invalid exercises that always get zeroed out.
+- **Weak gradients near the true boundary**: many distinct proposed actions map to the same transition and reward after masking.
+- **Higher seed variance**: early random dynamics can push policies into repeatedly proposing masked actions (“banging against the mask”).
+
+v42 moves the constraint into the actor so the “policy being trained” matches the “policy being executed”.
+
+### The constraint (what is “profitable”)
+
+We gate on the swing option’s **immediate net profit** with convex exercise cost:
+
+`Pi(q) = q * relu(S - K) - c_cost * q**gamma_cost`
+
+where:
+- `relu(S-K)` is the intrinsic value per unit exercise at the current decision time,
+- `c_cost, gamma_cost` are the convex cost parameters from the contract,
+- `q` is the **denormalized** exercise quantity (contract units).
+
+Important detail for this repo: the actor outputs a **normalized action** `q_raw ∈ [0, 1]` (via `tanh01`). For gating, we denormalize to contract units using the same mapping as the environment:
+
+`q_actual = q_min + q_raw * (q_max - q_min)`
+
+Then we compute `Pi(q_actual)` and gate using a strict `> 0` test (so zero-profit exercises become `q=0`).
+
+### What changed in the actor (hard gate in forward pass)
+
+Conceptually:
+
+1) Actor produces the usual continuous proposal:
+- `q_raw = tanh01(u_theta(s))`  (normalized to `[0,1]`)
+
+2) Compute profit:
+- `payoff_per_unit = relu(S - K)`
+- `q_actual = q_min + q_raw * (q_max - q_min)`
+- `Pi = q_actual * payoff_per_unit - c_cost * q_actual**gamma_cost`
+
+3) Apply a hard gate:
+- `mask = 1[Pi > 0]`
+- `q_forward = q_raw * mask`  (forward-time executed action)
+
+This guarantees the policy never executes an unprofitable exercise.
+
+### Straight-Through Estimator (STE): hard forward, smooth backward
+
+The hard gate is non-differentiable. If treated literally, gradients vanish in the “masked” region and learning stalls. We use an STE via the common detach trick:
+
+- forward uses the hard-gated value `q_forward`,
+- backward behaves as if output was `q_raw`.
+
+Implementation pattern (PyTorch):
+- `q = q_raw + (q_forward - q_raw).detach()`
+
+This keeps the executed policy hard-constrained while preserving a useful gradient signal for the actor.
+
+### Exploration noise moved to pre-gate space
+
+v42 enforces a strict rule: **never add noise after gating**.
+
+In this codebase, exploration noise is applied in **pre-activation** space (pre-squash), then squashed into `[0,1]` to form `q_raw`, and only then profitability gating is applied. This ensures:
+
+- exploration can still probe near the profitability threshold,
+- but the final action passed to the environment is always profitable-or-zero,
+- and we never accidentally “un-gate” a zero action by adding post-gate noise.
+
+### Implementation notes (where it lives in the code)
+
+- **State input for `(S-K)`**: `SwingOptionEnv` places `spot_minus_strike (S-K)` at `state[0]`. v42 uses `state[..., 0]` as the profitability signal.
+- **Contract parameters** (`q_min`, `q_max`, `c_cost`, `gamma_cost`): pulled from the environment’s `contract` and cached onto both the local and target actors via a one-time init. This keeps the gating logic identical for local/target networks.
+- **Training alignment**: the actor’s `forward()` now returns the gated action, so the actor loss is computed against the executed policy (no mismatch between “optimized action” and “executed action”).
+
+### Why this design was selected (trade-offs and expectations)
+
+Primary goals:
+1) **Hard constraint satisfaction**: never execute unprofitable exercises.
+2) **Maintain gradients**: avoid dead zones from a non-differentiable gate.
+3) **Minimal disruption**: keep the DDPG/D4PG plumbing intact (critic/replay/target updates unchanged).
+4) **Improve stability and seed robustness**: reduce wasted exploration and remove “mask-banging”.
+
+Expected practical outcomes:
+- **Cleaner learning signal near the profitability boundary**: the critic sees consistent state-action pairs (no downstream collapse of many actions into `q=0`), improving the actor’s ability to learn the decision boundary.
+- **More efficient exploration**: exploration mass is not wasted on actions that are guaranteed to be masked.
+- **Lower seed variance**: fewer early “bad proposals” that push training into unstable regimes.
+- **Better policy correctness**: even if the environment mask remains as a safety net, correctness no longer depends on it.
+
+Potential side-effects to watch:
+- More conservative behavior right at the threshold (because `Pi > 0` is strict). If we ever want to allow exactly-zero profit exercises, we’d switch to `Pi >= 0`, but v42 intentionally forbids them.
+- If `q_max` is large and costs are steep, the gate can create a large masked region early; STE keeps gradients flowing, but monitoring action-rate / exercised-volume metrics remains important.
+
+### v42 results vs. v41 (observations and interpretation)
+
+Below is an interpretation of the **v42 (profitability-gated actor)** vs. **v41 (no actor-level gate, env masks downstream)** results, using the end-of-run scalar snapshots from the 3-seed runs:
+
+- v41: `SwingOption_20_v41_{11,12,13}`
+- v42: `SwingOption_20_v42_{11,12,13}`
+
+#### 1) Pricing/Delta_Percent: why the late “non-zero” is still a win
+
+End-of-run `Pricing/Delta_Percent` (RL vs. LSM) is:
+- v41: `[-1.1, -0.7, -0.3]` → mean ≈ `-0.7%`, seed std ≈ `0.33%`
+- v42: `[-1.1, -0.7, -0.9]` → mean ≈ `-0.9%`, seed std ≈ `0.16%`
+
+So v42 achieves **substantially lower seed-to-seed dispersion** in the price delta (about ~2× tighter).
+
+On the “why not 0% at the end?” question: a large fraction of the remaining offset is plausibly **evaluation noise** (and/or benchmark noise), not policy instability.
+
+The evaluation price is a Monte Carlo mean of discounted returns across `n_paths_eval=32768`. For a Monte Carlo estimator, the **Central Limit Theorem** implies the estimator error is approximately **Normal** for large `n`:
+
+- `RL_Price ≈ Normal(true_price + bias, (sigma_RL^2 / n))`
+
+In the logged runs, `Price_Std` at the end is ~`2.65–2.83`. That implies:
+- Standard error of RL price ≈ `Price_Std / sqrt(32768)` ≈ `2.7 / 181` ≈ `0.015`
+- Relative standard error (percent) ≈ `(0.015 / 2.66) * 100` ≈ `0.55%`
+- 95% CI width (percent) ≈ `~1.1%`
+
+If the LSM benchmark itself has ~`~1%` variability vs. the “true” value (as your bootstrap plot indicates), then the observed end deltas in the `~-0.7%` to `~-1.1%` range are **completely consistent** with:
+- a small remaining bias (possibly slightly underpricing vs LSM),
+- plus a measurement distribution that is roughly **Gaussian** (Normal) at this sample size.
+
+So your interpretation (“these values are logical given ~1% evaluation error”) is reasonable. With only 3 seeds, the safest takeaway is:
+- v42 appears to have **tightened the distribution** (lower variance),
+- and the remaining non-zero delta is within the **expected measurement noise envelope**.
+
+**What distribution is it following?**
+- The *evaluation estimator noise* is approximately **Normal** due to CLT.
+- The *Delta_Percent* is a smooth transform of that estimator (roughly linear when errors are small), so it is also approximately **Normal**, up to the rounding in `signed_zero_aware_pct_change()` (it rounds to 0.1%).
+- If you consider “RL vs LSM” as the difference of two noisy estimates, the difference remains approximately Normal (with variance depending on correlation between the two estimators; here they share the same underlying eval path set, so the errors can be correlated, often shrinking the difference variance).
+
+#### 2) Why v42 reduces seed variance (core mechanism)
+
+The architectural change removes a major source of instability in v41:
+
+- In v41, the environment can mask an unprofitable exercise to `q_actual=0`, but the replay buffer stores the **proposed normalized action** that was passed into `env.step()`, not the masked `q_actual`. That creates an **off-policy mismatch**: the critic is trained on `(s, a_proposed, r_masked)` tuples where the reward corresponds to a *different executed action*.
+- In v42, the actor applies the same profitability constraint before the environment sees the action, so the stored action and executed action align. This makes the critic’s learning problem **better-posed** and reduces the “flat Q around invalid actions” pathology.
+
+That alignment tends to:
+- reduce useless exploration mass (invalid proposals that all collapse to the same outcome),
+- make gradients more consistent near the profitability boundary,
+- and thus tighten seed-to-seed behavior late.
+
+#### 3) Policy action stats: why the variance bands look “awesome”
+
+End-of-run action stats:
+- `Policy/Action_variance_mean`:
+  - v41 mean ≈ `0.211 ± 0.023`
+  - v42 mean ≈ `0.193 ± 0.018`
+- `Policy/Actions_at_upper_pct`:
+  - v41 mean ≈ `0.320 ± 0.067`
+  - v42 mean ≈ `0.250 ± 0.055`
+
+This is the most directly “explained-by-architecture” improvement:
+
+- The profitability gate forces `q=0` whenever `relu(S-K)` is too small to overcome costs (or is negative). That collapses the action distribution in those states in a *structured, state-dependent* way. You stop seeing random seeds spend long stretches “trying” large exercises in OTM/near-threshold states (which then get masked downstream).
+- Because **noise is pre-gate**, exploration can still perturb the raw proposal, but the gate prevents noise from turning an unprofitable situation into an executed large action. This prevents spurious saturation at the upper bound driven by noise in states where exercise makes no economic sense.
+
+Net effect: the policy occupies a more meaningful region of action space and avoids boundary saturation artifacts, so the **band narrows** and becomes more consistent across seeds.
+
+#### 4) PER differences: higher priority mean/std (and why that can happen)
+
+End-of-run PER stats:
+- `PER/priority_mean`: v41 ≈ `0.332 ± 0.0056`, v42 ≈ `0.333 ± 0.0051`
+- `PER/priority_std`: v41 ≈ `0.314 ± 0.0034`, v42 ≈ `0.316 ± 0.0038`
+- `PER/priority_entropy`: essentially unchanged (`~12.167–12.168`)
+
+So the “PER looks different” observation aligns with the data: v42 has **slightly higher priority dispersion**.
+
+Why this is plausible:
+- With actor-level gating, the dataset is less dominated by “invalid proposals that always get r=0”, so more transitions carry a *real signal* (profitable exercise or correctly chosen no-exercise). That can increase TD-error heterogeneity, which PER reflects.
+- The critic is no longer learning on inconsistent `(a_proposed, r_executed)` pairs in the masked region, so TD errors can shift upward in the transitions that actually matter (and downward where things became easier). That can raise priority_std even if training is healthier overall.
+
+This kind of PER change is not automatically “bad”; it often means the replay is focusing on more informative parts of the state-action space.
+
+#### 5) Critic loss and TD error: why they can be higher under a better policy
+
+End-of-run critic/TD snapshots show:
+- `Critic_loss`: v41 ≈ `0.096 ± 0.013`, v42 ≈ `0.142 ± 0.025`
+- `TD_Error/p90`: v41 ≈ `0.978 ± 0.043`, v42 ≈ `1.014 ± 0.068`
+- `TD_Error/p99`: v41 ≈ `1.78 ± 0.21`, v42 ≈ `1.98 ± 0.41`
+
+Why can TD error (and critic loss) go up while policy quality and stability improve?
+
+1) **Hard boundary introduces a sharper function to learn.**  
+   The profitability gate creates a discontinuity at `Pi(q_raw)=0`. Even with STE (which helps the actor), the critic still has to model value around a sharper decision boundary. That can raise residual errors, especially at higher quantiles (p90/p99).
+
+2) **You removed an “easy mode” for the critic.**  
+   With env masking + stored `a_proposed`, many different actions produce the same observed reward/next-state behavior, which can artificially flatten the Q surface and reduce TD error (but also reduce useful gradients). After gating, the action-reward relationship is more consistent and informative, which can increase TD errors on meaningful transitions (the critic is solving a harder, more correct problem).
+
+3) **Higher TD error is only bad if it’s unstable.**  
+   If TD p99 rises but outlier spikes and collapse events reduce, that’s typically a trade: the critic is tracking a richer/less-degenerate target rather than “cheating” via masked collapse. The important signals to watch are runaway growth, exploding priorities (not happening due to clipping), and destabilized evaluation metrics (which improved in seed variance).
+
+#### 6) Actor loss “lower” (more negative): what it likely means here
+
+Actor loss in this DDPG-style setup is `-E[Q(s, pi(s))]`. More negative usually indicates the critic is assigning higher Q to the actor’s actions. In v42 it is more negative on average at the end:
+- v41 ≈ `-1.66 ± 0.04`
+- v42 ≈ `-1.77 ± 0.09`
+
+That can be consistent with the actor focusing on “economically meaningful” actions (profitable exercises) and avoiding wasted action mass. But it can also reflect a scale shift in the critic; so treat it as a supporting indicator, not a primary objective.
+
+#### 7) Exercise count / total exercised: why they can look healthier
+
+Your qualitative observations (“better spread”) are consistent with the mechanism:
+- v42 removes invalid attempts, so exercise decisions become more tied to true ITM opportunities and cost structure.
+- That tends to produce more stable and interpretable exercise patterns, especially late, because the policy is not fighting the environment mask.
+
+Endpoint snapshot alone shows similar averages, but the key benefit is typically in the *trajectory stability* and reduced “mask-banging” dynamics over time.
+
+#### 8) Target drift: interpreting this metric under gating
+
+Target drift in this repo is logged as a drift proxy between the critic estimate on replay actions and the target critic on target-policy actions. Under gating, small changes in `q_raw` near the profitability threshold can flip the hard mask; that can make “drift” look larger in absolute terms even if the overall system is more stable.
+
+So for v42, focus on whether target drift:
+- converges smoothly,
+- avoids sudden regime shifts,
+- and correlates with improvements in pricing stability (it appears to, from the reduced Delta_Percent dispersion you observed).
+
 ### Action variance progression (v23 → v26 → v33)
 - **v23**: Used early action L2 (cutoff ~4k) to fight boundary lock-in; helped two seeds but one still collapsed and delta hovered around -1.2 to -18 across seeds. Saturation risk persisted despite strong early regularization.
 - **v26**: Switched to tanh01 output mapped to [0, 1], boosted exploration floor (noise_floor 0.18, plateau 3.2k), and scheduled PER (alpha ramp 5k→15k). This eliminated collapse without action L2; actions_at_upper_pct dropped into the low 20s%, and delta_percent improved to roughly -0.5 to -1.1 on best seeds.

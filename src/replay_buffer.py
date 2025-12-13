@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 
 import numpy as np
+import os
 import torch
 try:
     import numba  # type: ignore
@@ -64,6 +65,31 @@ def _py_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, 
     return out
 
 
+def _np_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, masses: np.ndarray) -> np.ndarray:
+    """Fast numpy-vectorized prefix search for Fenwick trees (no numba required)."""
+    n = int(masses.shape[0])
+    if n == 0:
+        return np.empty((0,), dtype=np.int64)
+    if size <= 0:
+        return np.zeros((n,), dtype=np.int64)
+
+    idx = np.zeros((n,), dtype=np.int64)
+    mass = np.asarray(masses, dtype=np.float64).copy()
+    bit = 1 << (capacity.bit_length() - 1)
+    while bit:
+        nxt = idx + bit
+        valid = nxt <= capacity
+        nxt_safe = np.where(valid, nxt, 0)
+        nxt_val = tree[nxt_safe]
+        take = valid & (mass >= nxt_val)
+        if np.any(take):
+            mass[take] -= nxt_val[take]
+            idx[take] = nxt[take]
+        bit >>= 1
+    np.minimum(idx, size - 1, out=idx)
+    return idx
+
+
 def _py_fenwick_batch_update(
     tree: np.ndarray,
     prob_cache: np.ndarray,
@@ -94,7 +120,7 @@ def _py_fenwick_batch_update(
 
 _fenwick_update_helper = _py_fenwick_update
 _fenwick_rebuild_helper = _py_fenwick_rebuild
-_fenwick_find_indices_helper = _py_fenwick_find_prefix_indices
+_fenwick_find_indices_helper = _np_fenwick_find_prefix_indices
 _fenwick_batch_update_helper = _py_fenwick_batch_update
 
 if numba is not None:
@@ -416,7 +442,22 @@ class PrioritizedReplay(object):
     Prioritized Experience Replay (PER) with robust n-step handling.
     """
 
-    def __init__(self, capacity, batch_size, device, seed, gamma=0.99, n_step=1, parallel_env=1, alpha=0.6, beta_start=0.4, beta_frames=100000):
+    def __init__(
+        self,
+        capacity,
+        batch_size,
+        device,
+        seed,
+        gamma=0.99,
+        n_step=1,
+        parallel_env=1,
+        alpha=0.6,
+        beta_start=0.4,
+        beta_frames=100000,
+        *,
+        use_memmap: bool = False,
+        memmap_dir: Optional[str] = None,
+    ):
         # Hyperparameters
         self.alpha = alpha
         self.beta_start = beta_start
@@ -425,6 +466,8 @@ class PrioritizedReplay(object):
         self.frame_count = 0
         self.batch_size = batch_size
         self.capacity = capacity
+        self.use_memmap = bool(use_memmap)
+        self.memmap_dir = memmap_dir
 
         # Circular storage
         self.pos = 0
@@ -442,7 +485,6 @@ class PrioritizedReplay(object):
         self.priorities = np.ones(capacity, dtype=np.float32)
         self.max_priority = 1.0
         self.min_priority = 1e-6
-        self.priority_clip_pct: Optional[float] = None
 
         # RNG
         self.rng = np.random.RandomState(seed)
@@ -459,6 +501,7 @@ class PrioritizedReplay(object):
         self._prob_sum_cache: float = 0.0
         self._tree = np.zeros(capacity + 1, dtype=np.float64)  # 1-indexed
         self._cache_valid = False  # flipped to True after first build or alpha change rebuild
+        self._memmap_prefix = f"per_replay_{int(seed)}_{os.getpid()}"
 
         print("🚀 High-Performance PrioritizedReplay initialized:")
         print(f"  - Capacity: {capacity:,}")
@@ -467,6 +510,8 @@ class PrioritizedReplay(object):
         print(f"  - Beta start (IS weight): {beta_start}")
         print(f"  - Beta frames: {beta_frames}")
         print(f"  - N-step: {n_step}")
+        if self.use_memmap:
+            print("  - Storage: memmap (disk-backed)")
 
     def _initialize_arrays(self, state: np.ndarray, action: np.ndarray) -> None:
         if self.states is not None:
@@ -474,9 +519,31 @@ class PrioritizedReplay(object):
         state_shape = state.shape
         action_shape = action.shape if hasattr(action, 'shape') else (1,)
         print(f"📊 Initializing PER arrays with shapes: state{state_shape}, action{action_shape}")
-        self.states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
-        self.next_states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
-        self.actions = np.empty((self.capacity,) + action_shape, dtype=np.float32)
+        if self.use_memmap:
+            base_dir = self.memmap_dir or os.getcwd()
+            os.makedirs(base_dir, exist_ok=True)
+            self.states = np.memmap(
+                os.path.join(base_dir, f"{self._memmap_prefix}_states.dat"),
+                dtype=np.float32,
+                mode="w+",
+                shape=(self.capacity,) + state_shape,
+            )
+            self.next_states = np.memmap(
+                os.path.join(base_dir, f"{self._memmap_prefix}_next_states.dat"),
+                dtype=np.float32,
+                mode="w+",
+                shape=(self.capacity,) + state_shape,
+            )
+            self.actions = np.memmap(
+                os.path.join(base_dir, f"{self._memmap_prefix}_actions.dat"),
+                dtype=np.float32,
+                mode="w+",
+                shape=(self.capacity,) + action_shape,
+            )
+        else:
+            self.states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
+            self.next_states = np.empty((self.capacity,) + state_shape, dtype=np.float32)
+            self.actions = np.empty((self.capacity,) + action_shape, dtype=np.float32)
         print("✅ PER arrays initialized successfully")
 
     def beta_by_frame(self, frame_idx):
@@ -595,10 +662,6 @@ class PrioritizedReplay(object):
         if not isinstance(batch_priorities, np.ndarray):
             batch_priorities = np.array(batch_priorities, dtype=np.float32)
         batch_priorities = np.maximum(batch_priorities.flatten(), self.min_priority)
-        if self.priority_clip_pct is not None and self.priority_clip_pct > 0 and self.size > 0:
-            clip_val = np.percentile(self.priorities[: self.size], self.priority_clip_pct)
-            if clip_val > 0:
-                batch_priorities = np.minimum(batch_priorities, clip_val.astype(np.float32))
         batch_indices = np.clip(batch_indices, 0, self.size - 1)
         self.priorities[batch_indices] = batch_priorities
         new_max = np.max(batch_priorities)

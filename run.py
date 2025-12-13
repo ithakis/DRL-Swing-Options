@@ -528,6 +528,13 @@ class ConfigManager:
             help="Activation function for actor/critic MLPs (default: silu)",
         )
         parser.add_argument(
+            "--norm",
+            type=str,
+            default="layernorm",
+            choices=["layernorm", "rmsnorm", "none"],
+            help="Normalization layer in actor/critic/IQN MLPs (default: layernorm)",
+        )
+        parser.add_argument(
             "--final_lr_fraction",
             type=float,
             default=1.0,
@@ -594,6 +601,13 @@ class ConfigManager:
             type=int,
             default=1000,
             help="Minimum replay buffer size before learning starts (default: 1000)",
+        )
+        parser.add_argument(
+            "--replay_memmap",
+            type=int,
+            choices=[0, 1],
+            default=0,
+            help="Use disk-backed memmap arrays for replay buffer storage to reduce RAM usage (may slow training).",
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
@@ -1508,7 +1522,9 @@ def main():
         critic_grad_clip_type=args.critic_grad_clip_type,
         grad_clip_norm_type=args.grad_clip_norm_type,
         activation=args.activation,
+        norm_type=args.norm,
         log_interval_scale=log_interval_scale,
+        replay_memmap=bool(args.replay_memmap),
     )
     t0 = time.time()
 
