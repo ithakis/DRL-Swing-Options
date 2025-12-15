@@ -419,7 +419,10 @@ class ConfigManager:
 
         # D4PG Algorithm Parameters
         parser.add_argument(
-            "--device", type=str, default="cpu", help="Select training device [gpu/cpu], default = cpu"
+            "--device",
+            type=str,
+            default="cpu",
+            help="Select training device [cpu] (CPU-only).",
         )
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
         # PER hyperparameters
@@ -698,20 +701,13 @@ class EnvironmentManager:
     @staticmethod
     def setup_device_and_cores(args: argparse.Namespace) -> Tuple[torch.device, str]:
         """Setup device and CPU cores configuration"""
-        # Device selection
-        if args.device == "gpu":
-            if torch.cuda.is_available():
-                device = torch.device("cuda:0")
-                device_str = "cuda:0"
-                print("Using CUDA GPU")
-            else:
-                device = torch.device("cpu")
-                device_str = "cpu"
-                print("GPU requested but not available, using CPU")
-        else:
-            device = torch.device("cpu")
-            device_str = "cpu"
-            print("Using CPU (as requested)")
+        # CPU-only
+        device_arg = str(getattr(args, "device", "cpu")).lower()
+        if device_arg != "cpu":
+            print(f"WARNING: device='{device_arg}' requested, but this project is CPU-only; using CPU.")
+        device = torch.device("cpu")
+        device_str = str(device)
+        print(f"Selected device: {device_str}")
 
         # Configure CPU cores
         if args.n_cores is not None:
@@ -1526,6 +1522,11 @@ def main():
         log_interval_scale=log_interval_scale,
         replay_memmap=bool(args.replay_memmap),
     )
+    try:
+        param_device = next(agent.actor_local.parameters()).device
+    except StopIteration:
+        param_device = torch.device("cpu")
+    print(f"Sanity: model param device = {param_device}")
     t0 = time.time()
 
     if args.saved_model is not None:

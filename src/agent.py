@@ -1,12 +1,12 @@
 import copy
+import math
 import random
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-import math
 
 try:
     from .networks import IQN, Actor, Critic
@@ -23,34 +23,75 @@ class Agent:
     gradient clipping is disabled unless thresholds are provided, actor/critic weight
     decay defaults to 5e-5/1e-4, and target updates use a smoother tau=0.002.
     """
-    def __init__(self, state_size, action_size, n_step, per, munchausen, distributional, random_seed, hidden_size: int = 64,
-                 actor_hidden_size: Optional[int] = None, critic_hidden_size: Optional[int] = None,
-                 actor_layers: int = 2, critic_layers: int = 2,
-                 optimizer: str = "adamw", weight_decay_actor: float = 5e-5, weight_decay_critic: float = 1e-4,
-                 BUFFER_SIZE=int(1e6), BATCH_SIZE=128, GAMMA=0.99, t=2e-3, LR_ACTOR=1e-4, LR_CRITIC=1e-4,
-                 WEIGHT_DECAY=0, LEARN_EVERY=1, LEARN_NUMBER=1,
-                 device="cpu", min_replay_size=None, per_alpha=0.6, per_beta_start=0.4, per_beta_frames=100000,
-                 per_priority_floor: float = 1e-6, per_priority_clip_pct: float = 0.0,
-                 per_alpha_final: Optional[float] = None, per_alpha_ramp_start: int = 0, per_alpha_ramp_end: int = 0,
-                 per_beta_final: Optional[float] = None, per_alpha_sigmoid: bool = False,
-                 final_lr_fraction=1.0, total_episodes=None, warmup_frac: float = 0.05, warmup_episodes: Optional[int] = None, min_lr=1e-7,
-                 lr_schedule_episodes: Optional[int] = None,
-                 actor_grad_clip: float = 0.0, critic_grad_clip: float = 0.0,
-                 actor_grad_clip_type: str = "none", critic_grad_clip_type: str = "none",
-                 grad_clip_norm_type: float = 2.0,
-                 noise_sigma0: float = 1.0, noise_floor: float = 0.05, noise_plateau: int = 0,
-                 critic_ema_decay: float = 0.0,
-                 target_policy_noise: float = 0.1,
-                 target_policy_clip: float = 0.25,
-                 activation: str = "silu",
-                 norm_type: str = "layernorm",
-                 use_compile: bool = False,
-                 log_interval_scale: float = 1.0,
-                 replay_memmap: bool = False,
-                 **kwargs):
+
+    def __init__(
+        self,
+        state_size,
+        action_size,
+        n_step,
+        per,
+        munchausen,
+        distributional,
+        random_seed,
+        hidden_size: int = 64,
+        actor_hidden_size: Optional[int] = None,
+        critic_hidden_size: Optional[int] = None,
+        actor_layers: int = 2,
+        critic_layers: int = 2,
+        optimizer: str = "adamw",
+        weight_decay_actor: float = 5e-5,
+        weight_decay_critic: float = 1e-4,
+        BUFFER_SIZE=int(1e6),
+        BATCH_SIZE=128,
+        GAMMA=0.99,
+        t=2e-3,
+        LR_ACTOR=1e-4,
+        LR_CRITIC=1e-4,
+        WEIGHT_DECAY=0,
+        LEARN_EVERY=1,
+        LEARN_NUMBER=1,
+        device="cpu",
+        min_replay_size=None,
+        per_alpha=0.6,
+        per_beta_start=0.4,
+        per_beta_frames=100000,
+        per_priority_floor: float = 1e-6,
+        per_priority_clip_pct: float = 0.0,
+        per_alpha_final: Optional[float] = None,
+        per_alpha_ramp_start: int = 0,
+        per_alpha_ramp_end: int = 0,
+        per_beta_final: Optional[float] = None,
+        per_alpha_sigmoid: bool = False,
+        final_lr_fraction=1.0,
+        total_episodes=None,
+        warmup_frac: float = 0.05,
+        warmup_episodes: Optional[int] = None,
+        min_lr=1e-7,
+        lr_schedule_episodes: Optional[int] = None,
+        actor_grad_clip: float = 0.0,
+        critic_grad_clip: float = 0.0,
+        actor_grad_clip_type: str = "none",
+        critic_grad_clip_type: str = "none",
+        grad_clip_norm_type: float = 2.0,
+        noise_sigma0: float = 1.0,
+        noise_floor: float = 0.05,
+        noise_plateau: int = 0,
+        critic_ema_decay: float = 0.0,
+        target_policy_noise: float = 0.1,
+        target_policy_clip: float = 0.25,
+        activation: str = "silu",
+        norm_type: str = "layernorm",
+        use_compile: bool = False,
+        log_interval_scale: float = 1.0,
+        replay_memmap: bool = False,
+        **kwargs,
+    ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
         if isinstance(device, str):
-            device = torch.device('cuda' if device.lower() in ('cuda', 'gpu') and torch.cuda.is_available() else 'cpu')
+            device_arg = device.lower()
+            if device_arg != "cpu":
+                raise ValueError(f"CPU-only Agent: unsupported device '{device}'. Use device='cpu'.")
+            device = torch.device("cpu")
         self.device = device
         self.state_size = state_size
         self.action_size = action_size
@@ -83,18 +124,19 @@ class Agent:
 
         self.activation = (activation or "silu").lower()
         if self.activation not in {"relu", "leaky_relu", "silu"}:
-            raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
+            raise ValueError(
+                f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'."
+            )
 
         self.norm_type = (norm_type or "layernorm").lower()
         if self.norm_type not in {"layernorm", "rmsnorm", "none"}:
-            raise ValueError(f"Unsupported norm_type '{norm_type}'. Choose from 'layernorm', 'rmsnorm', or 'none'.")
+            raise ValueError(
+                f"Unsupported norm_type '{norm_type}'. Choose from 'layernorm', 'rmsnorm', or 'none'."
+            )
 
         self.use_compile = bool(use_compile)
         self._actor_forward_preact = None
         self._compile_kwargs = {"mode": "reduce-overhead"}
-        if getattr(self.device, "type", "cpu") != "cuda":
-            # Avoid Inductor CUDA-graph related logging/overhead on non-CUDA devices.
-            self._compile_kwargs["options"] = {"triton.cudagraphs": False}
 
         def _compile(obj):
             if not (self.use_compile and hasattr(torch, "compile")):
@@ -102,10 +144,7 @@ class Agent:
             try:
                 return torch.compile(obj, **self._compile_kwargs)  # type: ignore[misc]
             except TypeError:
-                # Older torch.compile builds may not accept 'options'.
-                kwargs = dict(self._compile_kwargs)
-                kwargs.pop("options", None)
-                return torch.compile(obj, **kwargs)  # type: ignore[misc]
+                return torch.compile(obj)  # type: ignore[misc]
 
         optimizer_name = optimizer.lower()
         if optimizer_name not in {"adam", "adamw"}:
@@ -129,7 +168,9 @@ class Agent:
         self.target_policy_noise = target_policy_noise
         # Clipping functionality is intentionally disabled; keep attribute for backward-compat.
         self.target_policy_clip = None
-        self.log_interval_scale = max(1, int(round(log_interval_scale))) if log_interval_scale and log_interval_scale > 0 else 1
+        self.log_interval_scale = (
+            max(1, int(round(log_interval_scale))) if log_interval_scale and log_interval_scale > 0 else 1
+        )
         # Diagnostics/logging cadence (skip most steps to cut overhead; does not affect training)
         base_diag_interval = max(100, int(self.LEARN_EVERY * 50))
         base_td_interval = max(100, int(self.LEARN_EVERY * 50))
@@ -146,18 +187,20 @@ class Agent:
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
+            device=device,
             activation=self.activation,
             norm_type=self.norm_type,
-        ).to(device)
+        )
         self.actor_target = Actor(
             state_size,
             action_size,
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
+            device=device,
             activation=self.activation,
             norm_type=self.norm_type,
-        ).to(device)
+        )
         self.actor_target.load_state_dict(self.actor_local.state_dict())
         self._actor_action_output = getattr(self.actor_local, "action_output", "tanh")
         self._actor_apply_profitability_gate = getattr(self.actor_local, "apply_profitability_gate", None)
@@ -213,18 +256,20 @@ class Agent:
                 random_seed,
                 hidden_size=critic_hidden_size,
                 n_layers=critic_layers,
+                device=device,
                 activation=self.activation,
                 norm_type=self.norm_type,
-            ).to(device)
+            )
             self.critic_target = Critic(
                 state_size,
                 action_size,
                 random_seed,
                 hidden_size=critic_hidden_size,
                 n_layers=critic_layers,
+                device=device,
                 activation=self.activation,
                 norm_type=self.norm_type,
-            ).to(device)
+            )
             self.critic_target.load_state_dict(self.critic_local.state_dict())
 
         if self.use_compile and hasattr(torch, "compile"):
@@ -275,17 +320,35 @@ class Agent:
         self.alpha = 0.9
 
         if per:
-            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, device=device, seed=random_seed, gamma=GAMMA, n_step=n_step,
-                                            parallel_env=1, alpha=per_alpha, beta_start=per_beta_start, beta_frames=per_beta_frames,
-                                            use_memmap=bool(replay_memmap))
+            self.memory = PrioritizedReplay(
+                BUFFER_SIZE,
+                BATCH_SIZE,
+                device=device,
+                seed=random_seed,
+                gamma=GAMMA,
+                n_step=n_step,
+                parallel_env=1,
+                alpha=per_alpha,
+                beta_start=per_beta_start,
+                beta_frames=per_beta_frames,
+                use_memmap=bool(replay_memmap),
+            )
             # Configure PER priority stability
             try:
                 self.memory.min_priority = per_priority_floor
             except Exception:
                 pass
         else:
-            self.memory = CircularReplayBuffer(buffer_size=BUFFER_SIZE, batch_size=BATCH_SIZE, n_step=n_step, parallel_env=1,
-                                                device=device, seed=random_seed, gamma=GAMMA, use_memmap=bool(replay_memmap) or BUFFER_SIZE > 500000)
+            self.memory = CircularReplayBuffer(
+                buffer_size=BUFFER_SIZE,
+                batch_size=BATCH_SIZE,
+                n_step=n_step,
+                parallel_env=1,
+                device=device,
+                seed=random_seed,
+                gamma=GAMMA,
+                use_memmap=bool(replay_memmap) or BUFFER_SIZE > 500000,
+            )
         self._per_update_priorities = bool(per) and hasattr(self.memory, "update_priorities")
         self._per_has_priority_stats = bool(per) and hasattr(self.memory, "get_priority_stats")
 
@@ -293,7 +356,11 @@ class Agent:
         schedule_horizon = lr_schedule_episodes if lr_schedule_episodes is not None else total_episodes
         self.total_episodes = max(1, int(schedule_horizon)) if schedule_horizon is not None else 65000
         self.warmup_frac = warmup_frac
-        self.warmup_episodes = max(1, int(warmup_episodes)) if warmup_episodes is not None else max(1, int(self.total_episodes * warmup_frac))
+        self.warmup_episodes = (
+            max(1, int(warmup_episodes))
+            if warmup_episodes is not None
+            else max(1, int(self.total_episodes * warmup_frac))
+        )
         self.min_lr = min_lr
 
         # Clipping functionality (grad clipping) is intentionally disabled.
@@ -318,8 +385,12 @@ class Agent:
             return max(min_lr / init_lr, scale)
 
         if final_lr_fraction < 1.0:
-            self.actor_scheduler = optim.lr_scheduler.LambdaLR(self.actor_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_ACTOR))
-            self.critic_scheduler = optim.lr_scheduler.LambdaLR(self.critic_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_CRITIC))
+            self.actor_scheduler = optim.lr_scheduler.LambdaLR(
+                self.actor_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_ACTOR)
+            )
+            self.critic_scheduler = optim.lr_scheduler.LambdaLR(
+                self.critic_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_CRITIC)
+            )
         else:
             self.actor_scheduler = None
             self.critic_scheduler = None
@@ -331,7 +402,14 @@ class Agent:
         self._last_iqn_spread = None
         self._episode_count = 0
 
-    def _build_optimizer(self, model: torch.nn.Module, optim_cls, lr: float, weight_decay: float, betas: Optional[Tuple[float, float]] = None):
+    def _build_optimizer(
+        self,
+        model: torch.nn.Module,
+        optim_cls,
+        lr: float,
+        weight_decay: float,
+        betas: Optional[Tuple[float, float]] = None,
+    ):
         """Create optimizer with sensible weight decay exclusions."""
         params_decay = []
         params_no_decay = []
@@ -353,10 +431,18 @@ class Agent:
         optim_kwargs = {"lr": lr}
         if betas is not None:
             optim_kwargs["betas"] = betas
+        optim_kwargs_foreach = dict(optim_kwargs)
+        optim_kwargs_foreach["foreach"] = True
 
         if not param_groups:
-            return optim_cls(model.parameters(), weight_decay=0.0, **optim_kwargs)
-        return optim_cls(param_groups, **optim_kwargs)
+            try:
+                return optim_cls(model.parameters(), weight_decay=0.0, **optim_kwargs_foreach)
+            except TypeError:
+                return optim_cls(model.parameters(), weight_decay=0.0, **optim_kwargs)
+        try:
+            return optim_cls(param_groups, **optim_kwargs_foreach)
+        except TypeError:
+            return optim_cls(param_groups, **optim_kwargs)
 
     def update_episode_count(self, episode: int):
         """Update internal episode counter (used for PER beta annealing in caller)."""
@@ -376,9 +462,9 @@ class Agent:
         max_actor = self.initial_actor_lr
         max_critic = self.initial_critic_lr
         for g in self.actor_optimizer.param_groups:
-            g['lr'] = min(max_actor, g['lr'] * boost)
+            g["lr"] = min(max_actor, g["lr"] * boost)
         for g in self.critic_optimizer.param_groups:
-            g['lr'] = min(max_critic, g['lr'] * boost)
+            g["lr"] = min(max_critic, g["lr"] * boost)
 
     def _pre_noise_sigma(self) -> float:
         """Compute pre-squash noise std based on episode schedule."""
@@ -431,7 +517,9 @@ class Agent:
         log_step = timestamp  # keep TB index aligned with true environment step count
         if len(self.memory) < self.min_replay_size or len(self.memory) <= self.BATCH_SIZE:
             if writer_available and self._should_log(timestamp, self.collection_progress_interval):
-                writer.add_scalar("Collection_Progress", len(self.memory) / self.min_replay_size * 100, log_step)
+                writer.add_scalar(
+                    "Collection_Progress", len(self.memory) / self.min_replay_size * 100, log_step
+                )
             return
         if timestamp % self.LEARN_EVERY != 0:
             return
@@ -445,60 +533,67 @@ class Agent:
             writer.add_scalar("Actor_loss", losses[1], log_step)
         if last_batch and writer_available and self._should_log(timestamp, self.per_step_log_interval):
             self._log_batch_diagnostics(last_batch, log_step, writer)
-        if self._per_has_priority_stats and writer_available and self._should_log(timestamp, self.per_stats_interval):
+        if (
+            self._per_has_priority_stats
+            and writer_available
+            and self._should_log(timestamp, self.per_stats_interval)
+        ):
             for k, v in self.memory.get_priority_stats().items():
                 writer.add_scalar(f"PER/{k}", v, log_step)
 
     def learn_(self, experiences, gamma) -> Tuple[float, float]:
         self._maybe_init_profitability_params()
         states, actions, rewards, next_states, dones, idx, weights = experiences
-        if states.device != self.device:
-            states = states.to(self.device)
-        if actions.device != self.device:
-            actions = actions.to(self.device)
-        if rewards.device != self.device:
-            rewards = rewards.to(self.device)
-        if next_states.device != self.device:
-            next_states = next_states.to(self.device)
-        if dones.device != self.device:
-            dones = dones.to(self.device)
-        if weights is not None:
-            if weights.device != self.device:
-                weights = weights.to(self.device)
+        if states.device.type != self.device.type or actions.device.type != self.device.type:
+            raise RuntimeError(
+                f"Device mismatch: batch on {states.device}/{actions.device}, agent on {self.device}"
+            )
+        if (
+            rewards.device.type != self.device.type
+            or next_states.device.type != self.device.type
+            or dones.device.type != self.device.type
+        ):
+            raise RuntimeError("Device mismatch: replay buffer returned CPU tensors for a non-CPU agent")
+        if weights is not None and weights.device.type != self.device.type:
+            raise RuntimeError("Device mismatch: PER weights not on agent device")
+
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
             if self.target_policy_noise and self.target_policy_noise > 0:
                 # No clipping of target policy noise (intentional).
-                noise = (torch.randn_like(next_actions) * self.target_policy_noise)
+                noise = torch.randn_like(next_actions) * self.target_policy_noise
                 next_actions = next_actions + noise
             q_next = self.critic_target(next_states, next_actions)
             if not self.munchausen:
-                q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
+                q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
             else:
                 logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
                 tau_log_pi_next = q_next - self.entropy_tau * logsum
                 pi = F.softmax(q_next / self.entropy_tau, dim=1)
-                q_target = rewards + (self.GAMMA ** self.n_step) * (pi * (q_next - tau_log_pi_next) * (1 - dones.float()))
+                q_target = rewards + (self.GAMMA**self.n_step) * (
+                    pi * (q_next - tau_log_pi_next) * (1 - dones.float())
+                )
         q_expected = self.critic_local(states, actions)
         if self.per:
             td = q_target - q_expected
             critic_loss = (td.pow(2) * weights).mean()
             if self.step_counter % self.td_quantile_interval == 0:
                 with torch.no_grad():
-                    abs_td = td.abs().flatten()
+                    abs_td = td.detach().abs().flatten()
                     if abs_td.numel() > 10:
                         self._last_td_percentiles = (
                             torch.quantile(abs_td, 0.5).item(),
                             torch.quantile(abs_td, 0.9).item(),
-                            torch.quantile(abs_td, 0.99).item()
+                            torch.quantile(abs_td, 0.99).item(),
                         )
-            priorities = td.abs().detach().clamp_min(1e-6)
+            priorities = td.detach().abs().clamp_min(1e-6)
         else:
             critic_loss = F.mse_loss(q_expected, q_target)
             priorities = None
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         self.critic_optimizer.step()
+
         actions_pred = self.actor_local(states)
         q_val = self.critic_local(states, actions_pred)
         actor_loss = -q_val.mean()
@@ -520,29 +615,39 @@ class Agent:
     def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
         self._maybe_init_profitability_params()
         states, actions, rewards, next_states, dones, idx, weights = experiences
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
-        if weights is not None:
-            weights = weights.to(self.device)
+        if states.device.type != self.device.type or actions.device.type != self.device.type:
+            raise RuntimeError(
+                f"Device mismatch: batch on {states.device}/{actions.device}, agent on {self.device}"
+            )
+        if (
+            rewards.device.type != self.device.type
+            or next_states.device.type != self.device.type
+            or dones.device.type != self.device.type
+        ):
+            raise RuntimeError("Device mismatch: replay buffer returned CPU tensors for a non-CPU agent")
+        if weights is not None and weights.device.type != self.device.type:
+            raise RuntimeError("Device mismatch: PER weights not on agent device")
+
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
             if self.target_policy_noise and self.target_policy_noise > 0:
                 # No clipping of target policy noise (intentional).
-                noise = (torch.randn_like(next_actions) * self.target_policy_noise)
+                noise = torch.randn_like(next_actions) * self.target_policy_noise
                 next_actions = next_actions + noise
             qt_next, _ = self.critic_target(next_states, next_actions, self.N)
             qt_next = qt_next.transpose(1, 2)
             if not self.munchausen:
-                q_targets = rewards.unsqueeze(-1) + (self.GAMMA ** self.n_step) * qt_next * (1 - dones.float().unsqueeze(-1))
+                q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * qt_next * (
+                    1 - dones.float().unsqueeze(-1)
+                )
             else:
                 q_mean = qt_next.mean(-1)
                 logsum = torch.logsumexp(q_mean / self.entropy_tau, dim=1, keepdim=True)
                 tau_log_pi_next = (q_mean - self.entropy_tau * logsum).unsqueeze(1)
                 pi_target = F.softmax(q_mean / self.entropy_tau, dim=1).unsqueeze(1)
-                q_targets = rewards.unsqueeze(-1) + (self.GAMMA ** self.n_step) * (pi_target * (qt_next - tau_log_pi_next) * (1 - dones.float().unsqueeze(-1)))
+                q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * (
+                    pi_target * (qt_next - tau_log_pi_next) * (1 - dones.float().unsqueeze(-1))
+                )
         q_expected, taus = self.critic_local(states, actions, self.N)
         td_error = q_targets - q_expected
         huber = calculate_huber_loss(td_error, 1.0)
@@ -551,18 +656,18 @@ class Agent:
             critic_loss = (quantile_loss.unsqueeze(1) * weights).mean()
         else:
             critic_loss = quantile_loss.mean()
-        self.critic_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         self.critic_optimizer.step()
 
         actions_pred = self.actor_local(states)
         q_pred, _ = self.critic_local(states, actions_pred, self.N)
         actor_loss = -q_pred.mean()
-        self.actor_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_optimizer.step()
         self._updates_done += 1
-        if self.per and hasattr(self.memory, 'update_priorities'):
+        if self.per and hasattr(self.memory, "update_priorities"):
             pr = td_error.mean(dim=(1, 2)).abs().clamp_min(1e-6).detach().cpu().numpy()
             self.memory.update_priorities(idx, pr)
         if self.step_counter % self.td_quantile_interval == 0:
@@ -771,7 +876,9 @@ def calc_fraction_loss(FZ_, FZ, taus, weights=None):
     gradients2 = FZ - FZ_[:, 1:]
     flag_1 = FZ > torch.cat([FZ_[:, :1], FZ[:, :-1]], dim=1)
     flag_2 = FZ < torch.cat([FZ[:, 1:], FZ_[:, -1:]], dim=1)
-    gradients = (torch.where(flag_1, gradients1, -gradients1) + torch.where(flag_2, gradients2, -gradients2)).view(taus.shape[0], 31)
+    gradients = (
+        torch.where(flag_1, gradients1, -gradients1) + torch.where(flag_2, gradients2, -gradients2)
+    ).view(taus.shape[0], 31)
     if weights is not None:
         loss = ((gradients * taus[:, 1:-1]).sum(dim=1) * weights).mean()
     else:

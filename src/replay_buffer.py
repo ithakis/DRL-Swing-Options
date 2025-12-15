@@ -1,8 +1,9 @@
+import os
 from typing import Optional, Tuple
 
 import numpy as np
-import os
 import torch
+
 try:
     import numba  # type: ignore
 except ImportError:
@@ -11,7 +12,10 @@ except ImportError:
 
 # --- Numba-friendly Fenwick helpers with safe fallbacks ---
 
-def _py_fenwick_update(tree: np.ndarray, prob_cache: np.ndarray, idx: int, priority: float, alpha: float, capacity: int) -> float:
+
+def _py_fenwick_update(
+    tree: np.ndarray, prob_cache: np.ndarray, idx: int, priority: float, alpha: float, capacity: int
+) -> float:
     """In-place Fenwick update; returns delta added to the tree sum."""
     new_val = float(priority) ** alpha
     old_val = prob_cache[idx]
@@ -26,7 +30,9 @@ def _py_fenwick_update(tree: np.ndarray, prob_cache: np.ndarray, idx: int, prior
     return delta
 
 
-def _py_fenwick_rebuild(tree: np.ndarray, prob_cache: np.ndarray, priorities: np.ndarray, alpha: float, size: int, capacity: int) -> float:
+def _py_fenwick_rebuild(
+    tree: np.ndarray, prob_cache: np.ndarray, priorities: np.ndarray, alpha: float, size: int, capacity: int
+) -> float:
     """Rebuild Fenwick tree and cache from priorities; returns total mass."""
     tree.fill(0.0)
     if size == 0:
@@ -43,7 +49,9 @@ def _py_fenwick_rebuild(tree: np.ndarray, prob_cache: np.ndarray, priorities: np
     return float(prob_cache[:size].sum())
 
 
-def _py_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, masses: np.ndarray) -> np.ndarray:
+def _py_fenwick_find_prefix_indices(
+    tree: np.ndarray, capacity: int, size: int, masses: np.ndarray
+) -> np.ndarray:
     """Vectorized prefix search: masses -> indices."""
     out = np.empty(masses.shape, dtype=np.int64)
     # Largest power of two <= capacity
@@ -65,7 +73,9 @@ def _py_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, 
     return out
 
 
-def _np_fenwick_find_prefix_indices(tree: np.ndarray, capacity: int, size: int, masses: np.ndarray) -> np.ndarray:
+def _np_fenwick_find_prefix_indices(
+    tree: np.ndarray, capacity: int, size: int, masses: np.ndarray
+) -> np.ndarray:
     """Fast numpy-vectorized prefix search for Fenwick trees (no numba required)."""
     n = int(masses.shape[0])
     if n == 0:
@@ -104,7 +114,7 @@ def _py_fenwick_batch_update(
     for j in range(n):
         idx = int(indices[j])
         pr = float(priorities[j])
-        new_val = pr ** alpha
+        new_val = pr**alpha
         old_val = prob_cache[idx]
         delta = new_val - old_val
         if abs(delta) < 1e-12:
@@ -133,7 +143,7 @@ if numba is not None:
 class CircularReplayBuffer:
     """
     High-performance circular array-based replay buffer.
-    
+
     Key optimizations:
     - Uses numpy circular arrays instead of deque for O(1) operations
     - Pre-allocated memory for zero-copy operations
@@ -142,14 +152,22 @@ class CircularReplayBuffer:
     - SIMD-optimized operations where possible
     """
 
-    def __init__(self, buffer_size: int, batch_size: int, n_step: int, parallel_env: int, 
-                 device: torch.device, seed: int, gamma: float, 
-                 state_shape: Optional[Tuple[int, ...]] = None,
-                 action_shape: Optional[Tuple[int, ...]] = None,
-                 use_memmap: bool = False):
+    def __init__(
+        self,
+        buffer_size: int,
+        batch_size: int,
+        n_step: int,
+        parallel_env: int,
+        device: torch.device,
+        seed: int,
+        gamma: float,
+        state_shape: Optional[Tuple[int, ...]] = None,
+        action_shape: Optional[Tuple[int, ...]] = None,
+        use_memmap: bool = False,
+    ):
         """
         Initialize CircularReplayBuffer with pre-allocated arrays.
-        
+
         Args:
             buffer_size: Maximum number of experiences to store
             batch_size: Size of sampling batch
@@ -169,30 +187,30 @@ class CircularReplayBuffer:
         self.device = device
         self.gamma = gamma
         self.use_memmap = use_memmap
-        
+
         # Initialize random state
         self.rng = np.random.RandomState(seed)
-        
+
         # Circular buffer state
         self.position = 0
         self.size = 0  # Current number of stored experiences
         self.full = False  # Whether buffer has wrapped around
-        
+
         # Pre-allocated arrays (will be initialized on first add)
         self.states: Optional[np.ndarray] = None
         self.actions: Optional[np.ndarray] = None
         self.rewards: Optional[np.ndarray] = None
         self.next_states: Optional[np.ndarray] = None
         self.dones: Optional[np.ndarray] = None
-        
+
         # Store initial shapes for lazy initialization
         self.state_shape = state_shape
         self.action_shape = action_shape
-        
+
         # N-step circular buffers for each parallel environment
         self.n_step_buffers = [CircularNStepBuffer(n_step, gamma) for _ in range(parallel_env)]
         self.env_iter = 0
-        
+
         print("🚀 CircularReplayBuffer initialized:")
         print(f"  - Buffer size: {buffer_size:,}")
         print(f"  - Batch size: {batch_size}")
@@ -203,43 +221,50 @@ class CircularReplayBuffer:
         """Lazy initialization of storage arrays based on first experience."""
         if self.states is not None:
             return
-            
+
         # Determine shapes from first experience if not provided
         if self.state_shape is None:
             self.state_shape = state.shape
         if self.action_shape is None:
             self.action_shape = action.shape
-            
+
         # Calculate memory requirements
         state_bytes = np.prod(self.state_shape) * 4 * self.buffer_size  # float32
         action_bytes = np.prod(self.action_shape) * 4 * self.buffer_size
         total_mb = (state_bytes * 2 + action_bytes + self.buffer_size * 8) / (1024 * 1024)
-        
+
         print(f"📊 Allocating {total_mb:.1f} MB for replay buffer arrays...")
-        
+
         # Choose storage type based on size and user preference
         if self.use_memmap and total_mb > 1000:  # Use memmap for buffers >1GB
             print("💾 Using memory-mapped storage for large buffer")
-            self.states = np.memmap('replay_states.dat', dtype=np.float32, mode='w+', 
-                                  shape=(self.buffer_size,) + self.state_shape)
-            self.next_states = np.memmap('replay_next_states.dat', dtype=np.float32, mode='w+',
-                                       shape=(self.buffer_size,) + self.state_shape)
-            self.actions = np.memmap('replay_actions.dat', dtype=np.float32, mode='w+',
-                                   shape=(self.buffer_size,) + self.action_shape)
+            self.states = np.memmap(
+                "replay_states.dat", dtype=np.float32, mode="w+", shape=(self.buffer_size,) + self.state_shape
+            )
+            self.next_states = np.memmap(
+                "replay_next_states.dat",
+                dtype=np.float32,
+                mode="w+",
+                shape=(self.buffer_size,) + self.state_shape,
+            )
+            self.actions = np.memmap(
+                "replay_actions.dat", dtype=np.float32, mode="w+", shape=(self.buffer_size,) + self.action_shape
+            )
         else:
             # Standard numpy arrays
             self.states = np.empty((self.buffer_size,) + self.state_shape, dtype=np.float32)
             self.next_states = np.empty((self.buffer_size,) + self.state_shape, dtype=np.float32)
             self.actions = np.empty((self.buffer_size,) + self.action_shape, dtype=np.float32)
-        
+
         # These are always small enough for standard arrays
         self.rewards = np.empty(self.buffer_size, dtype=np.float32)
         self.dones = np.empty(self.buffer_size, dtype=np.bool_)
-        
+
         print("✅ Buffer arrays initialized successfully")
 
-    def add(self, state: np.ndarray, action: np.ndarray, reward: float, 
-            next_state: np.ndarray, done: bool) -> None:
+    def add(
+        self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool
+    ) -> None:
         """Add experience to the appropriate n-step buffer and flush ready transitions.
 
         Emits zero or more processed n-step transitions per call (e.g., when a terminal
@@ -249,33 +274,34 @@ class CircularReplayBuffer:
         # Cycle through parallel environments
         if self.env_iter >= self.parallel_env:
             self.env_iter = 0
-            
+
         # Add to n-step buffer and flush any ready transitions
         ready_exps = self.n_step_buffers[self.env_iter].add(state, action, reward, next_state, done)
         for exp in ready_exps:
             self._add_to_buffer(*exp)
-            
+
         self.env_iter += 1
 
-    def _add_to_buffer(self, state: np.ndarray, action: np.ndarray, reward: float,
-                      next_state: np.ndarray, done: bool) -> None:
+    def _add_to_buffer(
+        self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool
+    ) -> None:
         """Add processed n-step experience directly to circular buffer."""
         # Initialize arrays on first call
         self._initialize_arrays(state, action)
-        
+
         # Store experience at current position
         assert self.states is not None, "States array not initialized"
         assert self.actions is not None, "Actions array not initialized"
         assert self.rewards is not None, "Rewards array not initialized"
         assert self.next_states is not None, "Next states array not initialized"
         assert self.dones is not None, "Dones array not initialized"
-        
+
         self.states[self.position] = state
         self.actions[self.position] = action
         self.rewards[self.position] = reward
         self.next_states[self.position] = next_state
         self.dones[self.position] = done
-        
+
         # Update circular buffer state
         self.position = (self.position + 1) % self.buffer_size
         if self.size < self.buffer_size:
@@ -283,41 +309,43 @@ class CircularReplayBuffer:
         else:
             self.full = True
 
-    def sample(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray, None]:
+    def sample(
+        self,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray, None]:
         """
         Efficiently sample a batch of experiences.
-        
+
         Returns:
             Tuple of (states, actions, rewards, next_states, dones, indices, weights)
         """
         if self.size < self.batch_size:
             raise ValueError(f"Not enough samples in buffer: {self.size} < {self.batch_size}")
-        
+
         if self.states is None:
             raise RuntimeError("Buffer not initialized - no experiences added yet")
-        
+
         assert self.actions is not None, "Actions array not initialized"
-        assert self.rewards is not None, "Rewards array not initialized" 
+        assert self.rewards is not None, "Rewards array not initialized"
         assert self.next_states is not None, "Next states array not initialized"
         assert self.dones is not None, "Dones array not initialized"
-        
+
         # Vectorized random sampling - much faster than random.sample()
         indices = self.rng.choice(self.size, size=self.batch_size, replace=False)
-        
+
         # Vectorized array indexing - O(1) operation
         batch_states = self.states[indices]
         batch_actions = self.actions[indices]
         batch_rewards = self.rewards[indices]
         batch_next_states = self.next_states[indices]
         batch_dones = self.dones[indices]
-        
+
         # Convert to tensors with optimized memory transfer
         states = torch.from_numpy(batch_states).to(self.device, non_blocking=True)
         actions = torch.from_numpy(batch_actions).to(self.device, non_blocking=True)
         rewards = torch.from_numpy(batch_rewards).unsqueeze(1).to(self.device, non_blocking=True)
         next_states = torch.from_numpy(batch_next_states).to(self.device, non_blocking=True)
         dones = torch.from_numpy(batch_dones).unsqueeze(1).to(self.device, non_blocking=True)
-        
+
         return (states, actions, rewards, next_states, dones, indices, None)
 
     def __len__(self) -> int:
@@ -332,25 +360,25 @@ class CircularReplayBuffer:
         """Return approximate memory usage in MB."""
         if self.states is None:
             return 0.0
-        
+
         assert self.actions is not None, "Actions array not initialized"
         assert self.rewards is not None, "Rewards array not initialized"
         assert self.next_states is not None, "Next states array not initialized"
         assert self.dones is not None, "Dones array not initialized"
-        
+
         total_bytes = (
-            self.states.nbytes + 
-            self.next_states.nbytes + 
-            self.actions.nbytes + 
-            self.rewards.nbytes + 
-            self.dones.nbytes
+            self.states.nbytes
+            + self.next_states.nbytes
+            + self.actions.nbytes
+            + self.rewards.nbytes
+            + self.dones.nbytes
         )
         return total_bytes / (1024 * 1024)
 
     def set_episode_count(self, episode_count):
         """Set episode count (no-op for non-prioritized replay)."""
         pass
-    
+
     def set_frame_count(self, frame_count):
         """Set frame count (no-op for non-prioritized replay)."""
         pass
@@ -358,11 +386,11 @@ class CircularReplayBuffer:
     # Compatibility stubs so agent diagnostic code can call PER-like helpers safely
     def get_priority_stats(self):
         return {
-            'priority_entropy': 0.0,
-            'priority_max': 0.0,
-            'priority_min': 0.0,
-            'priority_mean': 0.0,
-            'priority_std': 0.0
+            "priority_entropy": 0.0,
+            "priority_max": 0.0,
+            "priority_min": 0.0,
+            "priority_mean": 0.0,
+            "priority_std": 0.0,
         }
 
     def sample_priority_values(self, k: int = 0):  # returns empty array
@@ -386,6 +414,7 @@ class CircularNStepBuffer:
         self.n_step = n_step
         self.gamma = gamma
         from collections import deque as _dq
+
         self.buffer = _dq()  # stores tuples (s, a, r, s_next, done)
 
     def _ready_for_front(self) -> bool:
@@ -411,7 +440,7 @@ class CircularNStepBuffer:
         next_s = self.buffer[0][3]
         for k in range(L):
             s, a, r, s_next, d = self.buffer[k]
-            ret += (self.gamma ** k) * float(r)
+            ret += (self.gamma**k) * float(r)
             if d and not done_any:
                 done_any = True
                 next_s = s_next
@@ -424,8 +453,7 @@ class CircularNStepBuffer:
         self.buffer.popleft()
         return s0, a0, ret, next_s, done_any
 
-    def add(self, state: np.ndarray, action: np.ndarray, reward: float,
-            next_state: np.ndarray, done: bool):
+    def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool):
         """Add a transition and emit all ready n-step experiences (list)."""
         self.buffer.append((state, action, reward, next_state, done))
         out = []
@@ -433,9 +461,6 @@ class CircularNStepBuffer:
             out.append(self._pop_front_transition())
         return out
 
-
-
-    
 
 class PrioritizedReplay(object):
     """
@@ -517,7 +542,7 @@ class PrioritizedReplay(object):
         if self.states is not None:
             return
         state_shape = state.shape
-        action_shape = action.shape if hasattr(action, 'shape') else (1,)
+        action_shape = action.shape if hasattr(action, "shape") else (1,)
         print(f"📊 Initializing PER arrays with shapes: state{state_shape}, action{action_shape}")
         if self.use_memmap:
             base_dir = self.memmap_dir or os.getcwd()
@@ -557,7 +582,7 @@ class PrioritizedReplay(object):
             self.iter_ = 0
         assert state.ndim == next_state.ndim
         ready = self._nstep_accums[self.iter_].add(state, action, reward, next_state, done)
-        for (s0, a0, Rn, sN, done_any) in ready:
+        for s0, a0, Rn, sN, done_any in ready:
             self._add_to_buffer(s0, a0, Rn, sN, done_any)
         self.iter_ += 1
 
@@ -583,7 +608,9 @@ class PrioritizedReplay(object):
         """Update Fenwick tree and cache for a single index."""
         if idx < 0 or idx >= self.capacity:
             return
-        delta = _fenwick_update_helper(self._tree, self._prob_alpha_cache, idx, priority, self.alpha, self.capacity)
+        delta = _fenwick_update_helper(
+            self._tree, self._prob_alpha_cache, idx, priority, self.alpha, self.capacity
+        )
         self._prob_sum_cache += delta
 
     def _fenwick_prefix_sum(self, idx: int) -> float:
@@ -687,15 +714,26 @@ class PrioritizedReplay(object):
         if self.size == 0 or self.states is None or self.actions is None or self.next_states is None:
             return 0.0
         total_bytes = (
-            self.states.nbytes + self.next_states.nbytes + self.actions.nbytes + self.rewards.nbytes + self.dones.nbytes + self.priorities.nbytes
+            self.states.nbytes
+            + self.next_states.nbytes
+            + self.actions.nbytes
+            + self.rewards.nbytes
+            + self.dones.nbytes
+            + self.priorities.nbytes
         )
         return total_bytes / (1024 * 1024)
 
     def get_priority_stats(self):
         if self.size == 0:
-            return {'priority_entropy': 0.0, 'priority_max': 0.0, 'priority_min': 0.0, 'priority_mean': 0.0, 'priority_std': 0.0}
-        pr = self.priorities[:self.size]
-        pa = pr ** self.alpha
+            return {
+                "priority_entropy": 0.0,
+                "priority_max": 0.0,
+                "priority_min": 0.0,
+                "priority_mean": 0.0,
+                "priority_std": 0.0,
+            }
+        pr = self.priorities[: self.size]
+        pa = pr**self.alpha
         s = pa.sum()
         if s <= 0:
             entropy = 0.0
@@ -706,7 +744,13 @@ class PrioritizedReplay(object):
             entropy = float(-(p * (np.log(p + 1e-12))).sum())
             pa_mean = float(pr.mean())
             pa_std = float(pr.std())
-        return {'priority_entropy': entropy, 'priority_max': float(pr.max()), 'priority_min': float(pr.min()), 'priority_mean': pa_mean, 'priority_std': pa_std}
+        return {
+            "priority_entropy": entropy,
+            "priority_max": float(pr.max()),
+            "priority_min": float(pr.min()),
+            "priority_mean": pa_mean,
+            "priority_std": pa_std,
+        }
 
     def sample_priority_values(self, k: int = 512):
         if self.size == 0:

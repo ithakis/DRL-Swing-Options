@@ -15,7 +15,7 @@ This repository implements a comprehensive framework for pricing swing options i
 Swing options are exotic derivatives prevalent in energy markets that grant holders multiple exercise rights over the contract's lifetime, subject to various constraints:
 
 - **Local constraints**: Minimum/maximum exercise quantities per decision period
-- **Global constraints**: Total volume limits over the contract lifetime  
+- **Global constraints**: Total volume limits over the contract lifetime
 - **Refraction periods**: Minimum time intervals between exercises
 - **Complex payoff structures**: Non-trivial optimal exercise boundaries
 
@@ -44,23 +44,189 @@ This implementation combines:
 
 ### Actor: profitability-gated continuous policy
 
-The actor is a lightweight MLP (default `2×64`, `LayerNorm` + `SiLU`) with a `tanh01` output head producing a normalized proposal `q_raw ∈ [0,1]`. In v42 we add an **actor-level feasibility layer** that enforces a *hard* profitability constraint for swing exercise with convex costs:
+The actor is a continuous policy $\pi_\theta$ that outputs a *normalized* exercise decision $q_t \in [0,1]$ at each decision time $t$.
 
-- Immediate profit used for gating:
-  - `Pi(q) = q * relu(S - K) - c_cost * q**gamma_cost`
-- The actor output is gated as:
-  - if `Pi(q_raw) <= 0` → execute `q = 0`
-  - else → execute `q = q_raw`
+Backbone (MLP + squash):
 
-To avoid killing gradients in the masked region, the hard gate uses a **Straight-Through Estimator (STE)**: the forward pass uses the hard-gated action, while the backward pass propagates gradients as if the ungated `q_raw` was used.
+$$
+u_t = u_\theta(s_t),
+$$
 
-Implementation lives in:
+$$
+q_t^{\mathrm{raw}} = g(u_t),
+\qquad
+g(u)=\frac{1}{2}\left(\tanh(u)+1\right)\in[0,1].
+$$
+
+Denormalization to contract units (same mapping as the environment):
+
+$$
+\tilde q_t = q_{\min} + q_t^{\mathrm{raw}}\left(q_{\max}-q_{\min}\right).
+$$
+
+Immediate net profit used for gating (convex exercise cost):
+
+$$
+\Pi_t(\tilde q_t) = \tilde q_t\,(S_t-K)^+ - c_{\mathrm{cost}}\,\tilde q_t^{\gamma_{\mathrm{cost}}}.
+$$
+
+Hard gate (executed action in the forward pass):
+
+$$
+q_t^{\mathrm{fwd}} = q_t^{\mathrm{raw}}\,\mathbf{1}\!\left[\Pi_t(\tilde q_t)>0\right].
+$$
+
+To keep gradients through the hard gate we use a straight-through estimator (STE). Let $\mathrm{sg}(\cdot)$ denote a stop-gradient operator; the returned tensor is
+
+$$
+q_t = q_t^{\mathrm{raw}} + \mathrm{sg}\!\left(q_t^{\mathrm{fwd}} - q_t^{\mathrm{raw}}\right),
+$$
+
+so the forward pass executes $q_t^{\mathrm{fwd}}$ but backpropagation treats $q_t$ as $q_t^{\mathrm{raw}}$.
+
+Implementation:
+
 - `src/networks.py` (`Actor.apply_profitability_gate`, `Actor.forward_raw_and_gated`)
-- `src/agent.py` (`Agent.act` applies noise pre-gate, then gates)
+- `src/agent.py` (`Agent.act` adds exploration noise pre-squash, then gates)
 
 ### Exploration: noise is applied pre-gate
 
-Exploration noise is added in pre-activation space (before the `tanh01` squash) to form `q_raw`, and then the profitability gate is applied. Noise is **never** applied after gating. This keeps exploration effective near the profitability boundary while ensuring the environment never receives an unprofitable exercise due to noise.
+Exploration noise is injected in pre-activation space and then squashed and gated. Noise is never applied after gating.
+
+At collection time:
+
+$$
+\tilde u_t = u_\theta(s_t) + \epsilon_t,
+\qquad
+\epsilon_t \sim \mathcal{N}\left(0,\sigma_u(e)^2\right),
+$$
+
+$$
+q_t^{\mathrm{raw}} = g(\tilde u_t),
+\qquad
+q_t = \mathrm{Gate}\!\left(q_t^{\mathrm{raw}}, s_t\right).
+$$
+
+Local sensitivity of the squash:
+
+$$
+g'(u)=\frac{1}{2}\left(1-\tanh^2(u)\right)=\frac{1}{2\cosh^2(u)}.
+$$
+
+For small noise, a first-order approximation gives
+
+$$
+\mathrm{Var}\!\left[q_t^{\mathrm{raw}}\mid s_t\right]\approx g'\!\left(u_\theta(s_t)\right)^2\,\sigma_u(e)^2,
+$$
+
+so saturation ($|u|\gg 0$) naturally dampens post-squash variance.
+
+The schedule implemented in `src/agent.py` is a plateau followed by hyperbolic decay (with asymptote $\sigma_{\min}$):
+
+$$
+\sigma_u(e)=
+\begin{cases}
+\sigma_0, & 1 \le e < N_p, \\
+\sigma_{\min} + (\sigma_0-\sigma_{\min})\frac{N_p}{e}, & e \ge N_p.
+\end{cases}
+$$
+
+### Architecture diagrams
+
+#### 1) RL algorithm / system architecture
+
+```mermaid
+%%{init: {"theme":"base","flowchart":{"nodeSpacing":50,"rankSpacing":60},"themeVariables":{"fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif","primaryColor":"#f6f8fa","primaryTextColor":"#24292f","primaryBorderColor":"#d0d7de","lineColor":"#57606a","secondaryColor":"#ffffff","tertiaryColor":"#ffffff"}}}%%
+flowchart TB
+  classDef node fill:#f6f8fa,stroke:#d0d7de,color:#24292f;
+  classDef accent fill:#ddf4ff,stroke:#0969da,color:#24292f;
+
+  subgraph Data[Data generation]
+    direction TB
+    HHK[HHK parameters]:::node --> Sim[simulate_hhk_spot]:::accent
+    Sim --> TrainDS[train_ds (t,S,X,Y)]:::node
+    Sim --> EvalDS[eval_ds (t,S,X,Y)]:::node
+  end
+
+  subgraph Env[Environments]
+    direction LR
+    TrainDS --> TrainEnv[SwingOptionEnv (train)]:::node
+    EvalDS --> EvalEnv[SwingOptionEnv (eval)]:::node
+  end
+
+  subgraph Loop[Training loop]
+    direction TB
+    TrainEnv --> Reset[reset -> state_0]:::node
+    Reset --> Act[Agent.act]:::accent
+    Act --> Step[env.step]:::node
+    Step --> Store[ReplayBuffer.add]:::node
+    Store --> Sample[sample batch (PER optional)]:::node
+    Sample --> Update[update critic + actor]:::accent
+    Update --> Target[soft update targets (tau)]:::node
+  end
+
+  subgraph Pricing[Pricing / evaluation]
+    direction TB
+    Target --> Trigger[every eval_every episodes]:::node
+    Trigger --> EvalRun[evaluate_agent (EvalEnv)]:::accent
+    EvalRun --> Price[price = mean discounted payoff]:::node
+    Price --> Bench[compare vs LSM + FDM]:::node
+  end
+```
+
+#### 2) Critic network architecture
+
+```mermaid
+%%{init: {"theme":"base","flowchart":{"nodeSpacing":50,"rankSpacing":60},"themeVariables":{"fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif","primaryColor":"#f6f8fa","primaryTextColor":"#24292f","primaryBorderColor":"#d0d7de","lineColor":"#57606a","secondaryColor":"#ffffff","tertiaryColor":"#ffffff"}}}%%
+flowchart TB
+  classDef node fill:#f6f8fa,stroke:#d0d7de,color:#24292f;
+  classDef accent fill:#ddf4ff,stroke:#0969da,color:#24292f;
+
+  subgraph MLP[Critic MLP (iqn=0)]
+    direction TB
+    s[state (9)]:::node --> se[Linear 9->H; Norm; SiLU]:::node
+    a[action (1)]:::node --> cat[concat]:::node
+    se --> cat
+    cat --> al[Linear (H+1)->H; Norm; SiLU]:::node
+    al --> pl[(n_layers-2) x (Linear H->H; Norm; SiLU)]:::node
+    pl --> q[Linear H->1 (Q)]:::accent
+  end
+
+  subgraph IQN[IQN critic (iqn=1)]
+    direction TB
+    sa[concat(state, action)]:::node --> head[Linear -> H; Norm; ReLU]:::node
+    tau[tau ~ U(0,1)]:::node --> cos[cos(pi*i*tau), i=1..n_cos]:::node --> emb[Linear n_cos->H; ReLU]:::node
+    head --> mul[element-wise multiply]:::node
+    emb --> mul
+    mul --> ff1[Linear H->H; Norm; ReLU]:::node
+    ff1 --> z[Linear H->1 (quantiles)]:::accent
+    z --> mean[mean over tau -> Q]:::node
+  end
+```
+
+#### 3) Actor network architecture (v42 profitability-gated policy)
+
+```mermaid
+%%{init: {"theme":"base","flowchart":{"nodeSpacing":50,"rankSpacing":60},"themeVariables":{"fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif","primaryColor":"#f6f8fa","primaryTextColor":"#24292f","primaryBorderColor":"#d0d7de","lineColor":"#57606a","secondaryColor":"#ffffff","tertiaryColor":"#ffffff"}}}%%
+flowchart TB
+  classDef node fill:#f6f8fa,stroke:#d0d7de,color:#24292f;
+  classDef accent fill:#ddf4ff,stroke:#0969da,color:#24292f;
+
+  s[state (9)]:::node --> h[(n_layers) x (Linear -> H; Norm; SiLU)]:::node
+  h --> pre[fc4: pre-activation u_theta(s)]:::node
+
+  pre --> noise[add noise: eps ~ Normal(0, sigma_u(e))]:::node
+  noise --> squash[squash -> q_raw in [0,1]]:::node
+
+  squash --> denorm[denormalize: q_actual = q_min + q_raw*(q_max-q_min)]:::node
+  s --> smk[use state[0] = S-K]:::node
+  smk --> payoff[payoff_per_unit = relu(S-K)]:::node
+  denorm --> profit[profit Pi(q_actual)]:::node
+  payoff --> profit
+  profit --> gate[hard gate: keep q_raw if Pi>0 else 0]:::accent
+  gate --> ste[STE: backprop uses q_raw]:::node
+  ste --> act[executed action q in [0,1]]:::accent
+```
 
 ### Why choose this over env-only masking?
 
@@ -140,7 +306,7 @@ The RL formulation treats swing option exercise as a continuous control problem:
 
 ## Repository Structure
 
-```
+```text
 D4PG-QR-FRM/
 ├── src/                              # Core implementation
 │   ├── agent.py                      # D4PG agent with all extensions
@@ -254,63 +420,89 @@ This launches multiple seeds with 32,768 training episodes and comprehensive eva
 Flags are grouped by what they primarily control; all defaults are chosen to reproduce the paper-style monthly swing setup and can be overridden from the command line.
 
 - **Training loop & evaluation**
-  - `-n_paths`, `-eval_every`, `-n_paths_eval`: number of training episodes, evaluation frequency, and evaluation sample size.  
-  - `-seed`: RNG seed for env and networks.  
+  - `-n_paths`, `-eval_every`, `-n_paths_eval`: number of training episodes, evaluation frequency, and evaluation sample size.
+  - `-seed`: RNG seed for env and networks.
   - `--eval_batch_size`, `--eval_benchmark`, `--profile_eval`: batched evaluation throughput, evaluation-only runs, and cProfile of the eval path.
 
 - **Swing contract & LSM benchmark**
-  - `--strike`, `--maturity`, `--n_rights`, `--q_min`, `--q_max`, `--Q_min`, `--Q_max`, `--risk_free_rate`, `--min_refraction_periods`: financial contract and exercise/refraction constraints shared by RL and LSM/FDM.  
-  - `--c_cost`, `--gamma_cost`: convex per-exercise cost term.  
+  - `--strike`, `--maturity`, `--n_rights`, `--q_min`, `--q_max`, `--Q_min`, `--Q_max`, `--risk_free_rate`, `--min_refraction_periods`: financial contract and exercise/refraction constraints shared by RL and LSM/FDM.
+  - `--c_cost`, `--gamma_cost`: convex per-exercise cost term.
   - `--lsm_basis`, `--lsm_degree`, `--lsm_reg`, `--lsm_reg_alpha`: LSM polynomial family, degree, and regularization.
 
 - **HHK stochastic process**
   - `--S0`, `--alpha`, `--sigma`, `--beta`, `--lam`, `--mu_J`: parameters of the 2-factor OU-with-jumps HHK model used to generate spot paths.
 
 - **Algorithm switches (D4PG/DDPG variants)**
-  - `--device`: `"cpu"` or `"gpu"` (CUDA if available).  
-  - `-per` plus `--per_alpha`, `--per_beta_start`, `--per_beta_frames`, `--per_alpha_final`, `--per_beta_final`, `--per_alpha_ramp_start`, `--per_alpha_ramp_end`, `--per_alpha_sigmoid`, `--per_priority_floor`, `--per_priority_clip_pct`: enable and schedule Prioritized Experience Replay.  
-  - `-munchausen`: toggle Munchausen RL term in the critic target.  
-  - `-iqn`: switch between standard critic and distributional IQN critic.  
+  - `--device`: `"cpu"` or `"gpu"` (CUDA if available).
+  - `-per` plus `--per_alpha`, `--per_beta_start`, `--per_beta_frames`, `--per_alpha_final`, `--per_beta_final`, `--per_alpha_ramp_start`, `--per_alpha_ramp_end`, `--per_alpha_sigmoid`, `--per_priority_floor`, `--per_priority_clip_pct`: enable and schedule Prioritized Experience Replay.
+  - `-munchausen`: toggle Munchausen RL term in the critic target.
+  - `-iqn`: switch between standard critic and distributional IQN critic.
   - `-nstep`, `--gamma`, `-t/--t`: N-step bootstrapping, discount factor, and Polyak target update rate.
 
 - **Exploration noise**
   - Pre-squash Gaussian noise: `-noise_sigma0` (plateau std), `-noise_plateau` (episodes to hold σ0), `-noise_floor` (hyperbolic asymptote). Noise is added to the actor pre-activation, then squashed to [0,1].
 
 - **Network architecture & optimization**
-  - `-layer_size`: legacy width knob for both networks (default `64` → 2×64 MLPs).  
-  - `--actor_hidden_size`, `--critic_hidden_size`: per-network widths overriding `-layer_size`.  
-  - `--actor_layers`, `--critic_layers`: hidden depth (actor ≥1, critic ≥2).  
-  - `--activation`: hidden-layer nonlinearity for actor/critic/IQN (`silu` default; `relu` or `leaky_relu` optional); actor head remains `tanh01`, critic/IQN heads remain linear.  
-  - `--norm`: normalization layer in actor/critic/IQN MLPs (`layernorm` default; `rmsnorm` or `none`).  
-  - `-lr_a`, `-lr_c`: actor and critic learning rates.  
-  - `--optimizer`: `adam` or `adamw` (default).  
-  - `--weight_decay_actor`, `--weight_decay_critic`: decoupled weight decay; norms and biases are excluded automatically.  
-  - `--final_lr_fraction`, `--warmup_frac`, `--min_lr`: cosine-style LR warm-up and decay schedule controls.  
-  - `--actor_grad_clip`, `--critic_grad_clip`, `--actor_grad_clip_type`, `--critic_grad_clip_type`, `--grad_clip_norm_type`: optional gradient clipping configuration.  
+  - `-layer_size`: legacy width knob for both networks (default `64` → 2×64 MLPs).
+  - `--actor_hidden_size`, `--critic_hidden_size`: per-network widths overriding `-layer_size`.
+  - `--actor_layers`, `--critic_layers`: hidden depth (actor ≥1, critic ≥2).
+  - `--activation`: hidden-layer nonlinearity for actor/critic/IQN (`silu` default; `relu` or `leaky_relu` optional); actor head remains `tanh01`, critic/IQN heads remain linear.
+  - `--norm`: normalization layer in actor/critic/IQN MLPs (`layernorm` default; `rmsnorm` or `none`).
+  - `-lr_a`, `-lr_c`: actor and critic learning rates.
+  - `--optimizer`: `adam` or `adamw` (default).
+  - `--weight_decay_actor`, `--weight_decay_critic`: decoupled weight decay; norms and biases are excluded automatically.
+  - `--final_lr_fraction`, `--warmup_frac`, `--min_lr`: cosine-style LR warm-up and decay schedule controls.
+  - `--actor_grad_clip`, `--critic_grad_clip`, `--actor_grad_clip_type`, `--critic_grad_clip_type`, `--grad_clip_norm_type`: optional gradient clipping configuration.
   - `--max_replay_size`, `--min_replay_size`, `-bs/--batch_size`: replay buffer capacity, warm-up length, and batch size.
 
 - **System & performance**
-  - `-n_cores`: cap on CPU cores used for PyTorch and environment stepping (defaults to all cores).  
-  - `--compile`: opt-in `torch.compile` for actor/critic/IQN.  
-  - `--fp32`: keep float32 default (1) or fall back to PyTorch’s default dtype (0).  
+  - `-n_cores`: cap on CPU cores used for PyTorch and environment stepping (defaults to all cores).
+  - `--compile`: opt-in `torch.compile` for actor/critic/IQN.
+  - `--fp32`: keep float32 default (1) or fall back to PyTorch’s default dtype (0).
   - `--saved_model`: load a saved actor for evaluation-only or continued training runs.
 
 ### Exploration Noise (Pre-Squash)
-- Actions: `a = 0.5*(tanh(u) + 1)`, with Gaussian exploration injected in `u` (pre-activation) then squashed to [0,1]; this keeps noise effective near bounds.
-- Local sensitivity: `da/du = 0.5 * sech^2(u)`, so post-squash std ≈ `σ_a ≈ 0.5 * sech^2(u) * σ_u`. At `u=0`, `σ_a ≤ 0.5 σ_u`; as `|u|` grows, saturation dampens `σ_a`.
-- Schedule (v34 baseline): plateau `σ_u = σ0 = 1.3` for 3,200 episodes, then hyperbolic decay toward `σ_floor = 0.32`  
-  `σ_u(e) = σ_floor + (σ0 - σ_floor) / (1 + max(0, e - plateau) / plateau)`. v35 keeps the same shape with `σ_floor = 0.24`.
+The actor produces a pre-activation $u_t = u_\theta(s_t)$ and then applies the `tanh01` squash:
 
-```mermaid
-%%{init: {'theme':'base'}}%%
-line
-  title Pre-squash noise σ_u (plateau + hyperbolic decay)
-  xAxis Episodes
-  yAxis σ_u
-  series
-    label σ_u
-    data 0:1.30, 3200:1.30, 10000:0.63, 20000:0.48, 32768:0.42
-```
+$$
+q_t = g(u_t),
+\qquad
+g(u)=\frac{1}{2}\left(\tanh(u)+1\right)\in[0,1].
+$$
+
+During data collection we add Gaussian noise in pre-activation space:
+
+$$
+\tilde u_t = u_\theta(s_t) + \epsilon_t,
+\qquad
+\epsilon_t \sim \mathcal{N}\left(0,\sigma_u(e)^2\right),
+$$
+
+and then execute $q_t = g(\tilde u_t)$ (followed by the profitability gate in v42).
+
+The local slope of the squash is
+
+$$
+g'(u)=\frac{1}{2}\left(1-\tanh^2(u)\right)=\frac{1}{2\cosh^2(u)}.
+$$
+
+For small noise, a first-order approximation yields
+
+$$
+\mathrm{Var}\!\left[q_t\mid s_t\right]\approx g'\!\left(u_\theta(s_t)\right)^2\,\sigma_u(e)^2,
+$$
+
+which makes the exploration variance state-dependent and naturally damped near saturation.
+
+The schedule in `src/agent.py` is plateau + hyperbolic decay:
+
+$$
+\sigma_u(e)=
+\begin{cases}
+\sigma_0, & 1 \le e < N_p, \\
+\sigma_{\min} + (\sigma_0-\sigma_{\min})\frac{N_p}{e}, & e \ge N_p.
+\end{cases}
+$$
 
 | Episode | σ_u (v34) |
 | --- | --- |
@@ -367,7 +559,7 @@ Based on the monthly HHK swing contract configuration (see `Jupyter Notebooks/4:
 
 **Price Convergence:**
 - Bootstrap mean delta (RL - LSM): -0.0204
-- 95% Confidence interval: [-0.141, +0.097] 
+- 95% Confidence interval: [-0.141, +0.097]
 - Welch's t-test: p = 0.724 (no significant difference)
 
 **Exercise Efficiency:**
@@ -415,7 +607,7 @@ Training typically converges within 5K-10K episodes, with stable pricing estimat
 
 ### Neural Network Architecture
 - **Actor**: 64-64 hidden layers with tanh activation (default baseline; increase `-layer_size` for larger models)
-- **Critic**: 64-64 hidden layers with ReLU activation  
+- **Critic**: 64-64 hidden layers with SiLU activation
 - **IQN**: 64 quantile samples with cosine embedding
 - **Optimization**: Adam with learning rate scheduling
 
@@ -445,23 +637,21 @@ Training typically converges within 5K-10K episodes, with stable pricing estimat
 - **What works**: Keep PER effectively off early (alpha≈0, beta≈1) and ramp it in once the critic stabilizes. Moderate alpha (0.35–0.4) and beta (0.8–0.85) by ~14–15k episodes balanced stability and late refinement in our runs.
 - **Schedules**: Linear ramps rise steadily; sigmoid ramps stay flatter early and rise smoothly mid-ramp. Sigmoid is preferred when you want to be “more uniform” in the first few thousand episodes.
 - **Typical settings**: Start ramp ~3k–5k episodes, end ~14k–15k; alpha_final 0.35–0.4; beta_final 0.8–0.85; keep priority floor small (≈1e-6) and avoid clipping unless spikes appear. Adjust ramp start/end to control how long the run behaves like uniform replay before PER takes over.
-### Exploration Noise Schedule
 
-The Gaussian exploration noise now supports a plateau-then-decay schedule controlled by `--noise_plateau = N_p` episodes:
+### Exploration noise schedule (current)
+
+The current implementation uses pre-squash Gaussian noise in pre-activation space (see "Exploration Noise (Pre-Squash)" above). With episode index $e$ and plateau length $N_p$:
 
 $$
-\epsilon_t =
 \begin{cases}
-\epsilon_0, & t \le N_p \\
-\epsilon_0 \cdot \epsilon_{\text{decay}}^{\,t - N_p}, & t > N_p
+\sigma_0, & 1 \le e < N_p, \\
+\sigma_{\min} + (\sigma_0-\sigma_{\min})\frac{N_p}{e}, & e \ge N_p.
 \end{cases}
-,\qquad
-\sigma_t = \max\left(\sigma_{\min},\; \sigma_0 \cdot \epsilon_t^{\alpha}\right)
 $$
 
-For the v17 runs we use a 2,000-episode plateau with $(\epsilon_0, \epsilon_{\text{decay}}, \sigma_0, \alpha, \sigma_{\min}) = (0.3,\ 0.99993,\ 1.1,\ 0.55,\ 0.15)$ so early exploration stays high before resuming the original decay curve.
+This is equivalent to $\sigma_{\min} + (\sigma_0-\sigma_{\min})/(1+(e-N_p)/N_p)$ for $e \ge N_p$.
 
-![Plateaued Gaussian noise schedule](noise_plateau_schedule_v17.png)
+Note: older versions used an exponential post-plateau decay; that schedule is kept only in the repo history to avoid confusion.
 
 ### Computational Requirements
 - **Training**: ~2-4 hours on modern GPU (RTX 3080+)
@@ -486,7 +676,7 @@ Comprehensive comparison of RL vs LSM pricing with statistical significance test
 
 ### Immediate Extensions
 - **Multi-Asset Swing Options**: Portfolio of correlated underlyings
-- **Path-Dependent Payoffs**: Asian-style averaging, lookback features  
+- **Path-Dependent Payoffs**: Asian-style averaging, lookback features
 - **Regime-Switching Models**: Markov-modulated HHK parameters
 - **Real Market Data**: Calibration to historical energy prices
 

@@ -173,7 +173,7 @@ class Actor(nn.Module):
             seed: Random seed for reproducibility
             hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 policy)
             n_layers: Number of hidden layers (default: 2)
-            device: Device to place the network on (cuda/cpu)
+            device: Device to place the network on (cpu)
             action_output: Output activation. One of {"tanh", "tanh01", "sigmoid"}.
                 "tanh01" maps tanh output from [-1, 1] to [0, 1] (default).
             target_action_mean: Optional target mean for initialization (used only if provided).
@@ -184,7 +184,7 @@ class Actor(nn.Module):
 
         # Set device
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device("cpu")
         else:
             self.device = torch.device(device)
             
@@ -403,14 +403,14 @@ class Critic(nn.Module):
             seed: Random seed for reproducibility
             hidden_size: Number of units in hidden layers (default: 64 for a lightweight 2×64 critic)
             n_layers: Number of hidden layers (default: 2)
-            device: Device to place the network on (cuda/cpu)
+            device: Device to place the network on (cpu)
             activation: Hidden-layer activation ("silu" default; supports "relu" and "leaky_relu").
         """
         super().__init__()
 
         # Set device
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device("cpu")
         else:
             self.device = torch.device(device)
             
@@ -555,7 +555,7 @@ class IQN(nn.Module):
         
         # Set device
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device("cpu")
         else:
             self.device = torch.device(device)
             
