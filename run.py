@@ -43,7 +43,7 @@ from src.lsm_swing_pricer import price_swing_option_lsm
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
 from src.swing_contract import SwingContract
-from src.swing_env import SwingOptionEnv
+from src.swing_env import SwingOptionEnv, approximate_Q_T
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
@@ -127,7 +127,8 @@ def _activation_slope_at_preact(preact_mean: float, activation: str) -> float:
 def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: int = 1024) -> None:
     """
     Use the first `episodes` rollouts (no training) to shift/scale the actor head so that
-    the average action matches Q_max / n_rights and the action std is scaled to 0.05.
+    the average action matches an HHK-based approximation of E[Q_T] / n_rights and the
+    action std is scaled to 0.005.
     Training still starts from episode 0 after resetting the environment counter.
     """
     if episodes <= 0:
@@ -135,7 +136,13 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
 
     # Determine target mean in normalized action space
     contract = env.contract
-    per_step_q = contract.Q_max / contract.n_rights
+    try:
+        q_T = approximate_Q_T(contract, env.hhk_params)
+        per_step_q = q_T / contract.n_rights
+    except Exception:
+        q_T = contract.Q_max
+        per_step_q = contract.Q_max / contract.n_rights
+    per_step_q = float(np.clip(per_step_q, contract.q_min, contract.q_max))
     target_mean_action = float(np.clip(contract.normalize_action(per_step_q), 0.0, 1.0))
     target_std_action = 0.005
 
@@ -217,7 +224,8 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     print(
         f"Warmup calibration over {warmup_eps} episodes: "
         f"obs_mean={obs_mean_action:.4f}, obs_std={obs_std_action:.4f} -> "
-        f"target_mean={target_mean_action:.4f}, target_std={target_std_action:.4f}"
+        f"target_mean={target_mean_action:.4f}, target_std={target_std_action:.4f} "
+        f"(Q_T≈{q_T:.2f}, per_step_q≈{per_step_q:.4f})"
     )
 
 
