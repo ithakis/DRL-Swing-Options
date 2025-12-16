@@ -35,6 +35,274 @@ from gymnasium.spaces import Box
 
 from .swing_contract import SwingContract
 
+try:  # SciPy is a project dependency, but keep a small fallback path.
+    from scipy.optimize import brentq  # type: ignore
+    from scipy.stats import multivariate_normal, norm  # type: ignore
+except Exception:  # pragma: no cover
+    brentq = None
+    multivariate_normal = None
+    norm = None
+
+
+def approximate_Q_T(
+    contract: SwingContract,
+    hhk_params: Dict,
+    *,
+    utilization_factor: float = 1.0,
+    max_pairs: int = 4096,
+    seed: int = 0,
+) -> float:
+    """
+    HHK-based approximation of the expected total exercised quantity E[Q_T].
+
+    Model/contract regime targeted:
+      - linear swing cashflows with Q_min=0, no refraction, bang–bang optimality,
+      - HHK spot: S_t = exp(f(t) + X_t + Y_t), with Z_t := X_t + Y_t.
+
+    Method:
+      1) Approximate marginal ITM probabilities p(t_k)=P(S_{t_k}>K) via a Lugannani–Rice
+         saddlepoint formula using the HHK CGF of Z_t.
+      2) Approximate the correlated ITM count N = sum 1{S_{t_k}>K} by a Beta–Binomial
+         with moment-matched mean p̄ and an exchangeable indicator correlation ρ_I
+         (Gaussian-copula mapping from Corr(Z_{t_i},Z_{t_j})).
+      3) E[Q_T] ≈ q_max * E[min(m, N)] (plus a last partial fill if Q_max/q_max ∉ N).
+    """
+    if contract.q_max <= 0.0 or contract.Q_max <= 0.0 or contract.n_rights <= 0:
+        return 0.0
+    if contract.strike <= 0.0:
+        raise ValueError("contract.strike must be > 0 for log-threshold computations")
+    if utilization_factor <= 0.0:
+        return 0.0
+
+    S0 = float(hhk_params["S0"])
+    alpha = float(hhk_params["alpha"])
+    sigma = float(hhk_params["sigma"])
+    beta = float(hhk_params["beta"])
+    lam = float(hhk_params["lam"])
+    mu_J = float(hhk_params["mu_J"])
+    f = hhk_params.get("f", lambda _t: 0.0)
+
+    n = int(contract.n_rights)
+    T = float(contract.maturity)
+    if n <= 0 or T <= 0.0:
+        return 0.0
+
+    # Use the "k=1..n" convention (no decision at t=0) to avoid the t=0 degeneracy.
+    dt = T / n
+    t_grid = np.linspace(dt, T, n, dtype=np.float64)
+
+    X0 = float(np.log(S0) - f(0.0))
+    logK = float(np.log(contract.strike))
+
+    def _phi(x: float) -> float:
+        if norm is not None:
+            return float(norm.pdf(x))
+        return float(np.exp(-0.5 * x * x) / np.sqrt(2.0 * np.pi))
+
+    def _Phi(x: float) -> float:
+        if norm is not None:
+            return float(norm.cdf(x))
+        import math
+
+        return float(0.5 * (1.0 + math.erf(x / np.sqrt(2.0))))
+
+    def _betaln(a: float, b: float) -> float:
+        # log Beta(a,b) via lgamma; avoids requiring scipy.special.
+        import math
+
+        return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+
+    def _log_choose(n_: int, k_: int) -> float:
+        import math
+
+        return math.lgamma(n_ + 1) - math.lgamma(k_ + 1) - math.lgamma(n_ - k_ + 1)
+
+    def _brent_or_bisect(fn, lo: float, hi: float) -> float:
+        import math
+
+        if brentq is not None:
+            return float(brentq(fn, lo, hi, maxiter=200))
+        flo = fn(lo)
+        fhi = fn(hi)
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            fmid = fn(mid)
+            if abs(fmid) < 1e-10 or abs(hi - lo) < 1e-10:
+                return float(mid)
+            if flo * fmid <= 0.0:
+                hi = mid
+                fhi = fmid
+            else:
+                lo = mid
+                flo = fmid
+        return float(0.5 * (lo + hi))
+
+    def _p_itm(t: float) -> float:
+        # Threshold in Z-space: Z_t > log(K) - f(t).
+        x = logK - float(f(t))
+
+        mX = X0 * np.exp(-alpha * t)
+        vX = (sigma * sigma) * (1.0 - np.exp(-2.0 * alpha * t)) / (2.0 * alpha)
+
+        if lam <= 0.0 or mu_J <= 0.0:
+            # Pure Gaussian OU (exact normal tail).
+            mean = float(mX)
+            var = float(vX)
+            std = float(np.sqrt(max(var, 1e-16)))
+            return float(1.0 - _Phi((x - mean) / std))
+
+        eb = float(np.exp(-beta * t))
+        upper = (1.0 / mu_J) - 1e-10
+
+        def K(th: float) -> float:
+            if th >= upper:
+                return np.inf
+            mx_part = th * mX + 0.5 * th * th * vX
+            a = th * mu_J * eb
+            b = th * mu_J
+            if a >= 1.0 or b >= 1.0:
+                return np.inf
+            jump_part = (lam / beta) * (np.log1p(-a) - np.log1p(-b))
+            return float(mx_part + jump_part)
+
+        def K1(th: float) -> float:
+            a = th * mu_J * eb
+            b = th * mu_J
+            jump1 = (lam / beta) * (
+                -(mu_J * eb) / (1.0 - a) + (mu_J) / (1.0 - b)
+            )
+            return float(mX + th * vX + jump1)
+
+        def K2(th: float) -> float:
+            a = th * mu_J * eb
+            b = th * mu_J
+            jump2 = (lam / beta) * (
+                -((mu_J * eb) ** 2) / ((1.0 - a) ** 2) + (mu_J**2) / ((1.0 - b) ** 2)
+            )
+            return float(vX + jump2)
+
+        # Saddlepoint: solve K'(th)=x. CGF is convex; K' is increasing.
+        def g(th: float) -> float:
+            return K1(th) - x
+
+        g0 = g(0.0)
+        if g0 == 0.0:
+            th_hat = 0.0
+        else:
+            if g0 > 0.0:
+                lo, hi = -1.0, 0.0
+                while g(lo) > 0.0 and lo > -100.0:
+                    lo *= 2.0
+            else:
+                lo, hi = 0.0, min(upper * 0.999, 50.0)
+                while g(hi) < 0.0 and hi < upper * 0.999:
+                    hi = min(hi * 2.0, upper * 0.999)
+            th_hat = _brent_or_bisect(g, lo, hi)
+
+        if th_hat == 0.0:
+            # LR has a removable singularity at th=0; fall back to normal approx.
+            mean = float(K1(0.0))
+            var = float(max(K2(0.0), 1e-16))
+            return float(1.0 - _Phi((x - mean) / np.sqrt(var)))
+
+        K_hat = K(th_hat)
+        K2_hat = max(K2(th_hat), 1e-16)
+
+        # Lugannani–Rice: P(Z<=x) ≈ Φ(w) + φ(w)(1/w - 1/u)
+        import math
+
+        w2 = 2.0 * (th_hat * x - K_hat)
+        w2 = max(w2, 0.0)
+        w = math.copysign(math.sqrt(w2), th_hat)
+        u = th_hat * math.sqrt(K2_hat)
+        if abs(w) < 1e-8 or abs(u) < 1e-12:
+            mean = float(K1(0.0))
+            var = float(max(K2(0.0), 1e-16))
+            return float(1.0 - _Phi((x - mean) / np.sqrt(var)))
+
+        cdf = _Phi(w) + _phi(w) * (1.0 / w - 1.0 / u)
+        return float(np.clip(1.0 - cdf, 0.0, 1.0))
+
+    p = np.array([_p_itm(float(t)) for t in t_grid], dtype=np.float64)
+    p = np.clip(p, 1e-6, 1.0 - 1e-6)
+    p_bar = float(np.mean(p))
+
+    # HHK correlation structure for Z_t = X_t + Y_t.
+    varX = (sigma * sigma) * (1.0 - np.exp(-2.0 * alpha * t_grid)) / (2.0 * alpha)
+    varY = (lam * (mu_J**2) / beta) * (1.0 - np.exp(-2.0 * beta * t_grid)) if lam > 0 else 0.0
+    varZ = np.maximum(varX + varY, 1e-16)
+
+    # Map Corr(Z_i,Z_j) -> Corr(1{S_i>K},1{S_j>K}) via Gaussian copula at thresholds.
+    if multivariate_normal is None or norm is None:
+        rho_I = 0.0
+    else:
+        thr = norm.ppf(1.0 - p)  # latent N threshold: I=1{N>thr}
+        pairs_total = n * (n - 1) // 2
+        rng = np.random.default_rng(seed)
+        if pairs_total <= max_pairs:
+            pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+        else:
+            flat = rng.choice(pairs_total, size=max_pairs, replace=False)
+            pairs = []
+            # Map flat index -> (i,j) over upper triangle.
+            # For n<=250 this is fine; keep it simple.
+            for idx in flat:
+                i = 0
+                remaining = int(idx)
+                while remaining >= (n - i - 1):
+                    remaining -= (n - i - 1)
+                    i += 1
+                j = i + 1 + remaining
+                pairs.append((i, j))
+
+        corr_sum = 0.0
+        corr_cnt = 0
+        for i, j in pairs:
+            ti = float(t_grid[i])
+            tj = float(t_grid[j])
+            if ti > tj:
+                ti, tj = tj, ti
+                i, j = j, i
+            covX = (sigma * sigma) * (np.exp(-alpha * (tj - ti)) - np.exp(-alpha * (tj + ti))) / (2.0 * alpha)
+            covY = 0.0
+            if lam > 0.0:
+                varY_i = (lam * (mu_J**2) / beta) * (1.0 - np.exp(-2.0 * beta * ti))
+                covY = np.exp(-beta * (tj - ti)) * varY_i
+            covZ = float(covX + covY)
+            rhoZ = float(np.clip(covZ / np.sqrt(varZ[i] * varZ[j]), -0.999, 0.999))
+
+            cov = np.array([[1.0, rhoZ], [rhoZ, 1.0]], dtype=np.float64)
+            Phi2 = float(multivariate_normal.cdf([thr[i], thr[j]], mean=[0.0, 0.0], cov=cov))
+            joint = 1.0 - float(norm.cdf(thr[i])) - float(norm.cdf(thr[j])) + Phi2
+            denom = float(np.sqrt(p[i] * (1.0 - p[i]) * p[j] * (1.0 - p[j])))
+            if denom <= 0.0:
+                continue
+            corr_sum += (joint - float(p[i] * p[j])) / denom
+            corr_cnt += 1
+        rho_I = float(np.clip(corr_sum / max(corr_cnt, 1), 1e-6, 0.999))
+
+    s = (1.0 - rho_I) / rho_I
+    a = p_bar * s
+    b = (1.0 - p_bar) * s
+
+    m_full = int(contract.Q_max // contract.q_max)
+    q_last = float(contract.Q_max - m_full * contract.q_max)
+
+    # E[min(m_full,N)] under Beta–Binomial(n,a,b).
+    e_min = 0.0
+    p_gt = 0.0
+    base = _betaln(a, b)
+    for k in range(n + 1):
+        log_pmf = _log_choose(n, k) + _betaln(k + a, (n - k) + b) - base
+        pmf = float(np.exp(log_pmf))
+        e_min += min(m_full, k) * pmf
+        if k > m_full:
+            p_gt += pmf
+
+    q_T = contract.q_max * e_min + (q_last * p_gt if q_last > 1e-12 else 0.0)
+    q_T = float(np.clip(q_T * utilization_factor, 0.0, contract.Q_max))
+    return q_T
+
 
 def calculate_standardized_reward(
     spot_price: float,

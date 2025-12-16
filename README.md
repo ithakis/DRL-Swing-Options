@@ -433,7 +433,7 @@ Flags are grouped by what they primarily control; all defaults are chosen to rep
   - `--S0`, `--alpha`, `--sigma`, `--beta`, `--lam`, `--mu_J`: parameters of the 2-factor OU-with-jumps HHK model used to generate spot paths.
 
 - **Algorithm switches (D4PG/DDPG variants)**
-  - `--device`: `"cpu"` or `"gpu"` (CUDA if available).
+  - CPU-only: CUDA/MPS device selection is intentionally not supported.
   - `-per` plus `--per_alpha`, `--per_beta_start`, `--per_beta_frames`, `--per_alpha_final`, `--per_beta_final`, `--per_alpha_ramp_start`, `--per_alpha_ramp_end`, `--per_alpha_sigmoid`, `--per_priority_floor`, `--per_priority_clip_pct`: enable and schedule Prioritized Experience Replay.
   - `-munchausen`: toggle Munchausen RL term in the critic target.
   - `-iqn`: switch between standard critic and distributional IQN critic.
@@ -540,6 +540,10 @@ Based on the monthly HHK swing contract configuration (see `Jupyter Notebooks/4:
 - **Exercise bounds**: q ∈ [0, 2.0] per period
 - **Global cap**: Q_max = 20.0
 - **Risk-free rate**: r = 5%
+
+### Q_T Approximation (Warm-Start)
+
+The untrained actor is warm-started by calibrating its output head so the *average* exercise quantity targets `E[Q_T] / n_rights` (rather than `Q_max / n_rights`). We approximate `E[Q_T]` from the HHK model by (i) saddlepoint (Lugannani–Rice) ITM probabilities `P(S_{t_k}>K)`, (ii) a Beta–Binomial fit for the correlated ITM count, and (iii) `E[Q_T] ≈ q_max · E[min(m, N)]` with `m = floor(Q_max / q_max)`; see `src/swing_env.py` (`approximate_Q_T`). This reduces early saturation/masking by aligning the initial policy with realistic expected utilization.
 
 ### HHK Model Parameters
 - **Mean reversion**: α = 12.0, σ = 1.2

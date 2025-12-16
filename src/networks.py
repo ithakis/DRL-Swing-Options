@@ -4,16 +4,14 @@ Modernized neural networks for D4PG-QR-FRM algorithm.
 Updated for PyTorch 2.8+ and Python 3.11 with modern best practices:
 - Type hints for better code clarity and IDE support
 - Improved documentation with Google-style docstrings
-- Better device handling and memory efficiency
 - Modern PyTorch initialization methods with torch.compile support
 - Improved error handling and validation
 - Code organization following PEP 8 and modern Python standards
 - Enhanced numerical stability and performance optimizations
-- Better integration with PyTorch 2.x features like autocast and GradScaler
 """
 
 import math
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -158,7 +156,6 @@ class Actor(nn.Module):
         seed: int,
         hidden_size: int = 64,
         n_layers: int = 2,
-        device: Optional[Union[str, torch.device]] = None,
         action_output: str = "tanh01",
         target_action_mean: Optional[float] = 0.5,
         target_action_std: Optional[float] = math.sqrt(1.0 / 12.0),
@@ -182,11 +179,8 @@ class Actor(nn.Module):
         """
         super().__init__()
 
-        # Set device
-        if device is None:
-            self.device = torch.device("cpu")
-        else:
-            self.device = torch.device(device)
+        # CPU-only
+        self.device = torch.device("cpu")
             
         # Set seed for reproducibility
         torch.manual_seed(seed)
@@ -391,7 +385,6 @@ class Critic(nn.Module):
         seed: int,
         hidden_size: int = 64,
         n_layers: int = 2,
-        device: Optional[Union[str, torch.device]] = None,
         activation: str = "silu",
         norm_type: str = "layernorm",
     ) -> None:
@@ -408,11 +401,8 @@ class Critic(nn.Module):
         """
         super().__init__()
 
-        # Set device
-        if device is None:
-            self.device = torch.device("cpu")
-        else:
-            self.device = torch.device(device)
+        # CPU-only
+        self.device = torch.device("cpu")
             
         # Set seed for reproducibility
         torch.manual_seed(seed)
@@ -535,7 +525,6 @@ class IQN(nn.Module):
         seed: int,
         N: int,
         dueling: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
         n_cos: int = 64,
         norm_type: str = "layernorm",
     ) -> None:
@@ -553,11 +542,8 @@ class IQN(nn.Module):
         """
         super().__init__()
         
-        # Set device
-        if device is None:
-            self.device = torch.device("cpu")
-        else:
-            self.device = torch.device(device)
+        # CPU-only
+        self.device = torch.device("cpu")
             
         # Set seed for reproducibility
         torch.manual_seed(seed)

@@ -187,7 +187,6 @@ class Agent:
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
-            device=device,
             activation=self.activation,
             norm_type=self.norm_type,
         )
@@ -197,7 +196,6 @@ class Agent:
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
-            device=device,
             activation=self.activation,
             norm_type=self.norm_type,
         )
@@ -232,22 +230,20 @@ class Agent:
                 state_size,
                 action_size,
                 layer_size=critic_hidden_size,
-                device=device,
                 seed=random_seed,
                 dueling=False,
                 N=self.N,
                 norm_type=self.norm_type,
-            ).to(device)
+            ).to(self.device)
             self.critic_target = IQN(
                 state_size,
                 action_size,
                 layer_size=critic_hidden_size,
-                device=device,
                 seed=random_seed,
                 dueling=False,
                 N=self.N,
                 norm_type=self.norm_type,
-            ).to(device)
+            ).to(self.device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
             self.critic_local = Critic(
@@ -256,7 +252,6 @@ class Agent:
                 random_seed,
                 hidden_size=critic_hidden_size,
                 n_layers=critic_layers,
-                device=device,
                 activation=self.activation,
                 norm_type=self.norm_type,
             )
@@ -266,7 +261,6 @@ class Agent:
                 random_seed,
                 hidden_size=critic_hidden_size,
                 n_layers=critic_layers,
-                device=device,
                 activation=self.activation,
                 norm_type=self.norm_type,
             )

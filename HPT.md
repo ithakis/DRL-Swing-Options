@@ -7,7 +7,7 @@ This document summarizes the evolution of the hyperparameters and algorithmic tw
 ## Update (v33+)
 
 - Action regularization (`action_reg_weight`, `action_reg_cutoff`) has been removed from the codebase; references below are kept only as historical notes for pre-v33 runs.
-- Hidden activations now default to **SiLU**; actor outputs use the **tanh01** head (maps [-1, 1] → [0, 1]). A 1,024-episode warmup pass estimates the untrained policy mean/std and shifts/scales the output layer so `E[action] ≈ Q_max / n_rights` and ~95% of mass stays in [0, 1] (sigma solved via brentq/bisection). This prevents initial saturation without any action L2.
+- Hidden activations now default to **SiLU**; actor outputs use the **tanh01** head (maps [-1, 1] → [0, 1]). A 1,024-episode warmup pass estimates the untrained policy mean/std and shifts/scales the output layer so `E[action] ≈ E[Q_T] / n_rights`, where `E[Q_T]` is approximated analytically from the HHK model (Beta–Binomial fit for the correlated ITM count; see `approximate_Q_T` in `src/swing_env.py`). This prevents initial saturation/masking without any action L2.
 - **v33 vs. v26 (4 seeds each, green vs. gray in the attached TensorBoard plots)**:
   - Pricing/Delta_Percent: v33 climbs out of the initial drawdown much faster and is less volatile through the first ~5k episodes; finals cluster in the -1.2 to -2.6% band (v26: -0.5 to -2.2% with one slower seed). Average100 ramps earlier for v33, converging to ~2.5–2.6.
   - Action variance: Action_variance_mean stays tighter (~0.16–0.17 vs. v26 drifting above 0.19), Actions_at_upper_pct is visibly lower, and Actions_at_lower_pct remains at 0 (no lower-bound collapse). Target_drift decays faster for v33.
@@ -446,6 +446,95 @@ Tuning approach:
 - Only then tweak tau within a narrow range if target drift looks off.
 
 ---
+
+## v43 results: Q_T-approx warm-start (green) vs v42 (pink)
+
+- Change: warmup calibration targets `E[action] ≈ E[Q_T]/n_rights` using the HHK-based `approximate_Q_T` (instead of `Q_max/n_rights`).
+- Outcome: better early profitability (higher `Average100`, less-negative `Pricing/Delta_Percent` from episode 0), more stable policy statistics, and slightly improved late-stage convergence vs. v42.
+
+Plot-by-plot read:
+- **Pricing/Delta_Percent**: v43 starts materially closer to 0 than v42 and tracks slightly higher through training; worst-case seed behavior is improved (no deep early drawdown like the v42 outlier).
+- **Average100**: v43 ramps faster and sits a touch higher late; dispersion across seeds is tighter earlier, consistent with reduced “bad init” variance.
+- **Policy/Action_variance_mean**: v43 is flatter and stays in a narrower band; v42 drifts upward more, indicating stronger policy dispersion and more sensitivity to noise/replay.
+- **Policy/Actions_at_upper_pct**: v43 stays lower, suggesting less saturation at the upper bound and fewer hard-clipped actions.
+- **Avg_Exercise_Count / Avg_Total_Exercised**: v43 is more stable mid/late (less drift and less spread), consistent with starting closer to realistic utilization.
+- **TD_Error (p50/p90/p99)**: v43 runs slightly higher across percentiles (stronger learning signal) without blow-ups; v42’s tails look more muted late.
+- **PER/priority_mean/std/min/max**: v43 priorities are significantly larger and more dispersed, meaning PER is actually differentiating transitions; v42 looks close-to-uniform (flat priorities), which tends to slow policy improvement once the critic plateaus.
+- **Actor_loss / Critic_loss / Target_drift**: losses are broadly similar, but v43’s actor loss trends more negative late while target drift is slightly lower—consistent with steadier policy improvement.
+
+Why v43 is better:
+- With the profitability gate (v42+), the early replay distribution is very sensitive to the untrained policy’s mean action. Targeting `Q_max/n_rights` biases the startup policy away from realistic utilization, increasing the chance of “mask-heavy” rollouts and flatter gradients. Using a model-based `E[Q_T]` warm-start improves early reward density and produces a healthier initial replay mix, which PER can exploit (higher, more structured priorities) while keeping policy saturation in check.
+
+## v44 plan: v43 baseline with no clipping
+
+- Change vs. v43 run config: remove *all clipping knobs* from the run script: PER priority clipping (`--per_priority_clip_pct`), actor/critic gradient clipping (`--actor_grad_clip*`, `--critic_grad_clip*`), and target smoothing noise clip (`--target_policy_clip`).
+- Hypothesis: if v43’s mid/late plateaus or seed-to-seed differences are being “papered over” by clipping, removing clips will make the true instability source visible (PER skew vs. exploration noise vs. LR schedule), so we can tune those drivers directly.
+- Primary readouts: `Pricing/Delta_Percent` slope after ~10k–20k episodes, `TD_Error` percentiles + PER priority dispersion (`PER/priority_std`, `PER/priority_max`), action variance/boundary rates, and `Target_drift` during any TD bursts.
+- If v44 destabilizes (preferred responses that still keep v44 unclipped): (1) soften late PER (`--per_alpha_final` down and/or `--per_beta_final` up), (2) reduce variance injection (`--target_policy_noise` and/or `-noise_floor`), (3) shrink late step sizes (lower `-lr_a/-lr_c` and/or faster decay via `--final_lr_fraction` / `--lr_schedule_episodes`).
+
+## v44 results: removing clipping destabilized training (v43 better)
+
+Runs compared:
+- v43: `SwingOption_20_v43_{11,12,13}` (clipping enabled in the run config)
+- v44: `SwingOption_20_v44_{11,12,13}` (no clipping)
+
+Empirical takeaway from the TensorBoard overlays: **clipping is useful** in this project. With v44 (no clipping), the learning dynamics become more **heavy-tailed** and **oscillatory**, and the policy drifts toward less stable / more saturated behavior. v43 stays noticeably more controlled.
+
+Plot-by-plot read (why clipping helps):
+
+- **PER/priority_max**: v44 shows step-like jumps to much larger maxima (rare extreme-TD transitions dominate); with clipping, the max stays lower and grows more smoothly. This matters because PER sampling probability is a steep function of priority—without a cap, a handful of transitions can monopolize replay, driving non-stationary updates.
+- **PER/priority_std**: v44 has materially higher dispersion and abrupt regime changes; clipping compresses the tail and keeps priority dispersion in a narrower band, improving replay diversity and reducing “replay collapse” onto a few outliers.
+- **PER/priority_mean**: v44’s mean priorities sit higher and fluctuate more, consistent with a critic that is being repeatedly yanked by tail events; clipping reduces the impact of those tails so the average TD magnitude doesn’t drift upward as aggressively.
+- **TD_Error (p50/p90/p99)**: the upper percentiles in v44 climb more and stay elevated, indicating heavier tails in Bellman error. Clipping is acting as a tail-risk control: it prevents extreme TD errors from turning into extreme priorities and extreme gradients.
+- **Critic_loss**: v44 exhibits larger spikes/outliers (classic signature of bootstrapped target instability amplified by PER outliers). Clipping reduces the amplitude/frequency of those spikes, which stabilizes the value landscape the actor is optimizing against.
+- **Stability/Target_drift**: v44 shows noisier and (at times) higher target drift, consistent with larger effective update steps; clipping reduces abrupt critic shifts, so target networks track the online networks more smoothly.
+- **Policy/Action_variance_mean**: v44 drifts upward and is more volatile, suggesting that the policy is being pushed around by unstable critic gradients and/or chasing transient high-Q regions; clipping dampens those swings and yields a tighter variance band.
+- **Policy/Actions_at_upper_pct**: v44 climbs higher (more saturation at the upper bound), which is consistent with “chasing” behavior under an unstable critic; clipping helps keep the actor away from bang-bang extremes.
+- **Avg_Exercise_Count**: v44 drifts downward with more dispersion (exercise behavior becomes less consistent), aligning with the story that the actor is oscillating between regimes; clipping makes the exercised-rights profile more stable over training.
+- **Pricing/Delta_Percent**: v44 is visibly more jagged (higher variance) and less reliably improving; clipping reduces oscillations and improves run-to-run stability in the price estimate trajectory.
+
+Why clipping is especially valuable here (mechanism):
+- The profitability-gated actor + sparse reward structure naturally creates **heavy-tailed TD errors** (rare “very informative” profitable states, many near-zero states).
+- PER amplifies those tails by oversampling high-priority items; without a cap, this creates a feedback loop: outlier TD → outlier priority → oversampling → large critic shift → new outliers.
+- Clipping (priority/gradient/target-noise) is a practical way to **bound the influence of tail events** so learning stays in a regime where bootstrapping remains stable.
+
+Recommendation going forward:
+- Treat clipping as a stability primitive (not just a band-aid): keep it on while tuning late-stage dynamics (PER ramp, noise floor, LR decay).
+
+## v45 plan: v43 baseline + RMSNorm
+
+- Change vs. v43: set `--norm=rmsnorm` (RMSNorm) while keeping the v43 run config identical otherwise (PER priority clipping, grad clipping, and target policy noise clipping all remain enabled).
+- Goal: test whether RMSNorm improves optimization stability (critic TD tails, loss spikes, target drift) without sacrificing policy learning speed or pushing the actor toward boundary saturation.
+- Expected outcome (if RMSNorm helps): smoother `TD_Error`/`Critic_loss` trajectories, less oscillatory `Target_drift`, and equal-or-better `Pricing/Delta_Percent` / `Average100` with reduced seed variance vs. v43.
+- Failure mode to watch: worse boundary behavior (higher `Actions_at_upper_pct`) or noisier PER priorities if the changed normalization shifts activation scales in a way that amplifies TD tails.
+
+## v45 results: RMSNorm was faster but less stable (worse convergence)
+
+Overall: RMSNorm increased throughput (higher `Paths_Per_Second`) but produced a more heavy-tailed / regime-switchy training dynamic: PER priorities became more volatile, TD-error tails inflated, the policy drifted toward bang-bang saturation (more `Actions_at_upper_pct`), and pricing convergence was less reliable than the LayerNorm baseline (v43).
+
+Graph-by-graph read (v45 RMSNorm vs v43 LayerNorm baseline):
+
+- **Paths_Per_Second**: higher for v45 → RMSNorm is cheaper than LayerNorm (no mean-centering), so wall-clock speed improves.
+- **PER/priority_std**: v45 shows a sharp step-up / regime change mid-run and ends materially higher → replay becomes dominated by a wider priority spread (more “tail events”).
+- **PER/priority_mean**: v45 runs higher and shows a noticeable mid-run jump before partially relaxing → average TD magnitude increased and became less stationary.
+- **TD_Error/p50**: only modestly worse → the *typical* Bellman error is not the core problem.
+- **TD_Error/p90 & TD_Error/p99**: v45 is consistently higher late → the main change is *fatter tails* (rare, very large TD errors).
+- **Critic_loss**: smoothed trend looks similar, but the background variance/spike density is higher under v45 → consistent with the TD tail story (loss spikes driven by outliers).
+- **Policy/Action_variance_mean**: v45 trends higher and climbs more persistently → policy distribution spreads more, increasing sensitivity to critic noise and bootstrapping error.
+- **Policy/Actions_at_upper_pct**: v45 is higher and increases faster → policy spends more mass at `q≈q_max` (bang-bang behavior).
+- **Avg_Exercise_Count**: v45 drifts downward and is more dispersed → despite more saturation-at-max when exercising, the policy exercises on fewer dates (more “all-or-nothing”: either skip or max).
+- **Actor_loss**: v45 is less negative / flattens higher → weaker and noisier policy-improvement signal (actor not consistently finding better actions under the critic).
+- **Average100**: broadly similar → average episodic return is not the discriminating metric here; pricing error and stability are.
+- **Pricing/Delta_Percent**: v45 is more jagged and shows worse mid/late convergence (including a clear dip in one seed) → instability translates into worse/less reliable pricing.
+
+Interpretation (why RMSNorm likely hurt here):
+
+- **LayerNorm’s mean-centering matters in this critic**: the critic ingests concatenated state+action with non-stationary feature scales (HHK state statistics shift over training; the actor distribution shifts too). LayerNorm cancels mean shifts and stabilizes hidden pre-activations; RMSNorm only rescales magnitude. In this setting, *activation mean drift* can translate into Q-scale drift and larger TD outliers.
+- **PER amplifies tail instability**: the environment + profitability gate already induces heavy-tailed TD errors (rare profitable states, many near-zero states). RMSNorm further fattened TD tails, which PER oversampled; this creates a feedback loop (outlier TD → high priority → oversampling → critic jolts → more outliers) visible as the mid-run “priority_std/mean regime change”.
+- **Policy responds by saturating**: with a noisier critic landscape, the actor is nudged toward extreme actions rather than learning a smooth exercise surface, hurting pricing convergence and seed robustness.
+
+Takeaway:
+- RMSNorm is attractive for throughput but, under the current PER + target-noise + LR settings, it increases TD tail risk and destabilizes learning. If we revisit RMSNorm, it likely needs a “stability retune” (lower LR and/or stronger priority tail control, plus possibly reduced target noise) rather than being a drop-in swap.
 
 ## TensorBoard note
 

@@ -128,7 +128,13 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     """
     Use the first `episodes` rollouts (no training) to shift/scale the actor head so that
     the average action matches an HHK-based approximation of E[Q_T] / n_rights and the
-    action std is scaled to 0.005.
+    action std is scaled to 0.05.
+
+    Implementation notes:
+      - With profitability gating (v42+), many actions are forced to 0; calibrating the
+        head in one shot via inverse-activation moments can under/over-shoot.
+      - We therefore iterate: measure -> Newton bias update -> scale update -> repeat,
+        reusing the same warmup paths, until the mean is within 2% of target.
     Training still starts from episode 0 after resetting the environment counter.
     """
     if episodes <= 0:
@@ -150,12 +156,6 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     available_paths = env.S.shape[0] if hasattr(env, "S") else episodes
     warmup_eps = min(episodes, available_paths)
 
-    sum_act = 0.0
-    sum_act2 = 0.0
-    sum_preact = 0.0
-    sum_preact2 = 0.0
-    total_steps = 0
-
     actor = agent.actor_local
     # Support older Actor definitions without an explicit action_output attribute
     action_output = getattr(actor, "action_output", "tanh")
@@ -163,52 +163,151 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     action_low = float(env.action_space.low[0])
     action_high = float(env.action_space.high[0])
 
-    for ep in range(warmup_eps):
-        state, _ = env.reset()
-        while True:
-            action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
-            # action may be a nested array; extract scalar safely
-            action_scalar = float(np.asarray(action).reshape(-1)[0])
-            action_clipped = float(np.clip(action_scalar, action_low, action_high))
+    def _squash(z: np.ndarray) -> np.ndarray:
+        if action_output == "tanh01":
+            return 0.5 * (np.tanh(z) + 1.0)
+        if action_output == "sigmoid":
+            return 1.0 / (1.0 + np.exp(-z))
+        if action_output == "tanh":
+            return np.tanh(z)
+        raise ValueError(f"Unsupported activation '{action_output}'")
 
-            preact_val = _inverse_action_activation(action_clipped, action_output)
+    def _squash_prime(z: np.ndarray) -> np.ndarray:
+        if action_output == "tanh01":
+            t = np.tanh(z)
+            return 0.5 * (1.0 - t * t)
+        if action_output == "sigmoid":
+            s = 1.0 / (1.0 + np.exp(-z))
+            return s * (1.0 - s)
+        if action_output == "tanh":
+            t = np.tanh(z)
+            return 1.0 - t * t
+        raise ValueError(f"Unsupported activation '{action_output}'")
 
-            sum_act += action_clipped
-            sum_act2 += action_clipped * action_clipped
-            sum_preact += preact_val
-            sum_preact2 += preact_val * preact_val
-            total_steps += 1
+    def _collect_stats() -> Tuple[float, float, float, float, float, np.ndarray, np.ndarray]:
+        sum_act = 0.0
+        sum_act2 = 0.0
+        sum_z = 0.0
+        sum_z2 = 0.0
+        sum_qraw = 0.0
+        sum_qraw2 = 0.0
+        total_steps = 0
+        z_samples: List[float] = []
+        mask_samples: List[float] = []
 
-            next_state, _, terminated, truncated, _ = env.step(
-                np.array([action_clipped], dtype=np.float32)
-            )
-            state = next_state
-            if terminated or truncated:
+        # Reuse the same first `warmup_eps` paths each pass.
+        env._episode_counter = -1
+
+        apply_gate = getattr(actor, "apply_profitability_gate", None)
+
+        for _ in range(warmup_eps):
+            state, _ = env.reset()
+            while True:
+                # Forward pre-activation for Newton updates (no gradients).
+                with torch.no_grad():
+                    st = torch.as_tensor(np.asarray(state, dtype=np.float32)).view(1, -1)
+                    z_t = actor.forward_preact(st)
+                    z = float(z_t.reshape(-1)[0].cpu().item())
+
+                    q_raw = float(_squash(np.array([z], dtype=np.float64))[0])
+                    q_raw_t = torch.as_tensor([[q_raw]], dtype=torch.float32)
+                    if apply_gate is not None:
+                        q_gated_t = apply_gate(q_raw=q_raw_t, state=st)
+                        q_gated = float(q_gated_t.reshape(-1)[0].cpu().item())
+                    else:
+                        q_gated = q_raw
+
+                # Treat gating as a fixed mask for Newton updates (ignore boundary derivative).
+                mask = float(np.clip(q_gated / (q_raw + 1e-8), 0.0, 1.0))
+
+                # Step the real env using the agent policy (ensures state distribution matches rollout).
+                action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
+                action_scalar = float(np.asarray(action).reshape(-1)[0])
+                action_clipped = float(np.clip(action_scalar, action_low, action_high))
+
+                sum_act += action_clipped
+                sum_act2 += action_clipped * action_clipped
+                sum_z += z
+                sum_z2 += z * z
+                sum_qraw += q_raw
+                sum_qraw2 += q_raw * q_raw
+                total_steps += 1
+                z_samples.append(z)
+                mask_samples.append(mask)
+
+                next_state, _, terminated, truncated, _ = env.step(
+                    np.array([action_clipped], dtype=np.float32)
+                )
+                state = next_state
+                if terminated or truncated:
+                    break
+
+        if total_steps == 0:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, np.zeros(0), np.zeros(0)
+
+        obs_mean_action = sum_act / total_steps
+        obs_std_action = math.sqrt(max(0.0, sum_act2 / total_steps - obs_mean_action**2))
+        obs_mean_z = sum_z / total_steps
+        obs_std_z = math.sqrt(max(0.0, sum_z2 / total_steps - obs_mean_z**2))
+        obs_std_qraw = math.sqrt(max(0.0, sum_qraw2 / total_steps - (sum_qraw / total_steps) ** 2))
+        return (
+            float(obs_mean_action),
+            float(obs_std_action),
+            float(obs_mean_z),
+            float(obs_std_z),
+            float(obs_std_qraw),
+            np.asarray(z_samples, dtype=np.float64),
+            np.asarray(mask_samples, dtype=np.float64),
+        )
+
+    def _newton_bias_shift(z: np.ndarray, mask: np.ndarray) -> float:
+        # Solve for delta so mean(mask*squash(z+delta)) matches target_mean_action.
+        if z.size == 0:
+            return 0.0
+        delta = 0.0
+        for _ in range(40):
+            a = _squash(z + delta)
+            f = float(np.mean(mask * a) - target_mean_action)
+            rel = abs(f) / max(target_mean_action, 1e-6)
+            if rel <= 0.02:
                 break
+            fp = float(np.mean(mask * _squash_prime(z + delta)))
+            if fp <= 1e-8:
+                break
+            step = f / fp
+            # Damped Newton to avoid overshoot under gating/clipping.
+            step = float(np.clip(step, -2.0, 2.0))
+            delta -= 0.7 * step
+        return float(delta)
 
-    if total_steps == 0:
-        return
+    max_passes = 12
+    last_stats = None
+    for p in range(1, max_passes + 1):
+        obs_mean_action, obs_std_action, obs_mean_z, obs_std_z, obs_std_qraw, z, mask = _collect_stats()
+        last_stats = (obs_mean_action, obs_std_action, obs_std_qraw)
 
-    obs_mean_action = sum_act / total_steps
-    obs_var_action = max(0.0, sum_act2 / total_steps - obs_mean_action ** 2)
-    obs_std_action = math.sqrt(obs_var_action)
+        mean_rel_err = abs(obs_mean_action - target_mean_action) / max(target_mean_action, 1e-6)
+        std_raw_rel_err = abs(obs_std_qraw - target_std_action) / max(target_std_action, 1e-6)
+        if mean_rel_err <= 0.02 and std_raw_rel_err <= 0.10:
+            break
 
-    obs_mean_preact = sum_preact / total_steps
-    obs_var_preact = max(0.0, sum_preact2 / total_steps - obs_mean_preact ** 2)
-    obs_std_preact = math.sqrt(obs_var_preact)
+        delta = _newton_bias_shift(z, mask) if mean_rel_err > 0.02 else 0.0
 
-    desired_preact_mean = _inverse_action_activation(target_mean_action, action_output)
-    slope = max(_activation_slope_at_preact(desired_preact_mean, action_output), 1e-6)
-    desired_preact_std = target_std_action / slope
+        # Scale targeting applies to the *raw* (pre-gate) squashed action.
+        slope = max(_activation_slope_at_preact(obs_mean_z + delta, action_output), 1e-6)
+        desired_preact_std = target_std_action / slope
 
-    with torch.no_grad():
-        head = actor.fc4
-        scale = desired_preact_std / (obs_std_preact + 1e-8) if obs_std_preact > 0 else 1.0
-        head.weight.mul_(scale)
-        head.bias.mul_(scale)
+        # Scale pre-activation around its mean to hit the desired pre-activation std (keeps preact mean unchanged).
+        scale = desired_preact_std / (obs_std_z + 1e-8) if obs_std_z > 0 else 1.0
+        scale = float(np.clip(scale, 0.25, 4.0))
+        mu_after_bias = obs_mean_z + delta
 
-        current_mean_after_scale = obs_mean_preact * scale
-        head.bias.add_(desired_preact_mean - current_mean_after_scale)
+        with torch.no_grad():
+            head = actor.fc4
+            head.bias.add_(float(delta))
+            head.weight.mul_(scale)
+            head.bias.mul_(scale)
+            head.bias.add_(float((1.0 - scale) * mu_after_bias))
 
     # Mirror calibration to target network
     agent.actor_target.load_state_dict(agent.actor_local.state_dict())
@@ -221,9 +320,12 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     # Reset agent state for training
     agent.reset()
 
+    # Best-effort final report (post-calibration rollouts are expensive; reuse last pass stats).
+    if last_stats is not None:
+        obs_mean_action, obs_std_action, obs_std_qraw = last_stats
     print(
         f"Warmup calibration over {warmup_eps} episodes: "
-        f"obs_mean={obs_mean_action:.4f}, obs_std={obs_std_action:.4f} -> "
+        f"obs_mean={obs_mean_action:.4f}, obs_std={obs_std_action:.4f}, obs_std_raw≈{obs_std_qraw:.4f} -> "
         f"target_mean={target_mean_action:.4f}, target_std={target_std_action:.4f} "
         f"(Q_T≈{q_T:.2f}, per_step_q≈{per_step_q:.4f})"
     )
@@ -426,12 +528,7 @@ class ConfigManager:
         parser.add_argument("--mu_J", type=float, default=0.4, help="Mean jump size, default = 0.4")
 
         # D4PG Algorithm Parameters
-        parser.add_argument(
-            "--device",
-            type=str,
-            default="cpu",
-            help="Select training device [cpu] (CPU-only).",
-        )
+        # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
         # PER hyperparameters
         parser.add_argument("--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)")
@@ -549,7 +646,7 @@ class ConfigManager:
             "--final_lr_fraction",
             type=float,
             default=1.0,
-            help="Final learning rate as fraction of initial LR (1.0=no decay, 0.1=decay to 10%)",
+            help="Final learning rate as fraction of initial LR (1.0=no decay, 0.1=decay to 10 percent)",
         )
         parser.add_argument(
             "--warmup_episodes",
@@ -709,13 +806,9 @@ class EnvironmentManager:
     @staticmethod
     def setup_device_and_cores(args: argparse.Namespace) -> Tuple[torch.device, str]:
         """Setup device and CPU cores configuration"""
-        # CPU-only
-        device_arg = str(getattr(args, "device", "cpu")).lower()
-        if device_arg != "cpu":
-            print(f"WARNING: device='{device_arg}' requested, but this project is CPU-only; using CPU.")
         device = torch.device("cpu")
-        device_str = str(device)
-        print(f"Selected device: {device_str}")
+        device_str = "cpu"
+        print("Selected device: cpu")
 
         # Configure CPU cores
         if args.n_cores is not None:
