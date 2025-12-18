@@ -536,6 +536,55 @@ Interpretation (why RMSNorm likely hurt here):
 Takeaway:
 - RMSNorm is attractive for throughput but, under the current PER + target-noise + LR settings, it increases TD tail risk and destabilizes learning. If we revisit RMSNorm, it likely needs a “stability retune” (lower LR and/or stronger priority tail control, plus possibly reduced target noise) rather than being a drop-in swap.
 
+## v46 plan: He vs orthogonal (gain) initialization
+
+- Change: replace all MLP Linear-layer initializations with either **He (Kaiming)** or **orthogonal with activation gain**, selectable via `--init_method {orthogonal,he}` (default: `orthogonal`).
+- Rationale: with SiLU hidden layers (ReLU-like on the positive side), both He and orthogonal+gain should preserve activation/gradient scale more reliably than mixed/ad-hoc schemes, improving early stability and seed robustness.
+- Expected improvements (if v46 helps): faster early ramp in `Pricing/Delta_Percent` / `Average100`, fewer `Critic_loss` spikes, smaller TD tails (`TD_Error` p90/p99), smoother `Target_drift`, and less boundary saturation (`Actions_at_upper_pct`) without collapsing action variance.
+- Comparison protocol: run v46 twice with identical configs except `--init_method=orthogonal` vs `--init_method=he` and overlay TensorBoard (policy saturation/variance, TD percentiles, PER priority stats, and pricing convergence).
+- Failure modes to watch: early actor saturation (actions pinning to 0/1), action variance collapse, or fatter TD tails that PER amplifies (visible in `PER/priority_max` and `TD_Error` p99).
+
+## v47 plan: RMSNorm re-test (v43 baseline + RMSNorm)
+
+- Change: run the v43 baseline with `--norm=rmsnorm` (same intent as v45), under the current codebase (post-init refactor) to confirm whether RMSNorm still shows the same “faster but less stable” behavior.
+- Rationale: normalization choice materially changes TD-error tail behavior in this project; we want a clean, up-to-date RMSNorm vs LayerNorm comparison before investing in any RMSNorm-specific retuning.
+- Expected outcome (if RMSNorm is still problematic): higher `TD_Error` tails (p90/p99), larger `PER/priority_std` / more volatile priorities, more oscillatory `Target_drift`, and less reliable pricing convergence (`Pricing/Delta_Percent`) vs v43.
+- What to watch closely: `TD_Error/p99`, `PER/priority_std`, `Critic_loss` spike density, `Policy/Actions_at_upper_pct`, and seed-to-seed dispersion in `Pricing/Delta_Percent`.
+
+## v47 results: RMSNorm was fast but not a drop-in win (seed variance + late drift)
+
+High-level:
+- v47 had a strong early-stage ramp in pricing accuracy across seeds (rapid move from ~-18% toward the sub-1% band by ~8k episodes), consistent with your observation that the initial dynamics look excellent.
+- Final pricing accuracy was mixed: one seed reached near-optimal pricing error (close to 0), while others plateaued around the v43 baseline.
+
+Pricing / convergence (the key outcome metric):
+- `Pricing/Delta_Percent` at 32k episodes:
+  - v47 seed11: **-0.2%** (best; briefly hit ~0.0% around ~27k episodes, then small late regression)
+  - v47 seed12: **-0.8%** (peaked around ~-0.3% mid-run, then drifted worse late)
+  - v47 seed13: **-0.7%** (more volatile mid/late, but ended better than v43 seed13)
+- Compared to v43 (LayerNorm baseline), v47 improved pricing error for seed11 and seed13, and was roughly equal for seed12. This is not consistent with the original v45 conclusion (“worse than v43”)—the RMSNorm story is **seed- and run-state-dependent** in this repo.
+
+Policy behavior (exercise dynamics):
+- `Avg_Exercise_Count` diverged materially by seed late:
+  - seed12 converged to fewer exercise dates (~6), with similar total volume, implying **more concentrated exercise** (fewer dates, larger quantities).
+  - seed11 also reduced exercise frequency late but maintained pricing accuracy.
+- This matters because concentrated exercise is a common failure mode in swing problems: it can look good on-train (fast payoff capture) but reduce option value on eval by exhausting flexibility too early.
+
+Loss/TD/PER diagnostics (why some seeds drift):
+- `Critic_loss` shows heavy-tailed spikes across all seeds (expected in this environment + bootstrapping), but RMSNorm does not eliminate the spikiness; it changes the “shape” of the tails.
+- `TD_Error` percentiles rise steadily over training; tails remain non-trivial. The seed that regressed late (seed12) did not have the largest absolute TD spikes, which supports the idea that **it’s the interaction of spikes with PER + policy drift**, not just the presence of spikes, that matters.
+- PER stats (`priority_mean/std/max`) remained in the same general regime across seeds; this suggests the divergence is more about *which* rare transitions got oversampled (seed/path-dependent), rather than a simple “priority explosion”.
+
+Runtime:
+- Empirically in this codebase, RMSNorm provides **<1% wall-clock reduction** for a full 32k run, so even when it behaves well, speed is not a strong reason to prefer it.
+
+## v48 plan: HHK simulation variance reduction (QMC jumps + reproducible QMC)
+
+- Change: make HHK path generation more reproducible and less “burst-tailed” by (1) seeding Sobol directly for the diffusive OU driver and (2) using stratified/QMC draws for the jump arrival-time and jump-size uniforms (while keeping the same Poisson counts and the same marginal distributions).
+- Why: the main training instability we care about is seed-dependent divergence driven by rare, clustered extreme paths → TD spikes → PER over-focus → policy drift. Reducing *clustering* and *Monte Carlo noise* in the jump factor should reduce seed variance without changing the HHK law being priced.
+- Offline validation (process correctness): terminal moments vs `theoretical_moments` remain centered correctly; with `n_paths=32768` across seeds, stratified jump draws reduced across-seed error variance for `S_T` mean/std and `Y_T` mean/std versus pure RNG jump uniforms (X is unchanged since it already uses Sobol).
+- Expected training effects: fewer “outlier bursts” early/mid, smoother PER statistics, smaller TD tails at fixed compute, and improved seed robustness (especially on `Pricing/Delta_Percent` late drift) without slowing the early learning ramp.
+
 ## TensorBoard note
 
 You can read runv18 logs by changing the tensorboard path in the bash script (e.g., pass `-name` accordingly). The scripts default to logging under `runs/<name>`. Adjust `-name` to keep experiments separated for comparison in TensorBoard. 

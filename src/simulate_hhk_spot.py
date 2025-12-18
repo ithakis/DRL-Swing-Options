@@ -19,6 +19,7 @@ def simulate_hhk_spot(
     mu_J: float,
     f: Callable[[float], float],
     seed: Optional[int] = None,
+    jump_sampler: str = "qmc",
     dtype: np.dtype | str = np.float32,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -41,8 +42,7 @@ def simulate_hhk_spot(
     t   = np.linspace(0.0, dtype_scalar(T), n_steps + 1, dtype=dtype)
 
     # ── Diffusive OU driver (Sobol) ───────────────────────────────────────────
-    if seed is not None: np.random.seed(seed)
-    sampler = qmc.Sobol(d=n_steps, scramble=True)
+    sampler = qmc.Sobol(d=n_steps, scramble=True, seed=seed)
     z_x     = norm.ppf(np.clip(sampler.random(n_paths), 1e-12, 1-1e-12)).astype(dtype, copy=False)
 
     e_m     = dtype_scalar(np.exp(-alpha * dt))
@@ -62,6 +62,10 @@ def simulate_hhk_spot(
     # ── Pre‑draw Poisson counts ───────────────────────────────────────────────
     counts = rng.poisson(lam * dt, size=(n_steps, n_paths // 2))
 
+    jump_sampler = (jump_sampler or "qmc").lower()
+    if jump_sampler not in {"qmc", "rng"}:
+        raise ValueError("jump_sampler must be one of {'qmc', 'rng'}.")
+
     # ── MAIN TIME LOOP – VECTORISED INSIDE ────────────────────────────────────        
     for k in tqdm(range(1, n_steps + 1), leave=False, desc="Simulating"):
 
@@ -77,8 +81,20 @@ def simulate_hhk_spot(
 
         if pos_idx.size:                          # skip if no jumps
             n_tot = c_k[pos_idx].sum()            # total #jumps this step
-            U = rng.uniform(0.0, dt, size=n_tot).astype(dtype, copy=False)  # arrival times
-            V = rng.random(n_tot).astype(dtype, copy=False)                 # uniforms for Exp marks
+            if jump_sampler == "qmc":
+                # Stratified (Latin Hypercube) uniforms for jump timing/marks.
+                # Keep the same marginal law as Uniform(0,1) while reducing MC variance.
+                # Use a deterministic per-step seed for reproducibility.
+                step_seed = None if seed is None else int(seed) + 1000003 * int(k)
+                jump_qmc = qmc.LatinHypercube(d=2, seed=step_seed)
+                uv = jump_qmc.random(int(n_tot))
+                U = (uv[:, 0] * float(dt)).astype(dtype, copy=False)  # arrival times in [0, dt)
+                V = uv[:, 1].astype(dtype, copy=False)               # uniforms for Exp marks
+            else:
+                U = rng.uniform(0.0, dt, size=n_tot).astype(dtype, copy=False)  # arrival times
+                V = rng.random(n_tot).astype(dtype, copy=False)                 # uniforms for Exp marks
+
+            V = np.clip(V, 1e-12, 1.0 - 1e-12).astype(dtype, copy=False)
             V_bar = dtype_scalar(1.0) - V                                   # antithetic uniforms
 
             # exponential jump sizes (antithetic)
