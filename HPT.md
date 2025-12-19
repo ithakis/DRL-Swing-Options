@@ -620,3 +620,62 @@ You can read runv18 logs by changing the tensorboard path in the bash script (e.
 - Outcomes: higher Actions_at_upper_pct, action variance collapses in some seeds, delta_percent worse than v1 baseline, occasional late divergence; critic loss often stayed low so it was not a good health signal.
 - Likely causes: longer episodes increased update density; early PER schedules/clipping and strong early regularization either flattened priorities or starved critics; exploration floors/schedules were insufficient to avoid boundary lock-in.
 - Status: codebase reverted to pre-experiment (v1) behavior; keep these notes to avoid repeating the same avenues without deeper changes.
+
+## v49: LAP (Loss-Adjusted Priorities)
+
+- What changed: PER now supports `--per_priority_scheme=lap`, which sets the *base priority* to a Huberized loss (LAP) instead of `|TD|` (sampling still uses `p_base**alpha`; IS weights unchanged).
+- What is LAP: for TD error `δ`, Huber loss with threshold `κ` is `L(δ; κ)=0.5*δ^2` if `|δ|<=κ`, else `κ*(|δ|-0.5*κ)`. LAP sets `p_base = max(L(δ; κ), floor)`.
+- Why here: swing-option training produces heavy-tailed TD errors; standard PER can over-sample rare outliers → high-variance critic updates → policy drift. LAP damps the tail dominance while keeping PER’s “focus on hard samples”.
+- Expected gains: lower `TD_Error/p99`, fewer `Critic_loss` spikes, lower seed variance in `Pricing/Delta_Percent`, and more stable exercise statistics.
+- Best initial params (to isolate the effect):
+  - `--per_priority_scheme=lap`
+  - `--per_huber_kappa=1.0`
+  - `--per_priority_floor=1.0` (LAP-style floor; prevents low-loss transitions from being under-sampled)
+  - keep v48’s PER schedule initially (don’t retune everything at once)
+  - `--per_priority_clip_pct=0` initially (Huber already tames tails; re-enable only if spikes persist)
+- What to tune if needed:
+  - `κ` too small: priorities flatten early → PER effect vanishes → learning may slow.
+  - `κ` too large: approaches squared-loss PER → outlier dominance can return.
+  - floor too high: replay becomes near-uniform (priority mass concentrates near floor).
+  - floor too low: low-loss transitions can become too rare → over-focus on “hard” samples / overfit.
+- How to diagnose with existing logs:
+  - Tail/instability: `TD_Error/p99` and `Critic_loss` spikes.
+  - Outlier dominance: `PER/priority_std` rising sharply.
+  - Seed divergence: `Pricing/Delta_Percent` drift separating across seeds.
+- Perf penalty: a few extra elementwise ops; optional per-batch `torch.quantile` only when `--per_priority_clip_pct>0` (LAP without clipping is negligible overhead vs baseline).
+- Reference: Fujimoto et al., NeurIPS 2020, *Loss-Adjusted Prioritized Experience Replay*.
+
+### v49 results (vs v48 overlay; seeds 11/12/13)
+
+Important caveat for interpretation:
+- The v48 runs shown in the overlay used `--per_priority_clip_pct=99.7`, but historically this flag was parsed and **not applied** in code. If those orange curves come from pre-fix runs, the comparison is *not* a clean “LAP vs clipped-STD-PER” A/B. For a clean baseline, rerun v48 with the current code (clip now works).
+
+Pricing / return metrics:
+- **Pricing/Delta_Percent**: looks broadly similar late; end values in the screenshot are approximately v48 ≈ `[-0.6, -0.5, -0.4]` vs v49 ≈ `[-0.3, -0.3, -1.0]`. Differences are within the expected ~1% evaluation noise band at 32k paths, so treat as inconclusive without reruns / more eval paths.
+- **Average100**: essentially unchanged; end values are very close run-to-run (v48 ≈ `[2.66, 2.90, 2.59]`, v49 ≈ `[2.67, 2.90, 2.59]`). Any “tighter spread” is small and likely dominated by noise at this scale.
+
+Learning dynamics (what clearly changed):
+- **TD_Error percentiles (p50/p90/p99)**: v49 curves are lower/flatter in the overlay. This is consistent with LAP changing *which transitions are sampled*, so the logged TD distribution becomes less tail-heavy *conditional on the replay sampler* (it does not necessarily mean the buffer-wide TD tail shrank).
+- **PER stats**:
+  - `priority_min` is pinned at `1.0` under v49 (by design: `--per_priority_floor=1.0`), versus ~0 under v48 (`5e-6`).
+  - `priority_mean` shifts up materially for v49 (expected from the floor; priorities are on a different scale).
+  - `priority_max/entropy/std` look broadly similar in the overlay → LAP did not obviously create “priority explosions” or collapse replay diversity in these runs.
+- **Critic_loss / Actor_loss**: v49 shows higher critic-loss spike density and a different actor-loss level. Given the above, this is most consistent with a sampler/IS-weight regime change (more-uniform sampling ⇒ IS weights closer to 1 ⇒ reported losses are less downweighted), rather than a clear improvement/degradation in pricing.
+
+Net takeaways:
+- v49 (as run) is stable and does not obviously change pricing outcomes versus v48 in a statistically meaningful way.
+- The main visible effect is on *replay sampling diagnostics* (TD tails and priority scale), which is exactly where LAP should act; to translate that into better pricing, v50 likely needs floor/κ/alpha retuning (see notes below).
+
+### v50 results (v49 retune: κ=0.5, floor=0.05, clip=99.7; seeds 11/12/13)
+
+Pricing / return metrics:
+- **Pricing/Delta_Percent**: ends essentially on top of v48 in the screenshot (v50 ≈ `[-0.5, -0.4, -0.5]` vs v48 ≈ `[-0.6, -0.5, -0.4]`). One v50 seed shows a sharp mid-run dip (around ~13k episodes) before recovering; treat this as a stability warning until confirmed with reruns / higher `n_paths_eval`.
+- **Average100**: overlays v48/v49 closely and converges to the same ~2.6–2.65 band; no clear improvement signal at current evaluation noise level.
+
+Learning dynamics:
+- **TD_Error percentiles**: v50 sits between v48 (higher tails) and v49 (lower tails), consistent with “tail-damped replay focus” without fully flattening priorities.
+- **PER stats**: v50 materially reduces `priority_max` and `priority_std` versus v48/v49 while keeping `priority_entropy` similar; this matches the intended effect of LAP+clipping (less outlier dominance) and is a positive stability sign.
+- **Critic_loss / Actor_loss**: v50 remains materially noisier than v48 and closer to v49 in spike density; given the simultaneous reduction in priority tail stats, this suggests the remaining loss spikes are driven by environment/bootstrapping dynamics (not just PER outliers) and may not translate to pricing improvements.
+
+Decision note:
+- If the goal is “no regressions and minimal complexity”, v50 does not show a clear pricing win over v48 and includes one mid-run pricing dip; unless that dip disappears under rerun / higher eval-path validation, keeping the v48 setup (but with the now-working `--per_priority_clip_pct` if desired) is a reasonable default.

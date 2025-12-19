@@ -57,6 +57,8 @@ class Agent:
         per_beta_frames=100000,
         per_priority_floor: float = 1e-6,
         per_priority_clip_pct: float = 0.0,
+        per_priority_scheme: str = "standard",
+        per_huber_kappa: float = 1.0,
         per_alpha_final: Optional[float] = None,
         per_alpha_ramp_start: int = 0,
         per_alpha_ramp_end: int = 0,
@@ -110,6 +112,9 @@ class Agent:
         self.per_alpha_ramp_end = max(0, int(per_alpha_ramp_end))
         self.per_beta_final = per_beta_final
         self.per_alpha_sigmoid = per_alpha_sigmoid
+        self.per_priority_scheme = (per_priority_scheme or "standard").lower()
+        self.per_huber_kappa = float(per_huber_kappa)
+        self.per_priority_clip_pct = float(per_priority_clip_pct)
         random.seed(random_seed)
         torch.manual_seed(random_seed)
 
@@ -483,6 +488,33 @@ class Agent:
         interval = max(1, int(interval))
         return timestamp % interval == 0
 
+    def _compute_base_priorities(
+        self,
+        td_or_loss: torch.Tensor,
+        *,
+        floor: float,
+        clip_pct: float,
+        scheme: str,
+        huber_kappa: float,
+        is_loss: bool = False,
+    ) -> torch.Tensor:
+        if is_loss:
+            priorities = td_or_loss.detach()
+        elif scheme == "lap":
+            priorities = calculate_huber_loss(td_or_loss, k=huber_kappa).detach()
+        else:
+            priorities = td_or_loss.detach().abs()
+
+        floor_f = float(floor)
+        priorities = torch.nan_to_num(priorities, nan=floor_f, posinf=1e6, neginf=floor_f)
+        priorities = priorities.clamp_min(floor_f)
+        if clip_pct and clip_pct > 0:
+            q = float(clip_pct) / 100.0
+            thr = torch.quantile(priorities.flatten(), q)
+            priorities = priorities.clamp_max(thr)
+            priorities = priorities.clamp_min(floor_f)
+        return priorities
+
     def act(self, state: np.ndarray, add_noise: bool = True):
         self._maybe_init_profitability_params()
         # Avoid train()/eval() toggling (expensive) while keeping inference_mode for no-grad
@@ -580,7 +612,14 @@ class Agent:
                             torch.quantile(abs_td, 0.9).item(),
                             torch.quantile(abs_td, 0.99).item(),
                         )
-            priorities = td.detach().abs().clamp_min(1e-6)
+            floor = float(getattr(self.memory, "min_priority", 1e-6))
+            priorities = self._compute_base_priorities(
+                td,
+                floor=floor,
+                clip_pct=self.per_priority_clip_pct,
+                scheme=self.per_priority_scheme,
+                huber_kappa=self.per_huber_kappa,
+            )
         else:
             critic_loss = F.mse_loss(q_expected, q_target)
             priorities = None
@@ -661,9 +700,31 @@ class Agent:
         actor_loss.backward()
         self.actor_optimizer.step()
         self._updates_done += 1
-        if self.per and hasattr(self.memory, "update_priorities"):
-            pr = td_error.mean(dim=(1, 2)).abs().clamp_min(1e-6).detach().cpu().numpy()
-            self.memory.update_priorities(idx, pr)
+        if self._per_update_priorities:
+            floor = float(getattr(self.memory, "min_priority", 1e-6))
+            if self.per_priority_scheme == "lap":
+                huber_pr = calculate_huber_loss(td_error, k=self.per_huber_kappa)
+                quantile_pr = (
+                    torch.abs(taus - (td_error.detach() < 0).float()) * huber_pr
+                ).sum(dim=1).mean(dim=1)
+                priorities = self._compute_base_priorities(
+                    quantile_pr,
+                    floor=floor,
+                    clip_pct=self.per_priority_clip_pct,
+                    scheme=self.per_priority_scheme,
+                    huber_kappa=self.per_huber_kappa,
+                    is_loss=True,
+                )
+            else:
+                td_proxy = td_error.mean(dim=(1, 2))
+                priorities = self._compute_base_priorities(
+                    td_proxy,
+                    floor=floor,
+                    clip_pct=self.per_priority_clip_pct,
+                    scheme=self.per_priority_scheme,
+                    huber_kappa=self.per_huber_kappa,
+                )
+            self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
         if self.step_counter % self.td_quantile_interval == 0:
             with torch.no_grad():
                 flat = q_targets.view(q_targets.size(0), -1)

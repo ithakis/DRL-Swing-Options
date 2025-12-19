@@ -536,6 +536,19 @@ class ConfigManager:
         parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
         parser.add_argument("--per_priority_floor", type=float, default=1e-6, help="Minimum PER priority to avoid zeros (default: 1e-6)")
         parser.add_argument("--per_priority_clip_pct", type=float, default=0.0, help="Clip PER priorities to this percentile (0 disables, default: disabled)")
+        parser.add_argument(
+            "--per_priority_scheme",
+            type=str,
+            default="standard",
+            choices=["standard", "lap"],
+            help="PER: base priority scheme {standard=|TD|, lap=Huber loss} (default: standard)",
+        )
+        parser.add_argument(
+            "--per_huber_kappa",
+            type=float,
+            default=1.0,
+            help="PER: Huber threshold kappa for lap scheme (default: 1.0)",
+        )
         parser.add_argument("--per_alpha_final", type=float, default=None, help="Optional PER alpha target for scheduling (None disables)")
         parser.add_argument("--per_alpha_ramp_start", type=int, default=0, help="Episode to start PER alpha ramp (0 disables if end<=start)")
         parser.add_argument("--per_alpha_ramp_end", type=int, default=0, help="Episode to end PER alpha ramp (0 disables if end<=start)")
@@ -1604,6 +1617,8 @@ def main():
         per_beta_frames=args.per_beta_frames,
         per_priority_floor=args.per_priority_floor,
         per_priority_clip_pct=args.per_priority_clip_pct,
+        per_priority_scheme=args.per_priority_scheme,
+        per_huber_kappa=args.per_huber_kappa,
         per_alpha_final=args.per_alpha_final,
         per_alpha_ramp_start=args.per_alpha_ramp_start,
         per_alpha_ramp_end=args.per_alpha_ramp_end,
