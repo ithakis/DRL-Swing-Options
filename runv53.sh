@@ -1,5 +1,5 @@
 #!/bin/bash
-# v53 convex cost experiment: c_cost=0.08, gamma_cost=2
+# v53: v52 config but explicitly pin v43-style initialization (orthogonal) to test init effects.
 args=(
     # 8192 * 4 = 32768 training episodes total (32k)
     # 8192 * 2 = 16384 training episodes (16k)
@@ -54,7 +54,7 @@ args=(
     --target_policy_clip=0.25      # Target policy smoothing noise clip
     --compile=0                    # Disable torch.compile (for simplicity and compatibility)
     -n_cores=4                     # Number of CPU cores to utilize for parallel processing
-    --disable_csv_logging=0        # Turn off CSV outputs for this sweep
+    --disable_csv_logging=1        # Turn off CSV outputs for this sweep
     --limit_logging_frequency=1    # Throttle per-step TensorBoard logging to shrink files
 
     # Swing Option Contract parameters (pricing problem definition)
@@ -67,8 +67,8 @@ args=(
     --Q_max=20.0                 # Global max total volume over the contract
     --risk_free_rate=0.05        # Annual risk-free rate used for discounting
     --min_refraction_periods=0   # Cooldown periods after an exercise (0 = none)
-    --c_cost=0.08                   # Convex exercise cost coefficient (0 disables cost)
-    --gamma_cost=2               # Convex cost exponent (1 = linear cost in q)
+    --c_cost=0                   # Convex exercise cost coefficient (0 disables cost)
+    --gamma_cost=1               # Convex cost exponent (1 = linear cost in q)
 
     # LSM benchmark controls (continuation value regression)
     --lsm_basis=chebyshev        # Basis family {power, laguerre, hermite, chebyshev}
@@ -85,15 +85,19 @@ args=(
     --mu_J=0.3                   # Mean jump size (relative jump magnitude)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_c0.08_gamma2_11" -seed 11
-python run.py "${args[@]}" -name "SwingOption_20_c0.08_gamma2_12" -seed 12
-python run.py "${args[@]}" -name "SwingOption_20_c0.08_gamma2_13" -seed 13
-python run.py "${args[@]}" -name "SwingOption_20_c0.08_gamma2_14" -seed 14
-python run.py "${args[@]}" -name "SwingOption_20_c0.08_gamma2_15" -seed 15
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_11" -seed 11
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_12" -seed 12
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_13" -seed 13
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_14" -seed 14
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_15" -seed 15
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_16" -seed 16
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_17" -seed 17
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_18" -seed 18
+python run.py "${args[@]}" -name "SwingOption_20_v53_265k_19" -seed 19
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-# bash SwingOption_20_c0.08_gamma2.sh
+# bash runv53.sh
 
 ## TensorBoard launch command:
 # tensorboard --logdir=runs \

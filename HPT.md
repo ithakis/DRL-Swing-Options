@@ -679,3 +679,50 @@ Learning dynamics:
 
 Decision note:
 - If the goal is “no regressions and minimal complexity”, v50 does not show a clear pricing win over v48 and includes one mid-run pricing dip; unless that dip disappears under rerun / higher eval-path validation, keeping the v48 setup (but with the now-working `--per_priority_clip_pct` if desired) is a reasonable default.
+
+## v52+
+
+- LSM out-of-sample evaluation refactored to avoid lookahead bias.
+- Enabled via runv52+.
+- Aligned with Longstaff-Schwartz methodology for independent estimator application.
+
+## v52 (vs v51)
+
+- Change: `--norm` switched from `rmsnorm` to `layernorm` for stability.
+- Other params: identical to v51 (no RL/LSM/HHK hyperparameter changes).
+
+### v52 results (vs v43 overlay; 9 seeds vs 3)
+
+- **Pricing/Delta_Percent**: 7/9 seeds converge near the -0.1% to -1.2% band, but two seeds (`12`, `18`) get stuck near **-17.5%** (hard failure mode). This is a clear regression in seed robustness vs. v43.
+- **Average100**: bimodal outcomes—most seeds converge around ~2.6, while the stuck seeds sit near ~2.15, matching the pricing collapse.
+- **Policy/Action_variance_mean**: higher and wider than v43; variance climbs into the ~0.22–0.25 range (v43 ~0.18–0.20), indicating a more volatile policy regime.
+- **Policy/Actions_at_upper_pct**: materially higher (climbs toward ~0.40–0.45 vs v43’s ~0.23–0.26), consistent with bang-bang saturation and the collapse seeds.
+- **TD_Error (p50/p90/p99)**: elevated across the board with fatter tails, suggesting heavier TD outliers and more fragile critic updates.
+- **PER stats**: `priority_max` and `priority_std` are higher than v43, indicating more tail-dominated replay sampling; `priority_mean` is similar/slightly higher.
+- **Critic_loss / Actor_loss**: higher spike density and a split in actor-loss bands, consistent with the two-regime outcome (healthy vs. collapsed).
+
+Interpretation:
+- LayerNorm alone did not recover the v43 stability regime. The seed bifurcation points to interactions with initialization, clipping behavior, and/or the post-v48 HHK simulation variance changes rather than normalization choice alone.
+
+## v53 plan: v52 + v43 initialization (explicit)
+
+- Change: add `--init_method {orthogonal, he}` in the codebase; v53 pins `--init_method=orthogonal` to match the v43 initialization scheme.
+- Goal: isolate whether initialization contributes to the v52 seed bifurcation while keeping all other v52 settings fixed.
+- Readouts: `Pricing/Delta_Percent` collapse frequency, `Action_variance_mean` / `Actions_at_upper_pct`, TD tail percentiles, PER priority tail stats, and critic-loss spike density.
+
+## v53 results: orthogonal init restores stability (red overlay)
+
+Overall: v53 removes the v52 collapse mode and tightens seed spread. Dynamics track v43 closely early and remain more stable than v52 late.
+
+Graph-by-graph read (v53 red vs v43 yellow; v52 blue for context):
+
+- **Pricing/Delta_Percent**: v53 converges cleanly to the sub‑1% band with no stuck seeds; the two v52 failure seeds are absent. Late dispersion is tighter than v52 and comparable to v43.
+- **Average100**: v53 collapses the bimodal v52 outcome into a single band around ~2.6; no low‑return plateau remains.
+- **Avg_Total_Exercised**: v53 stays within the v43 range with slightly tighter spread; no drift toward the unstable regime seen in v52.
+- **Policy/Action_variance_mean**: v53 sits below v52 and closer to v43 (moderate variance band), indicating less volatile policy updates.
+- **Policy/Actions_at_upper_pct**: v53 reduces upper‑bound saturation vs v52 and tracks closer to v43, consistent with more stable exercise behavior.
+- **TD_Error (p50/p90/p99)**: v53 tails are lower than v52 and sit near the v43 band; reduced tail growth aligns with improved stability.
+- **PER stats (priority_max/std/mean)**: v53 shifts away from v52’s higher tail regime; priority_std and priority_max are closer to v43, suggesting less outlier‑dominated replay.
+- **Actor_loss / Critic_loss**: v53 shows smoother loss traces with fewer extreme spikes than v52, matching the tighter seed spread and lack of collapse.
+
+Takeaway: explicit orthogonal initialization appears to be a key stabilizer post‑v52; it removes the collapse mode and restores v43‑like behavior without changing other hyperparameters.

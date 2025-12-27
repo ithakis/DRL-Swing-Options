@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import cProfile
-import csv
 import os
 import pstats
 import time
@@ -10,6 +9,7 @@ from io import StringIO
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 
 try:
     import torch
@@ -268,28 +268,32 @@ def _evaluate_swing_batch(
     return discounted_returns, exercise_stats, all_path_data
 
 
-def _write_eval_csv(
-    csv_filepath: str,
-    csv_headers: Sequence[str],
+def _write_eval_parquet(
+    parquet_filepath: str,
+    columns: Sequence[str],
     rows: List[List[float]],
-    csv_writer: Optional[Any],
+    parquet_writer: Optional[Any],
 ) -> None:
-    """Write evaluation CSV either asynchronously (if provided) or synchronously."""
+    """Write evaluation Parquet either asynchronously (if provided) or synchronously."""
     rounded_data = _round_eval_rows(rows)
     if not rounded_data:
         return
 
-    if csv_writer:
-        csv_writer.write_csv(csv_filepath, rounded_data, csv_headers)
+    if parquet_writer:
+        parquet_writer.write_parquet(parquet_filepath, rounded_data, columns)
         return
 
     try:
-        with open(csv_filepath, "w", newline="") as f:
-            writer_csv = csv.writer(f)
-            writer_csv.writerow(csv_headers)
-            writer_csv.writerows(rounded_data)
+        df = pd.DataFrame(rounded_data, columns=columns)
+        df.to_parquet(
+            parquet_filepath,
+            index=False,
+            engine="pyarrow",
+            compression="zstd",
+            compression_level=22,
+        )
     except Exception as e:
-        print(f"Warning: Failed to write CSV file {csv_filepath}: {e}")
+        print(f"Warning: Failed to write Parquet file {parquet_filepath}: {e}")
 
 
 def evaluate_agent(
@@ -299,7 +303,7 @@ def evaluate_agent(
     path: Optional[int],
     evaluations_dir: Optional[str],
     lsm_price: Optional[float],
-    csv_writer: Optional[Any] = None,
+    parquet_writer: Optional[Any] = None,
     eval_batch_size: int = 1,
     profile: bool = False,
     profile_dir: str = "profilelogs",
@@ -310,6 +314,7 @@ def evaluate_agent(
 
     If eval_env is a SwingOptionEnv, the optimized batched evaluator is used.
     Otherwise, a generic Gym-style rollout is performed.
+    lsm_price is expected to be computed out-of-sample using frozen estimators.
     """
 
     def _run():
@@ -321,7 +326,7 @@ def evaluate_agent(
                 path=path,
                 evaluations_dir=evaluations_dir,
                 lsm_price=lsm_price,
-                csv_writer=csv_writer,
+                parquet_writer=parquet_writer,
                 eval_batch_size=eval_batch_size,
             )
         return _evaluate_generic_env(agent, eval_env, writer, path, evaluations_dir, n_episodes=n_episodes)
@@ -350,14 +355,14 @@ def _evaluate_swing_agent(
     path: Optional[int],
     evaluations_dir: Optional[str],
     lsm_price: Optional[float],
-    csv_writer: Optional[Any],
+    parquet_writer: Optional[Any],
     eval_batch_size: int,
 ) -> EvaluationSummary:
     """Batched evaluation for SwingOptionEnv."""
     # Perf note (eval_benchmark, default contract, 20 eval paths on CPU):
     #   eval_batch_size=1  -> ~0.50s total (0.025s/path)
     #   eval_batch_size=4  -> ~0.24s total (0.012s/path) ~2.1x faster
-    csv_headers = [
+    parquet_columns = [
         "path",
         "time_step",
         "spot_minus_strike",
@@ -381,7 +386,15 @@ def _evaluate_swing_agent(
     discounted_returns: List[float] = []
     exercise_stats: List[Dict[str, Any]] = []
     collect_path_data = bool(evaluations_dir)
-    all_path_data: List[List[float]] = [] if collect_path_data else []
+    all_path_data: List[List[float]] = [] if collect_path_data and not parquet_writer else []
+    csv_filename = None
+    parquet_filepath = None
+    if evaluations_dir and collect_path_data:
+        os.makedirs(evaluations_dir, exist_ok=True)
+        csv_filename = f"rl_episode_{path if path is not None else 0}.parquet"
+        parquet_filepath = os.path.join(evaluations_dir, csv_filename)
+        if parquet_writer and os.path.exists(parquet_filepath):
+            os.remove(parquet_filepath)
 
     for start in range(0, n_paths, batch_size):
         end = min(start + batch_size, n_paths)
@@ -396,7 +409,11 @@ def _evaluate_swing_agent(
         discounted_returns.extend(batch_returns)
         exercise_stats.extend(batch_stats)
         if collect_path_data:
-            all_path_data.extend(batch_rows)
+            if parquet_writer and parquet_filepath:
+                if batch_rows:
+                    parquet_writer.write_parquet(parquet_filepath, batch_rows, parquet_columns)
+            else:
+                all_path_data.extend(batch_rows)
 
     eval_env._episode_counter = -1
 
@@ -405,13 +422,9 @@ def _evaluate_swing_agent(
     avg_exercised = float(np.mean([s["total_exercised"] for s in exercise_stats]))
     avg_exercises = float(np.mean([s["exercise_count"] for s in exercise_stats]))
     confidence_95 = float(1.96 * price_std / np.sqrt(n_paths))
-    csv_filename = None
-
-    if evaluations_dir and collect_path_data:
-        os.makedirs(evaluations_dir, exist_ok=True)
-        csv_filename = f"rl_episode_{path if path is not None else 0}.csv"
-        csv_filepath = os.path.join(evaluations_dir, csv_filename)
-        _write_eval_csv(csv_filepath, csv_headers, all_path_data, csv_writer)
+    if evaluations_dir and collect_path_data and not parquet_writer:
+        if parquet_filepath:
+            _write_eval_parquet(parquet_filepath, parquet_columns, all_path_data, parquet_writer)
 
     summary = EvaluationSummary(
         returns=discounted_returns,
@@ -453,8 +466,8 @@ def _evaluate_swing_agent(
         print(f"Min Return: {summary.min_return:.3f}")
         print(f"Max Return: {summary.max_return:.3f}")
         if csv_filename:
-            suffix = " (async)" if csv_writer else ""
-            print(f"CSV saved: {csv_filename}{suffix}")
+            suffix = " (async)" if parquet_writer else ""
+            print(f"Parquet saved: {csv_filename}{suffix}")
         print(f"{'=' * 50}")
 
     return summary
@@ -528,7 +541,7 @@ def benchmark_evaluation(
     writer,
     evaluations_dir: Optional[str],
     lsm_price: Optional[float],
-    csv_writer: Optional[Any],
+    parquet_writer: Optional[Any],
     eval_batch_size: int = 1,
     profile: bool = False,
     profile_dir: str = "profilelogs",
@@ -546,7 +559,7 @@ def benchmark_evaluation(
         path=0,
         evaluations_dir=evaluations_dir,
         lsm_price=lsm_price,
-        csv_writer=csv_writer,
+        parquet_writer=parquet_writer,
         eval_batch_size=eval_batch_size,
         profile=profile,
         profile_dir=profile_dir,

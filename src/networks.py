@@ -116,6 +116,25 @@ def _build_activation(activation: str) -> Tuple[Callable[[], nn.Module], float]:
     raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
 
 
+def _normalize_init_method(init_method: Optional[str]) -> str:
+    method = (init_method or "orthogonal").lower()
+    if method == "kaiming":
+        method = "he"
+    if method not in {"orthogonal", "he"}:
+        raise ValueError(f"Unsupported init_method '{init_method}'. Choose from 'orthogonal' or 'he'.")
+    return method
+
+
+def _init_linear(layer: nn.Linear, *, method: str, gain: float) -> None:
+    if method == "orthogonal":
+        torch.nn.init.orthogonal_(layer.weight, gain=gain)
+    elif method == "he":
+        torch.nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+    else:
+        raise ValueError(f"Unsupported init_method '{method}'. Choose from 'orthogonal' or 'he'.")
+    torch.nn.init.zeros_(layer.bias)
+
+
 class _RMSNorm(nn.Module):
     """Minimal RMSNorm fallback for older PyTorch builds."""
 
@@ -161,6 +180,7 @@ class Actor(nn.Module):
         target_action_std: Optional[float] = math.sqrt(1.0 / 12.0),
         activation: str = "silu",
         norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
     ) -> None:
         """Initialize the Actor network.
         
@@ -196,6 +216,7 @@ class Actor(nn.Module):
         self.activation_name = activation.lower()
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
         self.norm_type = norm_type.lower()
+        self.init_method = _normalize_init_method(init_method)
 
         layers: List[nn.Sequential] = []
         input_dim = state_size
@@ -242,8 +263,7 @@ class Actor(nn.Module):
         linear_layers = [block[0] for block in self.hidden_layers]  # index 0 = Linear
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=self._activation_gain)
-                torch.nn.init.zeros_(layer.bias)
+                _init_linear(layer, method=self.init_method, gain=self._activation_gain)
 
         # Small uniform initialization for final layer (actor output)
         torch.nn.init.uniform_(self.fc4.weight, -3e-3, 3e-3)
@@ -387,6 +407,7 @@ class Critic(nn.Module):
         n_layers: int = 2,
         activation: str = "silu",
         norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
     ) -> None:
         """Initialize the Critic network.
         
@@ -415,6 +436,7 @@ class Critic(nn.Module):
         self.activation_name = activation.lower()
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
         self.norm_type = norm_type.lower()
+        self.init_method = _normalize_init_method(init_method)
 
         self.state_encoder = nn.Sequential(
             nn.Linear(state_size, hidden_size, bias=True),
@@ -461,8 +483,7 @@ class Critic(nn.Module):
         linear_layers.extend(block[0] for block in self.post_layers)
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=self._activation_gain)
-                torch.nn.init.zeros_(layer.bias)
+                _init_linear(layer, method=self.init_method, gain=self._activation_gain)
 
         # Initialize final layer to produce neutral Q-values
         # Small uniform initialization for the final critic layer
@@ -527,6 +548,7 @@ class IQN(nn.Module):
         dueling: bool = False,
         n_cos: int = 64,
         norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
     ) -> None:
         """Initialize the IQN network.
         
@@ -556,6 +578,7 @@ class IQN(nn.Module):
         self.layer_size = layer_size
         self.dueling = dueling
         self.norm_type = norm_type.lower()
+        self.init_method = _normalize_init_method(init_method)
         
         # Precompute pi values for cosine embeddings
         self.register_buffer(
@@ -596,18 +619,16 @@ class IQN(nn.Module):
         initialization for distributional outputs to start with neutral
         value distributions.
         """
-        # Orthogonal initialization for hidden layers with ReLU gain
+        # Orthogonal/He initialization for hidden layers with ReLU gain
         # Only initialize Linear layers, not LayerNorm
         linear_layers = [self.head[0], self.ff_1[0]]  # index 0 = Linear
         for layer in linear_layers:
             if isinstance(layer, nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
-                torch.nn.init.zeros_(layer.bias)
+                _init_linear(layer, method=self.init_method, gain=math.sqrt(2.0))
         
         # Initialize cosine embedding layer
         if isinstance(self.cos_embedding, nn.Linear):
-            torch.nn.init.orthogonal_(self.cos_embedding.weight, gain=math.sqrt(2.0))
-            torch.nn.init.zeros_(self.cos_embedding.bias)
+            _init_linear(self.cos_embedding, method=self.init_method, gain=math.sqrt(2.0))
         
         # Initialize final layer to produce neutral value distribution
         # Small uniform initialization similar to critic

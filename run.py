@@ -24,6 +24,8 @@ from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -38,7 +40,7 @@ except Exception:  # pragma: no cover - SciPy is optional
 from src.agent import Agent
 from src.agent_evaluation import benchmark_evaluation, evaluate_agent
 from src.fdm_swing_pricer import price_swing_option_fdm
-from src.lsm_swing_pricer import price_swing_option_lsm
+from src.lsm_swing_pricer import fit_lsm_estimators, price_swing_option_lsm_oos
 
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
@@ -331,13 +333,14 @@ def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: 
     )
 
 
-class AsyncCSVWriter:
-    """Asynchronous CSV writer to avoid blocking main execution"""
+class AsyncParquetWriter:
+    """Asynchronous Parquet writer to avoid blocking main execution"""
 
     def __init__(self):
         self.write_queue = Queue()
         self.writer_thread = None
         self.is_running = False
+        self._writers = {}
 
     def start(self):
         """Start the background writer thread"""
@@ -352,6 +355,12 @@ class AsyncCSVWriter:
             self.write_queue.put(None)  # Sentinel to stop thread
             if self.writer_thread:
                 self.writer_thread.join(timeout=5.0)
+            for writer in self._writers.values():
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+            self._writers.clear()
             self.is_running = False
 
     def _write_worker(self):
@@ -362,35 +371,33 @@ class AsyncCSVWriter:
                 break
 
             try:
-                filepath, data, headers = item
-
-                # Check if file exists to determine if we need headers
-                file_exists = os.path.exists(filepath)
-
-                with open(filepath, "a", newline="") as f:
-                    writer = csv.writer(f)
-
-                    # Write headers if file is new
-                    if not file_exists and headers:
-                        writer.writerow(headers)
-
-                    # Write data rows
-                    if isinstance(data[0], (list, tuple)):
-                        # Multiple rows
-                        writer.writerows(data)
-                    else:
-                        # Single row
-                        writer.writerow(data)
-
+                filepath, data, columns = item
+                if not data:
+                    continue
+                arr = np.asarray(data)
+                table = pa.Table.from_arrays(
+                    [pa.array(arr[:, idx]) for idx in range(arr.shape[1])],
+                    names=columns,
+                )
+                writer = self._writers.get(filepath)
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        filepath,
+                        table.schema,
+                        compression="zstd",
+                        compression_level=22,
+                    )
+                    self._writers[filepath] = writer
+                writer.write_table(table)
             except Exception as e:
-                print(f"Error writing to CSV: {e}")
+                print(f"Error writing to Parquet: {e}")
             finally:
                 self.write_queue.task_done()
 
-    def write_csv(self, filepath: str, data, headers=None):
-        """Queue data to be written to CSV file"""
+    def write_parquet(self, filepath: str, data, columns=None):
+        """Queue data to be written to Parquet file"""
         if self.is_running:
-            self.write_queue.put((filepath, data, headers))
+            self.write_queue.put((filepath, data, columns))
 
 
 class ConfigManager:
@@ -442,7 +449,7 @@ class ConfigManager:
             type=int,
             choices=[0, 1],
             default=0,
-            help="Disable all CSV logging outputs (training/evaluation/LSM). Set 1 to disable, 0 to allow.",
+            help="Disable evaluation Parquet logging outputs (evaluation/LSM). Set 1 to disable, 0 to allow.",
         )
         parser.add_argument(
             "--limit_logging_frequency",
@@ -654,6 +661,13 @@ class ConfigManager:
             default="layernorm",
             choices=["layernorm", "rmsnorm", "none"],
             help="Normalization layer in actor/critic/IQN MLPs (default: layernorm)",
+        )
+        parser.add_argument(
+            "--init_method",
+            type=str,
+            default="orthogonal",
+            choices=["orthogonal", "he", "kaiming"],
+            help="Weight initialization for actor/critic/IQN MLPs (default: orthogonal)",
         )
         parser.add_argument(
             "--final_lr_fraction",
@@ -1255,7 +1269,7 @@ def run_training(
     action_high: float,
     evaluations_dir: str,
     lsm_price: float,
-    csv_writer: Optional[AsyncCSVWriter] = None,
+    parquet_writer: Optional[AsyncParquetWriter] = None,
 ) -> None:
     """
     Main training function for Deep Q-Learning for Swing Option Pricing
@@ -1305,7 +1319,7 @@ def run_training(
             path=0,
             evaluations_dir=evaluations_dir,
             lsm_price=lsm_price,
-            csv_writer=csv_writer,
+            parquet_writer=parquet_writer,
             eval_batch_size=args.eval_batch_size,
             profile=args.profile_eval,
         )
@@ -1439,7 +1453,7 @@ def run_training(
                 path=current_path,
                 evaluations_dir=evaluations_dir,
                 lsm_price=lsm_price,
-                csv_writer=csv_writer,
+                parquet_writer=parquet_writer,
                 eval_batch_size=args.eval_batch_size,
                 profile=args.profile_eval,
             )
@@ -1524,18 +1538,24 @@ def main():
         os.makedirs(evaluations_dir, exist_ok=True) # create new /evaluations subdirectory
 
     # Price with Monte Carlo - LSM Benchmark
-    # LSM benchmark uses float64 for numba/SVD stability
-    lsm_ds = tuple(np.asarray(arr, dtype=np.float64) for arr in eval_ds)
-    lsm_csv_path = os.path.join(evaluations_dir, "lsm.csv") if evaluations_dir else None
-    mean_lsm_price, (th5q_price,th95q_price) = price_swing_option_lsm(
+    # LSM benchmark uses float64 for stability; fit on in-sample, evaluate out-of-sample
+    lsm_train_ds = tuple(np.asarray(arr, dtype=np.float64) for arr in train_ds)
+    lsm_eval_ds = tuple(np.asarray(arr, dtype=np.float64) for arr in eval_ds)
+    lsm_parquet_path = os.path.join(evaluations_dir, "lsm.parquet") if evaluations_dir else None
+    lsm_estimators = fit_lsm_estimators(
         contract=swing_contract,
-        dataset=lsm_ds,
+        dataset=lsm_train_ds,
         poly_degree=args.lsm_degree,
         basis_type=args.lsm_basis,
         reg_type=args.lsm_reg,
         reg_alpha=args.lsm_reg_alpha,
-        seed=seed+1,
-        csv_path=lsm_csv_path
+    )
+    mean_lsm_price, (th5q_price, th95q_price) = price_swing_option_lsm_oos(
+        contract=swing_contract,
+        dataset=lsm_eval_ds,
+        estimators=lsm_estimators,
+        seed=seed + 1,
+        csv_path=lsm_parquet_path,
     )
     print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")
     # Price with Quantlib - Finite Differences Method
@@ -1558,14 +1578,14 @@ def main():
     # Initialize TensorBoard writer
     tensorboard_writer = SummaryWriter("runs/" + args.name)
     
-    # Initialize AsyncCSVWriter for non-blocking CSV logging
-    csv_writer: Optional[AsyncCSVWriter] = None
+    # Initialize AsyncParquetWriter for non-blocking evaluation logging
+    parquet_writer: Optional[AsyncParquetWriter] = None
     if csv_logging_enabled:
-        csv_writer = AsyncCSVWriter()
-        csv_writer.start()
-        print("✅ AsyncCSVWriter initialized for evaluation logging")
+        parquet_writer = AsyncParquetWriter()
+        parquet_writer.start()
+        print("✅ AsyncParquetWriter initialized for evaluation logging")
     else:
-        print("CSV logging disabled; skipping CSV writer initialization")
+        print("Parquet logging disabled; skipping writer initialization")
 
     # Get environment specs
     action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
@@ -1635,6 +1655,7 @@ def main():
         grad_clip_norm_type=args.grad_clip_norm_type,
         activation=args.activation,
         norm_type=args.norm,
+        init_method=args.init_method,
         log_interval_scale=log_interval_scale,
         replay_memmap=bool(args.replay_memmap),
     )
@@ -1660,14 +1681,14 @@ def main():
             writer=tensorboard_writer,
             evaluations_dir=evaluations_dir,
             lsm_price=mean_lsm_price,
-            csv_writer=csv_writer,
+            parquet_writer=parquet_writer,
             eval_batch_size=args.eval_batch_size,
             profile=args.profile_eval,
         )
         eval_env.close()
-        if csv_writer:
-            csv_writer.stop()
-            print("✅ AsyncCSVWriter stopped - all CSV files written")
+        if parquet_writer:
+            parquet_writer.stop()
+            print("✅ AsyncParquetWriter stopped - all Parquet files written")
         TrainingManager.timer(t0, time.time())
         return
 
@@ -1683,7 +1704,7 @@ def main():
             action_high=action_high,
             evaluations_dir=evaluations_dir,
             lsm_price=mean_lsm_price,
-            csv_writer=csv_writer,
+            parquet_writer=parquet_writer,
         )
 
     print("\n" + "=" * 60)
@@ -1693,10 +1714,10 @@ def main():
     t1 = time.time()
     eval_env.close()
     
-    # Stop the CSV writer and wait for any pending writes
-    if csv_writer:
-        csv_writer.stop()
-        print("✅ AsyncCSVWriter stopped - all CSV files written")
+    # Stop the Parquet writer and wait for any pending writes
+    if parquet_writer:
+        parquet_writer.stop()
+        print("✅ AsyncParquetWriter stopped - all Parquet files written")
     
     TrainingManager.timer(t0, t1)
 

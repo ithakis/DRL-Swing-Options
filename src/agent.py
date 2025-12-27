@@ -83,6 +83,7 @@ class Agent:
         target_policy_clip: float = 0.25,
         activation: str = "silu",
         norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
         use_compile: bool = False,
         log_interval_scale: float = 1.0,
         replay_memmap: bool = False,
@@ -138,6 +139,11 @@ class Agent:
             raise ValueError(
                 f"Unsupported norm_type '{norm_type}'. Choose from 'layernorm', 'rmsnorm', or 'none'."
             )
+        self.init_method = (init_method or "orthogonal").lower()
+        if self.init_method == "kaiming":
+            self.init_method = "he"
+        if self.init_method not in {"orthogonal", "he"}:
+            raise ValueError(f"Unsupported init_method '{init_method}'. Choose from 'orthogonal' or 'he'.")
 
         self.use_compile = bool(use_compile)
         self._actor_forward_preact = None
@@ -194,6 +200,7 @@ class Agent:
             n_layers=actor_layers,
             activation=self.activation,
             norm_type=self.norm_type,
+            init_method=self.init_method,
         )
         self.actor_target = Actor(
             state_size,
@@ -203,6 +210,7 @@ class Agent:
             n_layers=actor_layers,
             activation=self.activation,
             norm_type=self.norm_type,
+            init_method=self.init_method,
         )
         self.actor_target.load_state_dict(self.actor_local.state_dict())
         self._actor_action_output = getattr(self.actor_local, "action_output", "tanh")
@@ -239,6 +247,7 @@ class Agent:
                 dueling=False,
                 N=self.N,
                 norm_type=self.norm_type,
+                init_method=self.init_method,
             ).to(self.device)
             self.critic_target = IQN(
                 state_size,
@@ -248,6 +257,7 @@ class Agent:
                 dueling=False,
                 N=self.N,
                 norm_type=self.norm_type,
+                init_method=self.init_method,
             ).to(self.device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
@@ -259,6 +269,7 @@ class Agent:
                 n_layers=critic_layers,
                 activation=self.activation,
                 norm_type=self.norm_type,
+                init_method=self.init_method,
             )
             self.critic_target = Critic(
                 state_size,
@@ -268,6 +279,7 @@ class Agent:
                 n_layers=critic_layers,
                 activation=self.activation,
                 norm_type=self.norm_type,
+                init_method=self.init_method,
             )
             self.critic_target.load_state_dict(self.critic_local.state_dict())
 
