@@ -7,6 +7,56 @@ from scipy.stats import norm, qmc
 from tqdm import tqdm
 
 
+
+def _stratify(
+    t: np.ndarray,
+    S: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    batch_size: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Reorder paths such that each chunk of size `batch_size` has a representative
+    distribution of terminal spot prices (stratified sampling).
+
+    Method:
+    1. Sort all paths by their terminal spot price S_T.
+    2. Determine number of batches K = ceil(N / batch_size).
+    3. Construct batches by picking every K-th element from the sorted list.
+       Batch 0 gets indices [0, K, 2K, ...], Batch 1 gets [1, K+1, 2K+1, ...], etc.
+       This ensures each batch spans the full range of outcomes (low, median, high).
+    """
+    n_paths = S.shape[0]
+    if n_paths < batch_size:
+        return t, S, X, Y
+
+    # 1. Sort indices by terminal spot price
+    # We use the LAST time step for stratification
+    terminal_values = S[:, -1]
+    sorted_idx = np.argsort(terminal_values)
+
+    # 2. Calculate stratification stride (number of batches)
+    # If N=100, B=10 -> 10 batches. We want to pick 0, 10, 20... for batch 0.
+    num_batches = int(np.ceil(n_paths / batch_size))
+
+    # 3. Systematic resampling
+    # Create the new index order
+    new_order = np.empty_like(sorted_idx)
+    
+    # Fill the new order batch by batch
+    current_idx = 0
+    for b in range(num_batches):
+        # Stride through the sorted list
+        # We take every `num_batches`-th element starting from offset `b`
+        batch_indices = sorted_idx[b::num_batches]
+        count = len(batch_indices)
+        new_order[current_idx : current_idx + count] = batch_indices
+        current_idx += count
+
+    # Apply reordering
+    return t, S[new_order], X[new_order], Y[new_order]
+
+
 def simulate_hhk_spot(
     S0: float,
     T: float,
@@ -21,6 +71,8 @@ def simulate_hhk_spot(
     seed: Optional[int] = None,
     jump_sampler: str = "qmc",
     dtype: np.dtype | str = np.float32,
+    stratify: bool = True,
+    batch_size: Optional[int] = 128,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Hambly–Howison–Kluge spot model with antithetic variance reduction.
@@ -119,6 +171,12 @@ def simulate_hhk_spot(
 
         # --- spot price -------------------------------------------------------
         S[:, k] = np.exp(f(t[k]) + X[:, k] + Y[:, k])
+
+
+
+    # ── Post-generation Stratification ────────────────────────────────────────
+    if stratify and batch_size is not None and batch_size > 0:
+        t, S, X, Y = _stratify(t, S, X, Y, batch_size)
 
     return t, S, X, Y
 

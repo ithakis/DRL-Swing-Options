@@ -422,8 +422,10 @@ def _evaluate_swing_agent(
     avg_exercised = float(np.mean([s["total_exercised"] for s in exercise_stats]))
     avg_exercises = float(np.mean([s["exercise_count"] for s in exercise_stats]))
     confidence_95 = float(1.96 * price_std / np.sqrt(n_paths))
-    if evaluations_dir and collect_path_data and not parquet_writer:
-        if parquet_filepath:
+    if evaluations_dir and collect_path_data:
+        if parquet_writer and parquet_filepath:
+            parquet_writer.write_parquet(parquet_filepath, None, None)
+        elif parquet_filepath:
             _write_eval_parquet(parquet_filepath, parquet_columns, all_path_data, parquet_writer)
 
     summary = EvaluationSummary(

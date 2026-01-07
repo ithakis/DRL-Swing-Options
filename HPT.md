@@ -726,3 +726,81 @@ Graph-by-graph read (v53 red vs v43 yellow; v52 blue for context):
 - **Actor_loss / Critic_loss**: v53 shows smoother loss traces with fewer extreme spikes than v52, matching the tighter seed spread and lack of collapse.
 
 Takeaway: explicit orthogonal initialization appears to be a key stabilizer post‑v52; it removes the collapse mode and restores v43‑like behavior without changing other hyperparameters.
+
+## v54: Placeholder (Identical to v53CC)
+
+- **Change**: Label update only; v54 scripts are identical to v53CC.
+- **Purpose**: Reserved version number for the next code-level iteration.
+- **Performance**: Effectively identical to v53CC.
+
+## v55: Initial Profitability Gate Restoration + Cost-Aware Mean Calibration
+
+- **Change**: 
+    - **Re-applied profitability gate**: The rejection-based gate (from v42) was re-enabled but placed *after* target policy noise, ensuring target actions are valid.
+    - **Cost-aware warmup**: The initial actor calibration was updated to target the *mean* action of a cost-aware policy, replacing the cost-ignorant `approximate_Q_T` method. This aimed to fix the "gradient cliff" where the actor started with unprofitable actions in high-cost regimes.
+    - **Metric change**: `Actions_at_lower_pct` updated to measure near-0 mass correctly for tanh01 outputs.
+- **Results (vs v56 in Green vs Orange)**:
+    - **Initial Guess**: v55 starts with a significantly better initial policy than v56. `Pricing/Delta_Percent` starts around **-18%** (vs v56's **-28%**) and recovers faster.
+    - **Convergence**: v55 converges faster to a higher/better pricing accuracy (closer to 0% delta).
+    - **Losses**: Actor loss is slightly lower (more negative) and stable; Critic loss is comparable but arguably less spiky than v56.
+    - **Conclusion**: The "target raw action mean" calibration in v55 appears to provide a softer, more effective starting point for the actor than the "target greedy optimal" approach in v56. The policy starts closer to the solution and refines smoothly.
+
+## v56: Projected Profitability Gate + Greedy Optimal Calibration
+
+- **Change**:
+    - **Projected Profitability Gate**: Replaces the rejection-based gate with a **projection** (`min(q, q_break_even)`) + Straight-Through Estimator (STE). This ensures *all* gradients flow (no dead zones) and strictly enforces profitability.
+    - **Greedy Optimal Calibration**: Warmup now targets the *greedy optimal* policy's average action for the specific cost parameters.
+- **Hypothesis**: The projection gate should solve the "gradient cliff" problem more robustly than rejection, and the greedy calibration should handle convex costs perfectly at start.
+- **Results (Orange in plots vs v55 Green)**:
+    - **Initial Guess**: Worse than v55. The agent starts with a much larger negative delta (~-28%), suggesting the "greedy optimal" target might be too aggressive ("bang-bang") for the smooth actor initialization, or the projection logic alters the effective action distribution in a way that hurts early exploration.
+    - **Learning Dynamics**: The agent does recover and learns, but trails v55 throughout the run. `Pricing/Delta_Percent` rises slower. `Avg_Total_Exercised` shows a larger early spike, indicating a more volatile adjustment phase.
+    - **Takeaway**: While the Projected Gate is theoretically robust, the *calibration* strategy (targeting greedy optimal) seems slightly inferior to v55's "mean action" target for the initial smooth policy. The "Projected Gate" mechanics themselves work (the agent learns), but the initialization gap is the dominant factor in the performance difference.
+    - **Action**: The immediate fix for future versions is to improve the initial guess, possibly by blending the v55 "mean" calibration with the v56 projection gate, or revisiting why the greedy target is harder to learn from.
+    - **Update (User Observation)**: The "dip" in `Pricing/Delta_Percent` at ~1024 episodes (Start: ~65% -> Dip: ~10% -> End: ~100%) and the discrepancy with `Average100` is explained by the training dynamics:
+        1.  **Calibration**: At episode 0, the Actor is calibrated to the "Greedy Optimal" strategy. This strategy is decent (Delta ~65%) but not optimal.
+        2.  **Untrained Critic Destabilization**: At episode 1024 (`min_replay_size`), training starts. The Replay Buffer contains data, but the Critic is initialized randomly (or orthogonally) and has not learned the value function yet. The first D4PG updates use gradients from this *untrained* Critic, which provides "garbage" directions to the Actor, degrading the calibrated policy. This causes the dip in evaluation performance (Delta drops to 10%).
+        3.  **Recovery**: As the Critic learns the value of the policy, the gradients improve, and the Actor recovers and eventually surpasses the initial greedy strategy, reaching Delta ~100%.
+        4.  **LSM Benchmark**: The extremely high Delta (100%) is due to the LSM benchmark using a "bang-bang" (0 or Max) exercise strategy, which is suboptimal for Convex Costs (where partial exercise is optimal). RL finds the true continuous optimum, vastly outperforming LSM.
+        5.  **Average100 Lag**: The `Average100` metric is a moving average and includes exploration noise, masking the transient dip seen in the deterministic evaluation.
+
+## v57: Stratified Sampling for HHK Spot Paths
+
+- **Change**:
+    - **Stratified (Systematic) Sampling**: Added a post-generation stratification step to the HHK simulation. After generating all `n_paths`, the dataset is sorted by terminal spot price ($S_T$) and reordered using systematic sampling (stride = number of batches).
+    - **Batch-Representative Indices**: This ensures that every sequential block of `batch_size` (e.g., 128) contains a spread of low, median, and high price outcomes that is representative of the entire population distribution.
+- **Goal**: Reduce the statistical variance between training batches. In RL, especially with the HHK process's heavy tails (jumps), a "bad" batch (e.g., all low-price paths) can produce gradient updates that destabilize the policy. Ensuring every batch is "mini-representative" should stabilise the learning signal.
+- **Hypothesis**:
+    - **Stability**: Lower seed-to-seed variance in the `Pricing/Delta_Percent` metric.
+    - **Convergence**: Potential for faster convergence as the Critic sees a more consistent distribution of state-action outcomes across updates.
+    - **Initial Buffer Quality**: The first `min_replay_size` transitions entering the buffer will be highly representative, avoiding early bias from random clusters of paths.
+- **Implementation Note**: This reordering preserves the marginal distribution but imposes a structured sequence. Since the Replay Buffer samples randomly, this primarily affects the initial filling stage and any sequential data usage.
+
+## v58: Resilient Propagation (Rprop) Calibration
+
+- **Change**:
+    - **Rprop Calibration**: Replaced the Newton-based second-order optimization for the initial bias with **Rprop** (Resilient Propagation).
+    - **Motivation**: Newton-based methods (like Secant or pure Newton) can oscillate or diverge when the objective function (Swing Option Price vs. Bias) is noisy (due to Monte Carlo evaluation) or non-convex/flat. Rprop uses only the *sign* of the gradient and adaptive step sizes, making it robust to gradient magnitude noise.
+    - **Integration**: Moved the calibration logic directly into `src/agent.py` to simplify the pipeline.
+- **Results (Seeds 11/13 OK, Seed 12 Failed)**:
+    - **Success (Green/Blue)**: Seeds 11 and 13 performed well, starting with a reasonable initial guess and converging stably.
+    - **Failure (Seed 12 - "Action Variance Collapse")**:
+        - **Symptom**: Seed 12 immediately saturated its policy. `Pricing/Delta_Percent` showed a minimal dip and stayed flat. `Policy/Action_variance_mean` collapsed to near-zero. `Policy/Actions_at_upper_pct` pinned at 100% (or very high).
+        - **Root Cause Analysis**:
+            1.  **Calibration Saturation**: The Rprop calibration works *too well* or finds a bias that, combined with specific seed noise, pushes the pre-activation values into the saturation region of the tanh/sigmoid function (`|u| >> 1`).
+            2.  **Untrained Critic Hazard**: When training starts (step > min_replay_size), the Actor updates using gradients from an *untrained*, random Critic.
+            3.  **Gradient Death**: If the Actor is already saturated (gradients near 0) and the Critic provides random directions, the few non-zero gradients likely push the policy further into saturation (the "cliff"). Once saturated, `grad ≈ 0`, and the Actor cannot recover ("Gradient Death").
+            4.  **Ineffective Noise**: Adding noise to a saturated unit doesn't help if the pre-squash value is huge (e.g., `tanh(10 + noise)` is still ≈ 1).
+- **Conclusion**: Rprop fixed the *calibration* robustness, but the resulting "good" policy is fragile to the "bad" initial gradients from the untrained critic, leading to variance collapse in some seeds.
+
+## v59 Plan: Critic Warmup & Pre-Activation Entropy Regularization
+
+- **Goal**: Prevent Action Variance Collapse (Seed 12 failure) by protecting the Actor from early bad gradients and penalizing saturation.
+- **Fix 1: Critic Warmup (`--critic_warmup_episodes`)**:
+    - **Mechanism**: Freeze Actor updates for the first `N` episodes (e.g., 1024), while strictly updating the Critic.
+    - **Why**: Allows the Critic to learn a reasonable estimate of the value function *before* the Actor takes a single gradient step. Prevents the "blind leading the blind" phase where random critic gradients destroy the calibrated policy. Matches `min_replay_size` logic but defined in episodes for clarity.
+- **Fix 2: Pre-Activation Entropy Regularization (`--entropy_reg`)**:
+    - **Mechanism**: Add a penalty term to the Actor loss: `R = -mean(log(1 - |tanh(u)|))`.
+    - **Why**: This penalizes the *pre-activation* `u` from growing too large (which causes saturation). It forces the policy to stay in the linear/active region of the activation function, preserving gradient flow. Unlike output entropy, this directly combats the vanishing gradient mechanics.
+- **Hypothesis**:
+    - **Seed 12 Recovery**: With these fixes, Seed 12 should avoid collapse. The frozen Actor won't be ruined by the random Critic, and if it starts drifting toward saturation, the entropy penalty will push it back.
+    - **General Stability**: Should reduce variance across all seeds.

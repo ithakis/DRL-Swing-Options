@@ -8,7 +8,7 @@ args=(
     # 256k eval paths = 262144
     -n_paths=65536
     -eval_every=1024            # Evaluation frequency (episodes): >0 = periodic (includes initial eval at path 1, plus final if misaligned), -1 = end-only; 0 invalid; no-eval not supported
-    -n_paths_eval=262144         # Paths per evaluation (for stable pricing estimate)
+    -n_paths_eval=131072         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0               # Disable Munchausen RL (no entropy bonus in reward)
     -nstep=1
     --per_alpha=0.1             # PER extremely soft to mimic uniform early

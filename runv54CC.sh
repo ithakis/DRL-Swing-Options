@@ -1,14 +1,16 @@
 #!/bin/bash
-# v53 convex cost experiment: c_cost=0.05, gamma_cost=1.5
+# v54 (relative to v53CC):
+# - No parameter changes; this script mirrors v53CC exactly.
+# - v54 label is reserved for the next code-level iteration while keeping config fixed.
 args=(
     # 8192 * 4 = 32768 training episodes total (32k)
     # 8192 * 2 = 16384 training episodes (16k)
-    # 65k eval paths = 65536
+    # 65k eval paths = 65546
     # 128k eval paths = 131072
     # 256k eval paths = 262144
-    -n_paths=65536
+    -n_paths=32768
     -eval_every=1024            # Evaluation frequency (episodes): >0 = periodic (includes initial eval at path 1, plus final if misaligned), -1 = end-only; 0 invalid; no-eval not supported
-    -n_paths_eval=131072         # Paths per evaluation (for stable pricing estimate)
+    -n_paths_eval=32768         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0               # Disable Munchausen RL (no entropy bonus in reward)
     -nstep=1
     --per_alpha=0.1             # PER extremely soft to mimic uniform early
@@ -54,7 +56,7 @@ args=(
     --target_policy_clip=0.25      # Target policy smoothing noise clip
     --compile=0                    # Disable torch.compile (for simplicity and compatibility)
     -n_cores=4                     # Number of CPU cores to utilize for parallel processing
-    --disable_csv_logging=0        # Turn off CSV outputs for this sweep
+    --disable_csv_logging=1        # Turn off CSV outputs for this sweep
     --limit_logging_frequency=1    # Throttle per-step TensorBoard logging to shrink files
 
     # Swing Option Contract parameters (pricing problem definition)
@@ -67,8 +69,8 @@ args=(
     --Q_max=20.0                 # Global max total volume over the contract
     --risk_free_rate=0.05        # Annual risk-free rate used for discounting
     --min_refraction_periods=0   # Cooldown periods after an exercise (0 = none)
-    --c_cost=0.05                   # Convex exercise cost coefficient (0 disables cost)
-    --gamma_cost=1.5               # Convex cost exponent (1 = linear cost in q)
+    --c_cost=0.15                # Convex exercise cost coefficient (0 disables cost)
+    --gamma_cost=2               # Convex cost exponent (1 = linear cost in q)
 
     # LSM benchmark controls (continuation value regression)
     --lsm_basis=chebyshev        # Basis family {power, laguerre, hermite, chebyshev}
@@ -85,15 +87,19 @@ args=(
     --mu_J=0.3                   # Mean jump size (relative jump magnitude)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_c0.05_gamma1.5_11" -seed 11
-python run.py "${args[@]}" -name "SwingOption_20_c0.05_gamma1.5_12" -seed 12
-python run.py "${args[@]}" -name "SwingOption_20_c0.05_gamma1.5_13" -seed 13
-python run.py "${args[@]}" -name "SwingOption_20_c0.05_gamma1.5_14" -seed 14
-python run.py "${args[@]}" -name "SwingOption_20_c0.05_gamma1.5_15" -seed 15
+python run.py "${args[@]}" -name "SwingOption_20_v54CC_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_v54CC_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_v54CC_13" -seed 13
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_14" -seed 14
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_15" -seed 15
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_16" -seed 16
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_17" -seed 17
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_18" -seed 18
+# python run.py "${args[@]}" -name "SwingOption_20_v54CC_19" -seed 19
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-# bash SwingOption_20_c0.05_gamma1.5.sh
+# bash runv54CC.sh
 
 ## TensorBoard launch command:
 # tensorboard --logdir=runs \

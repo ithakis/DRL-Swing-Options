@@ -87,6 +87,9 @@ class Agent:
         use_compile: bool = False,
         log_interval_scale: float = 1.0,
         replay_memmap: bool = False,
+        actor_type: str = "standard",
+        critic_warmup_episodes: int = 0,
+        entropy_reg: float = 0.0,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -192,7 +195,14 @@ class Agent:
         self.per_step_log_interval = int(max(1, self.LEARN_EVERY * self.log_interval_scale))
         self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
-        self.actor_local = Actor(
+        self.actor_type = (actor_type or "standard").lower()
+        if self.actor_type == "finance_informed":
+            from .networks import FinanceInformedActor
+            actor_cls = FinanceInformedActor
+        else:
+            actor_cls = Actor
+
+        self.actor_local = actor_cls(
             state_size,
             action_size,
             random_seed,
@@ -202,7 +212,7 @@ class Agent:
             norm_type=self.norm_type,
             init_method=self.init_method,
         )
-        self.actor_target = Actor(
+        self.actor_target = actor_cls(
             state_size,
             action_size,
             random_seed,
@@ -381,6 +391,11 @@ class Agent:
         self.critic_grad_clip = None
         self.critic_grad_clip_type = "none"
 
+        self.critic_grad_clip_type = "none"
+        self.critic_grad_clip_type = "none"
+        self.critic_warmup_episodes = int(critic_warmup_episodes)
+        self.entropy_reg = float(entropy_reg)
+        
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
                 return 1.0
@@ -601,6 +616,10 @@ class Agent:
                 # No clipping of target policy noise (intentional).
                 noise = torch.randn_like(next_actions) * self.target_policy_noise
                 next_actions = next_actions + noise
+                next_actions = torch.clamp(next_actions, 0.0, 1.0)
+                apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
+                if apply_gate is not None:
+                    next_actions = apply_gate(q_raw=next_actions, state=next_states)
             q_next = self.critic_target(next_states, next_actions)
             if not self.munchausen:
                 q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
@@ -639,23 +658,49 @@ class Agent:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actions_pred = self.actor_local(states)
-        q_val = self.critic_local(states, actions_pred)
-        actor_loss = -q_val.mean()
-        self.actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward()
-        self.actor_optimizer.step()
+        self.critic_optimizer.step()
+        
+        actor_loss_val = 0.0
+        # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
+        if self._episode_count > self.critic_warmup_episodes:
+             # Fix 2: Pre-Activation Entropy Regularization
+             if self.entropy_reg > 0:
+                 preact = self._actor_forward_preact(states)
+                 actions_pred = self._squash(preact)
+                 # Penalize tanh saturation: |tanh(u)| -> 1 implies saturation
+                 # We simply penalize -log(1 - |tanh(u)|)
+                 tanh_u = torch.tanh(preact) if self._actor_action_output != "tanh" else actions_pred
+                 if self._actor_action_output == "tanh01":
+                      # tanh01 = 0.5(tanh(u)+1). We want tanh(u).
+                      # If _squash returns tanh01, we need raw tanh(u).
+                      # Calculate explicitly to be safe:
+                      tanh_u = torch.tanh(preact)
+                 
+                 reg_loss = -torch.log(1.0 - tanh_u.abs().clamp(max=0.999)).mean()
+                 
+                 q_val = self.critic_local(states, actions_pred)
+                 actor_loss = -q_val.mean() + self.entropy_reg * reg_loss
+             else:
+                 actions_pred = self.actor_local(states)
+                 q_val = self.critic_local(states, actions_pred)
+                 actor_loss = -q_val.mean()
+             
+             self.actor_optimizer.zero_grad(set_to_none=True)
+             actor_loss.backward()
+             self.actor_optimizer.step()
+             actor_loss_val = actor_loss.item()
+             self.soft_update(self.actor_local, self.actor_target)
+             
         self._updates_done += 1
         if self.step_counter % 200 == 0:
             with torch.no_grad():
                 tgt_q = self.critic_target(states, self.actor_target(states))
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
-        self.soft_update(self.actor_local, self.actor_target)
         self._update_ema_buffers()
         if self._per_update_priorities and priorities is not None:
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        return critic_loss.item(), actor_loss.item()
+        return critic_loss.item(), actor_loss_val
 
     def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
         self._maybe_init_profitability_params()
@@ -679,6 +724,10 @@ class Agent:
                 # No clipping of target policy noise (intentional).
                 noise = torch.randn_like(next_actions) * self.target_policy_noise
                 next_actions = next_actions + noise
+                next_actions = torch.clamp(next_actions, 0.0, 1.0)
+                apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
+                if apply_gate is not None:
+                    next_actions = apply_gate(q_raw=next_actions, state=next_states)
             qt_next, _ = self.critic_target(next_states, next_actions, self.N)
             qt_next = qt_next.transpose(1, 2)
             if not self.munchausen:
@@ -705,12 +754,31 @@ class Agent:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actions_pred = self.actor_local(states)
-        q_pred, _ = self.critic_local(states, actions_pred, self.N)
-        actor_loss = -q_pred.mean()
-        self.actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward()
-        self.actor_optimizer.step()
+        self.critic_optimizer.step()
+        
+        actor_loss_val = 0.0
+        if self._episode_count > self.critic_warmup_episodes:
+             if self.entropy_reg > 0:
+                 preact = self._actor_forward_preact(states)
+                 actions_pred = self._squash(preact)
+                 tanh_u = torch.tanh(preact) if self._actor_action_output != "tanh" else actions_pred
+                 if self._actor_action_output == "tanh01":
+                      tanh_u = torch.tanh(preact)
+                 reg_loss = -torch.log(1.0 - tanh_u.abs().clamp(max=0.999)).mean()
+                 
+                 q_pred, _ = self.critic_local(states, actions_pred, self.N)
+                 actor_loss = -q_pred.mean() + self.entropy_reg * reg_loss
+             else:
+                 actions_pred = self.actor_local(states)
+                 q_pred, _ = self.critic_local(states, actions_pred, self.N)
+                 actor_loss = -q_pred.mean()
+                 
+             self.actor_optimizer.zero_grad(set_to_none=True)
+             actor_loss.backward()
+             self.actor_optimizer.step()
+             actor_loss_val = actor_loss.item()
+             self.soft_update(self.actor_local, self.actor_target)
+             
         self._updates_done += 1
         if self._per_update_priorities:
             floor = float(getattr(self.memory, "min_priority", 1e-6))
@@ -749,9 +817,8 @@ class Agent:
                 tgt_q, _ = self.critic_target(states, self.actor_target(states), self.N)
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
-        self.soft_update(self.actor_local, self.actor_target)
         self._update_ema_buffers()
-        return critic_loss.item(), actor_loss.item()
+        return critic_loss.item(), actor_loss_val
 
     @property
     def updates_done(self) -> int:
@@ -784,8 +851,11 @@ class Agent:
         if self.critic_ema_decay <= 0 or self.critic_ema_state is None:
             return
         with torch.no_grad():
-            for k, v in self.critic_local.state_dict().items():
-                self.critic_ema_state[k].mul_(self.critic_ema_decay).add_(v, alpha=1.0 - self.critic_ema_decay)
+            for name, param in self.critic_local.named_parameters():
+                if name in self.critic_ema_state:
+                    self.critic_ema_state[name].mul_(self.critic_ema_decay).add_(
+                        param.data, alpha=1.0 - self.critic_ema_decay
+                    )
 
     def _maybe_update_per_schedule(self):
         """Dynamically adjust PER alpha/beta to mimic uniform early and ramp later."""
@@ -900,8 +970,13 @@ class Agent:
         states, actions, rewards, next_states, dones, idx, weights = batch
         if torch.is_tensor(actions):
             with torch.no_grad():
-                at_low = (actions <= -0.99).float().mean().item()
-                at_high = (actions >= 0.99).float().mean().item()
+                action_output = getattr(self, "_actor_action_output", "tanh")
+                if action_output in {"tanh01", "sigmoid"}:
+                    low_thresh, high_thresh = 0.01, 0.99
+                else:
+                    low_thresh, high_thresh = -0.99, 0.99
+                at_low = (actions <= low_thresh).float().mean().item()
+                at_high = (actions >= high_thresh).float().mean().item()
                 var_mean = actions.var(dim=0).mean().item() if actions.numel() > 1 else 0.0
             writer.add_scalar("Policy/Actions_at_lower_pct", at_low, ts)
             writer.add_scalar("Policy/Actions_at_upper_pct", at_high, ts)
@@ -928,6 +1003,295 @@ class Agent:
             writer.add_scalar("IQN/q50", q50, ts)
             writer.add_scalar("IQN/q90", q90, ts)
             writer.add_scalar("IQN/q90_minus_q10", spread, ts)
+
+    def calibrate_bias(
+        self,
+        env,
+        n_episodes: int = 4096,
+        max_iterations: int = 20,
+        min_iterations: int = 10,
+        target_std: float = 0.005,
+        tolerance_percent: float = 0.001,
+        epsilon_scale: float = 0.01,
+    ) -> None:
+        """
+        Optimizes Actor bias using Rprop to maximize the Swing Option Price on the warmup dataset.
+        This provides a high-quality initial guess for the policy.
+        """
+        print(f"\n🧪 Calibrating Actor (Batch={n_episodes}, MaxIter={max_iterations}, Eps={epsilon_scale})...")
+        
+        # --- Step 1: Scaling ---
+        print("   [Scaling Variance] ...")
+        current_std, current_mean_q, _, _ = self._evaluate_batch_price(env, n_episodes)
+        
+        if current_std > 1e-9:
+            scale_factor = target_std / current_std
+            with torch.no_grad():
+                self.actor_local.fc4.weight.mul_(scale_factor)
+                self.actor_target.fc4.weight.mul_(scale_factor)
+                
+        # --- Step 2: Bias Initialization ---
+        # Heuristic: shift bias so initial mean Q matches time-averaged constraint
+        target_q = env.contract.Q_max / env.contract.n_rights
+        denom = (env.contract.q_max - env.contract.q_min)
+        target_q_norm = (target_q - env.contract.q_min) / denom if denom > 0 else 0.5
+        target_q_norm = np.clip(target_q_norm, 0.05, 0.95)
+        
+        _, current_q_mean, _, _ = self._evaluate_batch_price(env, n_episodes // 4)
+        bias_shift = (target_q_norm - current_q_mean) * 2.0 
+        
+        with torch.no_grad():
+            self.actor_local.fc4.bias.add_(bias_shift)
+            self.actor_target.fc4.bias.add_(bias_shift)
+
+        # --- Step 3: Rprop Optimization Loop ---
+        step_size = 0.1  # Initial step size
+        min_step = 1e-4
+        max_step = 0.5
+        eta_plus = 1.2
+        eta_minus = 0.5
+        
+        prev_grad = None
+        best_price = -np.inf
+        prev_price = None
+        
+        for i in range(max_iterations):
+            # 1. Base Evaluation
+            std_val, mean_q, price, std_price = self._evaluate_batch_price(env, n_episodes)
+            se_price = std_price / np.sqrt(n_episodes)
+            
+            # Formatting
+            diff_str = ""
+            if prev_price is not None:
+                 delta = price - prev_price
+                 pct = (delta / abs(prev_price)) * 100 if abs(prev_price) > 1e-6 else 0.0
+                 symbol = "+" if delta >= 0 else "-"
+                 diff_str = f"| {symbol}{abs(delta):.4f} ({pct:+.2f}%)"
+            
+            # 2. Gradient (Finite Differences)
+            epsilon = max(epsilon_scale * mean_q, 1e-3) 
+            original_bias = self.actor_local.fc4.bias.data.clone()
+            
+            # P(b+eps)
+            with torch.no_grad(): self.actor_local.fc4.bias.add_(epsilon)
+            _, _, price_plus, _ = self._evaluate_batch_price(env, n_episodes)
+            
+            # P(b-eps)
+            with torch.no_grad(): 
+                 self.actor_local.fc4.bias.copy_(original_bias)
+                 self.actor_local.fc4.bias.sub_(epsilon)
+            _, _, price_minus, _ = self._evaluate_batch_price(env, n_episodes)
+            
+            # Restore
+            with torch.no_grad(): self.actor_local.fc4.bias.copy_(original_bias)
+            
+            grad = (price_plus - price_minus) / (2 * epsilon)
+            
+            # 3. Rprop Update Rule
+            update = 0.0
+            step_type = "Init"
+            
+            if prev_grad is None:
+                step_type = "Rprop(Init)"
+            else:
+                if grad * prev_grad > 0:
+                    step_size = min(step_size * eta_plus, max_step)
+                    step_type = "Rprop(Acc)"
+                elif grad * prev_grad < 0:
+                    step_size = max(step_size * eta_minus, min_step)
+                    step_type = "Rprop(Dec)"
+                else:
+                    step_type = "Rprop(Keep)"
+                    
+            if abs(grad) < 1e-6:
+                 update = 0.0
+                 step_type = "Converged"
+            else:
+                 update = np.sign(grad) * step_size
+            
+            prev_grad = grad
+            
+            print(f"Iter {i+1:02d}: Price {price:.4f} (±{2*se_price:.4f}) {diff_str} | Q={mean_q:.3f} | Grad={grad:+.4f} | {step_type} Step={step_size:.4f}")
+
+            # Convergence Check
+            if price > best_price:
+                best_price = price
+                
+            if i >= min_iterations:
+                 if abs(update) < 1e-4 or (prev_price is not None and abs(price - prev_price) < tolerance_percent * abs(best_price)):
+                      print(f"✅ Converged (Step too small or Price stable).")
+                      break
+            
+            prev_price = price
+            
+            # Apply Update
+            with torch.no_grad():
+                self.actor_local.fc4.bias.add_(update)
+                self.actor_target.fc4.bias.add_(update)
+
+        _, final_q, final_price, _ = self._evaluate_batch_price(env, n_episodes)
+        print(f"DONE: Final Price={final_price:.4f} | Mean Q={final_q:.3f}")
+
+    def _evaluate_batch_price(self, env, n_episodes):
+        """
+        Vectorized evaluation of n_episodes to return (std_dev_output, mean_output, mean_price, std_price).
+        Uses the agent's current local actor policy (noise disabled) for the entire batch.
+        """
+        # Unwrap if needed to access paths
+        if not hasattr(env, 'S') and hasattr(env, 'unwrapped'):
+            if hasattr(env.unwrapped, 'S'):
+                env = env.unwrapped
+                
+        if not hasattr(env, 'S') or len(env.S) < n_episodes:
+             # Fallback to slow loop if environment doesn't expose vectorized paths
+             return self._evaluate_batch_slow(env, n_episodes)
+
+        device = self.device
+        
+        # Helper: Convert to tensor (N, Steps, 1)
+        def to_t(arr):
+            t = torch.as_tensor(arr[:n_episodes], device=device, dtype=torch.float32)
+            if t.ndim == 2: t = t.unsqueeze(-1)
+            if t.ndim == 1: t = t.unsqueeze(-1).unsqueeze(-1)
+            return t
+
+        S_paths = to_t(env.S)
+        X_paths = to_t(env.X)
+        Y_paths = to_t(env.Y)
+        
+        N = n_episodes
+        n_rights = env.contract.n_rights
+        strike = env.contract.strike
+        dt = env.contract.dt
+        min_refraction = env.contract.min_refraction_periods
+        
+        Q_max = env.contract.Q_max
+        q_min = env.contract.q_min
+        q_max = env.contract.q_max
+        c_cost = env.contract.c_cost
+        gamma_cost = env.contract.gamma_cost
+        r = env.contract.r
+
+        # Tracking
+        q_exercised = torch.zeros(N, device=device)
+        last_exercise_step = torch.full((N,), -1.0, device=device)
+        total_returns = torch.zeros(N, device=device)
+        all_qs = [] # Collect for stats
+        
+        # Loop over steps
+        for step in range(n_rights):
+            # --- Construct State ---
+            S_t = S_paths[:, step, 0]
+            X_t = X_paths[:, step, 0]
+            Y_t = Y_paths[:, step, 0]
+            
+            q_remaining = Q_max - q_exercised
+            time_rem = (n_rights - step) * dt
+            norm_time = step / n_rights
+            
+            days_since = step - last_exercise_step
+            days_since = torch.where(last_exercise_step < 0, float(step), days_since)
+            
+            f1 = S_t - strike
+            f2 = q_exercised / Q_max
+            f3 = q_remaining / Q_max
+            f4 = torch.full((N,), float(time_rem / env.contract.maturity), device=device)
+            f5 = torch.full((N,), norm_time, device=device)
+            f6 = S_t
+            f7 = X_t
+            f8 = Y_t
+            f9 = days_since / n_rights
+            
+            state_batch = torch.stack([f1, f2, f3, f4, f5, f6, f7, f8, f9], dim=1).float()
+            
+            # --- Agent Act ---
+            with torch.no_grad():
+                 # Use forward_raw_and_gated to bypass noise and get gated output
+                 # If method missing, use standard act logic manually
+                 if hasattr(self.actor_local, "forward_raw_and_gated"):
+                     _, q_gated_t = self.actor_local.forward_raw_and_gated(state_batch)
+                     action_vals = q_gated_t.squeeze(-1)
+                 else:
+                     preact = self.actor_local.forward_preact(state_batch)
+                     action_vals = self._squash(preact).squeeze(-1)
+
+            # Denormalize
+            q_proposed = q_min + action_vals * (q_max - q_min)
+            
+            # --- Constraints ---
+            q_feasible = torch.clamp(q_proposed, q_min, q_max)
+            max_allowed = Q_max - q_exercised
+            q_feasible = torch.min(q_feasible, max_allowed)
+            
+            if min_refraction > 0:
+                 violation_mask = (step - last_exercise_step) <= min_refraction
+                 active_exercise = last_exercise_step >= 0
+                 mask = active_exercise & violation_mask
+                 q_feasible = torch.where(mask, torch.tensor(0.0, device=device), q_feasible)
+                 
+            q_actual = torch.max(torch.tensor(0.0, device=device), q_feasible)
+            
+            # --- Reward ---
+            payoff = q_actual * torch.relu(S_t - strike)
+            cost = c_cost * torch.pow(q_actual, gamma_cost)
+            net_reward = payoff - cost
+            
+            # Zero gain mask: if reward <= 0, don't exercise (optional, but standard for options)
+            zero_gain_mask = net_reward <= 0.0
+            q_actual = torch.where(zero_gain_mask, torch.tensor(0.0, device=device), q_actual)
+            net_reward = torch.where(zero_gain_mask, torch.tensor(0.0, device=device), net_reward)
+            
+            # --- Updates ---
+            q_exercised += q_actual
+            exercised_mask = q_actual > 1e-6
+            last_exercise_step = torch.where(exercised_mask, torch.tensor(float(step), device=device), last_exercise_step)
+            
+            # Stats input (normalized)
+            denom = (q_max - q_min) if (q_max > q_min) else 1.0
+            q_norm = (q_actual - q_min) / denom
+            all_qs.append(q_norm)
+            
+            # Discounted Return
+            df = float(np.exp(-r * (step + 1) * dt))
+            total_returns += net_reward * df
+        
+        # Compile Stats
+        all_qs_t = torch.cat(all_qs)
+        mean_q = all_qs_t.mean().item()
+        std_q = all_qs_t.std().item()
+        mean_price = total_returns.mean().item()
+        std_price = total_returns.std().item()
+        
+        return std_q, mean_q, mean_price, std_price
+
+    def _evaluate_batch_slow(self, env, n_episodes):
+        """Fallback for non-vectorized environments."""
+        outputs = []
+        returns = []
+        if hasattr(env, "_episode_counter"):
+            env._episode_counter = -1 
+            
+        for _ in range(n_episodes):
+            state, _ = env.reset()
+            done = False
+            episode_qs = []
+            episode_return = 0.0
+            
+            while not done:
+                action = self.act(np.expand_dims(state, axis=0), add_noise=False)
+                action_val = action[0]
+                episode_qs.append(action_val)
+                next_state, reward, terminated, truncated, _ = env.step(action_val)
+                done = terminated or truncated
+                state = next_state
+                episode_return += reward
+                
+            outputs.extend(episode_qs)
+            returns.append(episode_return)
+            
+        outputs = np.array(outputs)
+        returns = np.array(returns)
+        return np.std(outputs), np.mean(outputs), np.mean(returns), np.std(returns)
 
     def reset(self):
         """Reset agent state between episodes (placeholder for future use)."""

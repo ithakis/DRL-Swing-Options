@@ -19,6 +19,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+# Import calibration utility
+try:
+    from .utils_calibration import calibrate_actor_output
+except ImportError:
+    # Fallback if running as script vs module
+    try:
+        from utils_calibration import calibrate_actor_output
+    except ImportError:
+        calibrate_actor_output = None
+
 
 # Modern PyTorch 2.x optimizations
 def make_compilable(model: nn.Module) -> nn.Module:
@@ -345,41 +355,81 @@ class Actor(nn.Module):
         return q_raw, q_gated
 
     def apply_profitability_gate(self, *, q_raw: Tensor, state: Tensor) -> Tensor:
-        """Apply a hard profitability gate with a straight-through estimator (STE).
+        """Apply a projected profitability gate with a straight-through estimator (STE).
 
-        Forward: executes q=0 whenever immediate profit <= 0.
+        Calculates the break-even quantity q_limit where Revenue = Cost.
+        Projects q_raw to min(q_raw, q_limit) to ensure non-negative immediate profit.
+        
         Backward: gradients flow as-if q=q_raw (STE via detach trick).
         """
         idx = self._profit_s_minus_k_index
         s_minus_k = state[..., idx: idx + 1]
+        
+        # Payoff per unit = max(S-K, 0)
+        payoff_per_unit = torch.relu(s_minus_k)
 
         q_min = self._profit_q_min
-        q_range = getattr(self, "_profit_q_range", self._profit_q_max - self._profit_q_min)
+        q_max = self._profit_q_max
+        q_range = getattr(self, "_profit_q_range", q_max - q_min)
         c_cost = self._profit_c_cost
         gamma_cost = self._profit_gamma_cost
 
-        # Fast paths for the common SwingOptionEnv configuration:
-        # - action_output in [0,1] (tanh01/sigmoid) => q_actual >= q_min
-        # - q_min >= 0 and c_cost == 0 => profit > 0 iff (S-K) > 0
-        if c_cost == 0.0 and q_min >= 0.0 and self.action_output in ("tanh01", "sigmoid"):
-            mask = (s_minus_k > 0.0).to(dtype=q_raw.dtype)
-            q_forward = q_raw * mask
-            return q_raw + (q_forward - q_raw).detach()
+        # Fast paths for common no-cost case
+        if c_cost == 0.0:
+            if q_min >= 0.0 and self.action_output in ("tanh01", "sigmoid"):
+                # If q >= 0 and no cost, profit >= 0 is guaranteed if (S-K) > 0.
+                # If (S-K) == 0, profit is 0 regardless of q.
+                # So we only need to mask if (S-K) < 0 (OTM), but payoff_per_unit handles that implicitly 
+                # (profit would be 0).
+                # However, strictly speaking, if S < K, profit is 0. 
+                # To be consistent with "gate", we might want to force 0 if OTM?
+                # Actually, standard practice for simple calls is just let it be.
+                # But here we enforce "no negative profit".
+                # If S < K, payoff is 0. Cost is 0. Profit is 0. So q is allowed.
+                return q_raw
+            
+            # If q can be negative (not common here), or linear cost...
+            # For c=0, break-even is effectively infinite if P > 0, or defined by P >= 0.
+            return q_raw
 
-        payoff_per_unit = torch.relu(s_minus_k)
-        q_actual = q_min + q_raw * q_range
-
+        # Calculate Break-Even Quantity (q_limit) where P*q = c*q^gamma
+        # Gamma = 1: P = c. If P > c, limit = q_max. Else limit = 0.
+        # Gamma > 1: P/c = q^(gamma-1) => q_limit = (P/c)^(1/(gamma-1))
+        
         if gamma_cost == 1.0:
-            # profit = q_actual * (payoff_per_unit - c_cost)
-            profit = q_actual * (payoff_per_unit - c_cost)
-        elif gamma_cost == 2.0:
-            profit = q_actual * payoff_per_unit - c_cost * torch.square(q_actual)
+            # Linear cost: Bang-bang feasibility
+            limit_mask = (payoff_per_unit > c_cost).to(dtype=q_raw.dtype)
+            # If P > c, limit is q_max. If P <= c, limit is 0 (assuming q_min=0)
+            # We want to project q_raw. So if P > c, q_projected = q_raw (since q_raw <= 1.0 <= q_max_norm)
+            # If P <= c, q_projected = 0.
+            q_projected = q_raw * limit_mask
         else:
-            profit = q_actual * payoff_per_unit - c_cost * q_actual.pow(gamma_cost)
+            # Convex cost: q_limit = (P/c)^(1/(gamma-1))
+            # Avoid div by zero if c is epsilon
+            safe_c = max(c_cost, 1e-9)
+            inv_power = 1.0 / (gamma_cost - 1.0)
+            
+            # q_limit in contract units
+            q_limit_abs = torch.pow(payoff_per_unit / safe_c, inv_power)
+            
+            # Convert to normalized space [0, 1]
+            # q_norm = (q_abs - q_min) / q_range
+            q_limit_norm = (q_limit_abs - q_min) / q_range
+            
+            # Clamp limit to valid normalized range is handled by min(q_raw, limit) 
+            # effectively since q_raw <= 1. But limit could be negative if q_min > q_limit_abs.
+            # So clamp lower bound.
+            q_limit_norm = torch.clamp(q_limit_norm, 0.0, 1e9) # Upper bound open, effectively 1.0+
+            
+            # Project: q_new = min(q_raw, q_limit_norm)
+            q_projected = torch.min(q_raw, q_limit_norm)
 
-        mask = (profit > 0.0).to(dtype=q_raw.dtype)
-        q_forward = q_raw * mask
-        return q_raw + (q_forward - q_raw).detach()
+        # Straight-Through Estimator:
+        # Forward pass uses q_projected.
+        # Backward pass uses gradients from q_projected but passed through to q_raw 
+        # (effectively identity if not clamped, or 1 if clamped? No, simple identity usually).
+        # Actually standard STE for projection is q_raw + (q_proj - q_raw).detach()
+        return q_raw + (q_projected - q_raw).detach()
 
     def _apply_output_activation(self, out: Tensor) -> Tensor:
         """Apply the configured output activation."""
@@ -390,6 +440,53 @@ class Actor(nn.Module):
         if self.action_output == "sigmoid":
             return torch.sigmoid(out)
         raise ValueError(f"Unsupported action_output '{self.action_output}'. Expected one of 'tanh', 'tanh01', 'sigmoid'.")
+
+
+class FinanceInformedActor(Actor):
+    """
+    Finance-informed Actor that uses an analytic greedy baseline.
+    The network outputs a residual correction to the immediate-profit-maximizing action.
+    """
+
+    def forward(self, state: Tensor) -> Tensor:
+        """Forward pass merging greedy baseline with NN correction."""
+        # Get raw NN output (0.5 = neutral, >0.5 = more than greedy, <0.5 = less than greedy)
+        q_nn = super().forward(state)
+
+        if not self._profitability_params_set:
+            return q_nn
+
+        # Extract spot-strike (payoff) from state
+        s_minus_k = state[..., self._profit_s_minus_k_index: self._profit_s_minus_k_index + 1]
+        payoff = torch.relu(s_minus_k)
+
+        c = self._profit_c_cost
+        g = self._profit_gamma_cost
+        q_min = self._profit_q_min
+        q_max = self._profit_q_max
+        q_range = self._profit_q_range
+
+        # Calculate Greedy Action q* that maximizes: q(S-K) - c*q^g
+        if c == 0.0:
+            # Linear payoff, no cost: boundary solution
+            q_greedy = torch.where(payoff > 0.0, q_max, q_min)
+        elif g == 1.0:
+            # Linear payoff, linear cost: boundary solution based on cost margin
+            q_greedy = torch.where(payoff > c, q_max, q_min)
+        else:
+            # Convex cost: interior solution via FOC: (S-K) = c*g*q^(g-1)
+            # q* = [(S-K)/(c*g)]^(1/(g-1))
+            # Handle potential div-by-zero or negative payoff (though relu handles negative)
+            q_star = (payoff / max(1e-9, c * g)).pow(1.0 / (g - 1.0))
+            q_greedy = torch.clamp(q_star, q_min, q_max)
+
+        # Normalize greedy action to [0, 1] scale
+        q_greedy_norm = (q_greedy - q_min) / q_range
+
+        # Combine: Final action = clamp(q_greedy_norm + (q_nn - 0.5), 0, 1)
+        # This allows the NN to deviate from the greedy baseline by up to +/- 50%
+        # of the total capacity to account for continuation value / opportunity cost.
+        return torch.clamp(q_greedy_norm + (q_nn - 0.5), 0.0, 1.0)
 
 
 class Critic(nn.Module):

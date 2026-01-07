@@ -2,7 +2,7 @@
 set -e
 
 scripts=(
-    # "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.5.sh"
+    "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.5.sh"
     "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.sh"
     "Convex Cost Experiments/SwingOption_20_c0.01_gamma2.sh"
     "Convex Cost Experiments/SwingOption_20_c0.01_gamma3.sh"
@@ -34,7 +34,7 @@ for script in "${scripts[@]}"; do
     bash "$script"
     echo "Completed $script"
     echo "Cleaning evaluation Parquet files for $script"
-    bash "./cleanup_eval_csvs.sh" "$script"
+    bash "./cleanup_eval_parquets.sh" "$script"
 done
 
 

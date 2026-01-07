@@ -51,287 +51,6 @@ from src.swing_env import SwingOptionEnv, approximate_Q_T
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
 
 
-def _normal_cdf(x: float, mean: float, std: float) -> float:
-    """Compute the normal CDF with minimal dependencies."""
-    return 0.5 * (1.0 + math.erf((x - mean) / (std * math.sqrt(2.0))))
-
-
-def _bisect_root(fn, lo: float, hi: float, tol: float = 1e-6, max_iter: int = 100) -> float:
-    """Simple bisection root finder for monotonic functions."""
-    flo = fn(lo)
-    fhi = fn(hi)
-    if flo == 0:
-        return lo
-    if fhi == 0:
-        return hi
-    for _ in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        fmid = fn(mid)
-        if abs(fmid) < tol or (hi - lo) < tol:
-            return mid
-        if flo * fmid <= 0:
-            hi = mid
-            fhi = fmid
-        else:
-            lo = mid
-            flo = fmid
-    return 0.5 * (lo + hi)
-
-
-def _compute_target_sigma(target_mean: float, mass: float = 0.99) -> float:
-    """
-    Solve for sigma such that P(0 <= X <= 1) = mass for X ~ N(target_mean, sigma^2).
-    Uses SciPy's brentq if available, otherwise falls back to bisection.
-    """
-    def mass_diff(s: float) -> float:
-        if s <= 0:
-            return -mass
-        if norm is not None:
-            return norm.cdf((1 - target_mean) / s) - norm.cdf((-target_mean) / s) - mass
-        # Pure Python CDF
-        return _normal_cdf(1.0, target_mean, s) - _normal_cdf(0.0, target_mean, s) - mass
-
-    if brentq is not None and norm is not None:
-        try:
-            return float(brentq(mass_diff, 1e-6, 10.0, maxiter=100))
-        except Exception:
-            pass
-    return float(_bisect_root(mass_diff, 1e-6, 10.0, tol=1e-6, max_iter=200))
-
-
-def _inverse_action_activation(action_val: float, activation: str) -> float:
-    """Map action in output space back to pre-activation."""
-    act = action_val
-    if activation == "tanh01":
-        a = float(np.clip(act, 1e-6, 1.0 - 1e-6))
-        return float(np.arctanh(2 * a - 1.0))
-    if activation == "sigmoid":
-        a = float(np.clip(act, 1e-6, 1.0 - 1e-6))
-        return float(np.log(a / (1.0 - a)))
-    if activation == "tanh":
-        a = float(np.clip(act, -1.0 + 1e-6, 1.0 - 1e-6))
-        return float(np.arctanh(a))
-    raise ValueError(f"Unsupported activation '{activation}'")
-
-
-def _activation_slope_at_preact(preact_mean: float, activation: str) -> float:
-    """Compute the local slope of the action activation at a given pre-activation mean."""
-    if activation == "tanh01":
-        return 0.5 * (1.0 - math.tanh(preact_mean) ** 2)
-    if activation == "sigmoid":
-        s = 1.0 / (1.0 + math.exp(-preact_mean))
-        return s * (1.0 - s)
-    if activation == "tanh":
-        return 1.0 - math.tanh(preact_mean) ** 2
-    raise ValueError(f"Unsupported activation '{activation}'")
-
-
-def warmup_calibrate_actor_outputs(agent: Agent, env: SwingOptionEnv, episodes: int = 1024) -> None:
-    """
-    Use the first `episodes` rollouts (no training) to shift/scale the actor head so that
-    the average action matches an HHK-based approximation of E[Q_T] / n_rights and the
-    action std is scaled to 0.05.
-
-    Implementation notes:
-      - With profitability gating (v42+), many actions are forced to 0; calibrating the
-        head in one shot via inverse-activation moments can under/over-shoot.
-      - We therefore iterate: measure -> Newton bias update -> scale update -> repeat,
-        reusing the same warmup paths, until the mean is within 2% of target.
-    Training still starts from episode 0 after resetting the environment counter.
-    """
-    if episodes <= 0:
-        return
-
-    # Determine target mean in normalized action space
-    contract = env.contract
-    try:
-        q_T = approximate_Q_T(contract, env.hhk_params)
-        per_step_q = q_T / contract.n_rights
-    except Exception:
-        q_T = contract.Q_max
-        per_step_q = contract.Q_max / contract.n_rights
-    per_step_q = float(np.clip(per_step_q, contract.q_min, contract.q_max))
-    target_mean_action = float(np.clip(contract.normalize_action(per_step_q), 0.0, 1.0))
-    target_std_action = 0.005
-
-    # Limit warmup to available paths
-    available_paths = env.S.shape[0] if hasattr(env, "S") else episodes
-    warmup_eps = min(episodes, available_paths)
-
-    actor = agent.actor_local
-    # Support older Actor definitions without an explicit action_output attribute
-    action_output = getattr(actor, "action_output", "tanh")
-    setattr(actor, "action_output", action_output)
-    action_low = float(env.action_space.low[0])
-    action_high = float(env.action_space.high[0])
-
-    def _squash(z: np.ndarray) -> np.ndarray:
-        if action_output == "tanh01":
-            return 0.5 * (np.tanh(z) + 1.0)
-        if action_output == "sigmoid":
-            return 1.0 / (1.0 + np.exp(-z))
-        if action_output == "tanh":
-            return np.tanh(z)
-        raise ValueError(f"Unsupported activation '{action_output}'")
-
-    def _squash_prime(z: np.ndarray) -> np.ndarray:
-        if action_output == "tanh01":
-            t = np.tanh(z)
-            return 0.5 * (1.0 - t * t)
-        if action_output == "sigmoid":
-            s = 1.0 / (1.0 + np.exp(-z))
-            return s * (1.0 - s)
-        if action_output == "tanh":
-            t = np.tanh(z)
-            return 1.0 - t * t
-        raise ValueError(f"Unsupported activation '{action_output}'")
-
-    def _collect_stats() -> Tuple[float, float, float, float, float, np.ndarray, np.ndarray]:
-        sum_act = 0.0
-        sum_act2 = 0.0
-        sum_z = 0.0
-        sum_z2 = 0.0
-        sum_qraw = 0.0
-        sum_qraw2 = 0.0
-        total_steps = 0
-        z_samples: List[float] = []
-        mask_samples: List[float] = []
-
-        # Reuse the same first `warmup_eps` paths each pass.
-        env._episode_counter = -1
-
-        apply_gate = getattr(actor, "apply_profitability_gate", None)
-
-        for _ in range(warmup_eps):
-            state, _ = env.reset()
-            while True:
-                # Forward pre-activation for Newton updates (no gradients).
-                with torch.no_grad():
-                    st = torch.as_tensor(np.asarray(state, dtype=np.float32)).view(1, -1)
-                    z_t = actor.forward_preact(st)
-                    z = float(z_t.reshape(-1)[0].cpu().item())
-
-                    q_raw = float(_squash(np.array([z], dtype=np.float64))[0])
-                    q_raw_t = torch.as_tensor([[q_raw]], dtype=torch.float32)
-                    if apply_gate is not None:
-                        q_gated_t = apply_gate(q_raw=q_raw_t, state=st)
-                        q_gated = float(q_gated_t.reshape(-1)[0].cpu().item())
-                    else:
-                        q_gated = q_raw
-
-                # Treat gating as a fixed mask for Newton updates (ignore boundary derivative).
-                mask = float(np.clip(q_gated / (q_raw + 1e-8), 0.0, 1.0))
-
-                # Step the real env using the agent policy (ensures state distribution matches rollout).
-                action = agent.act(np.expand_dims(state, axis=0), add_noise=False)
-                action_scalar = float(np.asarray(action).reshape(-1)[0])
-                action_clipped = float(np.clip(action_scalar, action_low, action_high))
-
-                sum_act += action_clipped
-                sum_act2 += action_clipped * action_clipped
-                sum_z += z
-                sum_z2 += z * z
-                sum_qraw += q_raw
-                sum_qraw2 += q_raw * q_raw
-                total_steps += 1
-                z_samples.append(z)
-                mask_samples.append(mask)
-
-                next_state, _, terminated, truncated, _ = env.step(
-                    np.array([action_clipped], dtype=np.float32)
-                )
-                state = next_state
-                if terminated or truncated:
-                    break
-
-        if total_steps == 0:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, np.zeros(0), np.zeros(0)
-
-        obs_mean_action = sum_act / total_steps
-        obs_std_action = math.sqrt(max(0.0, sum_act2 / total_steps - obs_mean_action**2))
-        obs_mean_z = sum_z / total_steps
-        obs_std_z = math.sqrt(max(0.0, sum_z2 / total_steps - obs_mean_z**2))
-        obs_std_qraw = math.sqrt(max(0.0, sum_qraw2 / total_steps - (sum_qraw / total_steps) ** 2))
-        return (
-            float(obs_mean_action),
-            float(obs_std_action),
-            float(obs_mean_z),
-            float(obs_std_z),
-            float(obs_std_qraw),
-            np.asarray(z_samples, dtype=np.float64),
-            np.asarray(mask_samples, dtype=np.float64),
-        )
-
-    def _newton_bias_shift(z: np.ndarray, mask: np.ndarray) -> float:
-        # Solve for delta so mean(mask*squash(z+delta)) matches target_mean_action.
-        if z.size == 0:
-            return 0.0
-        delta = 0.0
-        for _ in range(40):
-            a = _squash(z + delta)
-            f = float(np.mean(mask * a) - target_mean_action)
-            rel = abs(f) / max(target_mean_action, 1e-6)
-            if rel <= 0.02:
-                break
-            fp = float(np.mean(mask * _squash_prime(z + delta)))
-            if fp <= 1e-8:
-                break
-            step = f / fp
-            # Damped Newton to avoid overshoot under gating/clipping.
-            step = float(np.clip(step, -2.0, 2.0))
-            delta -= 0.7 * step
-        return float(delta)
-
-    max_passes = 12
-    last_stats = None
-    for p in range(1, max_passes + 1):
-        obs_mean_action, obs_std_action, obs_mean_z, obs_std_z, obs_std_qraw, z, mask = _collect_stats()
-        last_stats = (obs_mean_action, obs_std_action, obs_std_qraw)
-
-        mean_rel_err = abs(obs_mean_action - target_mean_action) / max(target_mean_action, 1e-6)
-        std_raw_rel_err = abs(obs_std_qraw - target_std_action) / max(target_std_action, 1e-6)
-        if mean_rel_err <= 0.02 and std_raw_rel_err <= 0.10:
-            break
-
-        delta = _newton_bias_shift(z, mask) if mean_rel_err > 0.02 else 0.0
-
-        # Scale targeting applies to the *raw* (pre-gate) squashed action.
-        slope = max(_activation_slope_at_preact(obs_mean_z + delta, action_output), 1e-6)
-        desired_preact_std = target_std_action / slope
-
-        # Scale pre-activation around its mean to hit the desired pre-activation std (keeps preact mean unchanged).
-        scale = desired_preact_std / (obs_std_z + 1e-8) if obs_std_z > 0 else 1.0
-        scale = float(np.clip(scale, 0.25, 4.0))
-        mu_after_bias = obs_mean_z + delta
-
-        with torch.no_grad():
-            head = actor.fc4
-            head.bias.add_(float(delta))
-            head.weight.mul_(scale)
-            head.bias.mul_(scale)
-            head.bias.add_(float((1.0 - scale) * mu_after_bias))
-
-    # Mirror calibration to target network
-    agent.actor_target.load_state_dict(agent.actor_local.state_dict())
-
-    # Reset environment episode counter so training starts from episode 0
-    env._episode_counter = -1
-    env.current_step = 0
-    env.q_exercised = 0.0
-
-    # Reset agent state for training
-    agent.reset()
-
-    # Best-effort final report (post-calibration rollouts are expensive; reuse last pass stats).
-    if last_stats is not None:
-        obs_mean_action, obs_std_action, obs_std_qraw = last_stats
-    print(
-        f"Warmup calibration over {warmup_eps} episodes: "
-        f"obs_mean={obs_mean_action:.4f}, obs_std={obs_std_action:.4f}, obs_std_raw≈{obs_std_qraw:.4f} -> "
-        f"target_mean={target_mean_action:.4f}, target_std={target_std_action:.4f} "
-        f"(Q_T≈{q_T:.2f}, per_step_q≈{per_step_q:.4f})"
-    )
-
 
 class AsyncParquetWriter:
     """Asynchronous Parquet writer to avoid blocking main execution"""
@@ -408,7 +127,14 @@ class ConfigManager:
         """Create and configure argument parser"""
         parser = argparse.ArgumentParser(description="Swing Option Pricing with D4PG")
 
-        # Training Parameters
+        parser.add_argument(
+            "--actor_type",
+            type=str,
+            default="standard",
+            choices=["standard", "finance_informed"],
+            help="Type of actor architecture. 'finance_informed' uses a greedy baseline.",
+        )
+        # Replay Buffer Parameters
         parser.add_argument(
             "-n_paths",
             type=int,
@@ -599,6 +325,18 @@ class ConfigManager:
             type=int,
             default=0,
             help="Episodes to hold the initial pre-squash noise level before decay",
+        )
+        parser.add_argument(
+            "--critic_warmup_episodes",
+            type=int,
+            default=0,
+            help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx)."
+        )
+        parser.add_argument(
+            "--entropy_reg",
+            type=float,
+            default=0.0,
+            help="Coefficient for pre-activation entropy regularization (penalizes saturation). Default: 0.0."
         )
 
         # Network and Learning Parameters
@@ -1115,7 +853,7 @@ class LoggingManager:
 
 
 def generate_datasets(
-    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int
+    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 ]:
@@ -1127,7 +865,7 @@ def generate_datasets(
     pre_generation_start = time.time()
 
     train_t, train_S, train_X, train_Y = simulate_hhk_spot(
-        **stochastic_process_params, n_paths=n_paths, seed=seed
+        **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=True, batch_size=batch_size
     )
     # print(f'>>>> shape of train_S: {train_S.shape}')
     # # Plot 200 sample paths and the mean
@@ -1149,7 +887,11 @@ def generate_datasets(
     # plt.show()
 
     eval_t, eval_S, eval_X, eval_Y = simulate_hhk_spot(
-        **stochastic_process_params, n_paths=n_paths_eval, seed=seed + 1
+        **stochastic_process_params,
+        n_paths=n_paths_eval,
+        seed=seed + 1,
+        stratify=True,
+        batch_size=batch_size,
     )
 
     train_ds = train_t, train_S, train_X, train_Y
@@ -1519,6 +1261,7 @@ def main():
         n_paths=args.n_paths,
         n_paths_eval=args.n_paths_eval,
         seed=seed,
+        batch_size=args.batch_size,
     )
 
     # Create environments - Stores the pre-generated paths in the environment
@@ -1658,6 +1401,7 @@ def main():
         init_method=args.init_method,
         log_interval_scale=log_interval_scale,
         replay_memmap=bool(args.replay_memmap),
+        actor_type=args.actor_type,
     )
     try:
         param_device = next(agent.actor_local.parameters()).device
@@ -1670,8 +1414,16 @@ def main():
         agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
         print("WARNING: Pre-generated paths not available for saved model evaluation.")
     else:
-        # Warm up the actor using the first 1024 episodes (no training) to match average action
-        warmup_calibrate_actor_outputs(agent, train_env, episodes=1024)
+        # Warm up the actor using the first 2048 episodes (no training) 
+        # Iteratively optimize bias to maximize swing option price
+        # Warm up the actor using the first warmup_episodes (no training) 
+        # Iteratively optimize bias to maximize swing option price (Rprop)
+        agent.calibrate_bias(
+            env=train_env, 
+            n_episodes=args.warmup_episodes, 
+            max_iterations=20, 
+            target_std=0.005
+        )
     
     if args.eval_benchmark:
         print("\nRunning standalone evaluation benchmark (evaluation only)...")

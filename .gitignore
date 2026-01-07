@@ -216,21 +216,30 @@ mlruns/
 tensorboard/
 tb_logs/
 
-# Data files (uncomment if you don't want to track data)
-# *.csv
-# *.json
-# *.parquet
-# *.feather
-# *.xlsx
-# *.xls
-# data/
-# datasets/
+# Data files
+*.csv
+*.json
+*.parquet
+*.feather
+*.xlsx
+*.xls
+data/
+datasets/
 
 # Model outputs and experiments
 outputs/
 results/
 experiments/
 logs/
+old_logs/
+tensorboard_runs/
 runs/
 runs_bkup/
 imgs/
+
+# Custom Large Directories
+convex_runs/
+old_runs/
+Parquet Logs/
+_Longstaff-Schwartz Swing Options/
+.history/
