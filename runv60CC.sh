@@ -1,30 +1,30 @@
 #!/bin/bash
-# v59 (relative to v58):
-# - Major Improvement: Action Variance Collapse Fixes (Seed 12 Recovery).
-#   - Fix 1: Critic Warmup. Freezes actor updates for the first 1024 episodes.
-#     Ensures the actor only learns from a stable, trained critic, preventing "blind leading the blind" destruction of the calibrated policy.
-#   - Fix 2: Adaptive Pre-Squash Noise. Scales exploration noise by pre-activation magnitude.
-#     Ensures noise remains significant even if the actor saturates, preventing "locked" policies.
+# v60 (relative to v59):
+# - Major Improvement #1: Staggered Critic Warmup with Noise Annealing
+#   - Reduces exploration noise during critic warmup (warmup_noise_fraction=0.2) to preserve calibrated policy.
+#   - Actor still frozen for critic_warmup_episodes, but noise is reduced to 20% of normal, preventing calibration destruction.
 #
-# v58 (relative to v57CC):
-# - Major Improvement: Rprop (Resilient Propagation) for Actor Calibration.
-#   - Replaced Newton-based calibration with Rprop to maximize Swing Option Price directly.
-#   - Uses sign-based adaptive step sizes to handle noisy gradient estimates from Monte Carlo.
-#   - Integrated directly into Agent initialization (src/agent.py), removing boilerplate.
+# - Major Improvement #2: Target Policy Noise Decay
+#   - Decays target policy noise from 0.15 to 0.02 starting at episode 15k.
+#   - Reduces Q-target variance late in training, allowing cleaner policy refinement.
+#   - Addresses post-23k delta_percent degradation / overfitting.
 #
-# v57 (relative to v56CC):
-# - Major Improvement: Stratified Sampling for the HHK model (src/hhk.py).
-#   - Replaced pure Monte Carlo with stratified sampling to reduce variance in the spot price distribution.
-#   - Ensures the Replay Buffer is filled with a more representative set of paths (Extreme/Mean/ITM).
+# - Major Improvement #3: β-Sigmoid Output Activation
+#   - Replaces tanh01 with sigmoid(2*u), providing softer gradient saturation.
+#   - Gradients decay more gracefully, reducing "sticky" boundary behavior.
+#   - Expected to reduce seed-to-seed variance.
 #
-# v56 (relative to v55CC):
-# - Major Improvement: Projected Profitability Gate (src/networks.py).
-#   - Replaces rejection-based gate with a projection that clamps actions to the break-even point.
-# - Major Improvement: Cost-Aware Warmup Calibration (run.py).
-#   - Calibration now derives the target mean from the Greedy Optimal Policy for the warmup paths.
+# Expected Results:
+#   a) Reduced seed-to-seed variance due to β-sigmoid and warmup noise reduction
+#   b) Faster early convergence due to preserved calibration during warmup
+#   c) Better late-stage stability due to target noise decay (no post-23k degradation)
+#
+# v59 Features retained: Critic Warmup (2048 episodes), Adaptive Pre-Squash Noise (0.5 scale)
+# v58 Features retained: Rprop Calibration
+# v57 Features retained: Stratified Sampling, Profitability Gate
 
 args=(
-    # Same scale as v57: 32k training episodes
+    # Same scale as v59: 32k training episodes
     -n_paths=32768
     -eval_every=1024            # Evaluation frequency (episodes): >0 = periodic (includes initial eval at path 1, plus final if misaligned), -1 = end-only; 0 invalid; no-eval not supported
     -n_paths_eval=32768         # Paths per evaluation (for stable pricing estimate)
@@ -69,16 +69,22 @@ args=(
     --weight_decay_actor=5e-5      # Light L2 regularization on the policy network
     --weight_decay_critic=1.2e-4   # Moderate L2 regularization on the value network
     --critic_ema_decay=0.0         # EMA decay for critic eval smoothing (0 disables)
-    --target_policy_noise=0.15     # Stronger target policy smoothing to temper critic overconfidence
+    --target_policy_noise=0.15     # Initial target policy smoothing (will decay in v60)
     --target_policy_clip=0.25      # Target policy smoothing noise clip
     --compile=0                    # Disable torch.compile (for simplicity and compatibility)
     -n_cores=4                     # Number of CPU cores to utilize for parallel processing
     --disable_csv_logging=1        # Turn off CSV outputs for this sweep
     --limit_logging_frequency=1    # Throttle per-step TensorBoard logging to shrink files
 
-    # v59 New Parameters (Fixing Variance Collapse)
+    # v59 Parameters (retained)
     --critic_warmup_episodes=2048 # Freeze actor updates until 2048 episodes (approx 45k steps)
     --adaptive_noise_scale=0.5    # Scale exploration noise by (1 + 0.5*|u|) to prevent saturation gradients death
+
+    # v60 New Parameters (Addressing variance, convergence, and overfitting)
+    --warmup_noise_fraction=0.2   # Fix #1: Reduce noise to 20% during critic warmup to preserve calibration
+    --target_noise_decay_start=15000  # Fix #2: Start decaying target noise at episode 15k
+    --target_noise_floor=0.02     # Fix #2: Decay target noise to 0.02 (from 0.15)
+    --actor_output_activation=beta_sigmoid  # Fix #3: Use β-sigmoid (β=2.0) for softer gradient saturation
 
     # Swing Option Contract parameters (pricing problem definition)
     --strike=1.0                 # Strike price K
@@ -108,16 +114,16 @@ args=(
     --mu_J=0.3                   # Mean jump size (relative jump magnitude)
 )
 
-# Run multiple seeds for robustness
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_13" -seed 13
+# Run multiple seeds for robustness (no-cost regime)
+python run.py "${args[@]}" -name "SwingOption_20_v60_1_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_v60_1_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_v60_1_13" -seed 13
 
 # Run Convex Cost variants (CC)
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_11" -seed 11 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_12" -seed 12 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_13" -seed 13 --c_cost 0.15 --gamma_cost 2.0
+python run.py "${args[@]}" -name "SwingOption_20_v60CC_1_11" -seed 11 --c_cost 0.15 --gamma_cost 2.0 &
+python run.py "${args[@]}" -name "SwingOption_20_v60CC_1_12" -seed 12 --c_cost 0.15 --gamma_cost 2.0 &
+python run.py "${args[@]}" -name "SwingOption_20_v60CC_1_13" -seed 13 --c_cost 0.15 --gamma_cost 2.0
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-# bash runv59CC.sh
+# bash runv60CC.sh

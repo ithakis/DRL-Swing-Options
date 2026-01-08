@@ -1,30 +1,60 @@
 #!/bin/bash
-# v59 (relative to v58):
-# - Major Improvement: Action Variance Collapse Fixes (Seed 12 Recovery).
-#   - Fix 1: Critic Warmup. Freezes actor updates for the first 1024 episodes.
-#     Ensures the actor only learns from a stable, trained critic, preventing "blind leading the blind" destruction of the calibrated policy.
-#   - Fix 2: Adaptive Pre-Squash Noise. Scales exploration noise by pre-activation magnitude.
-#     Ensures noise remains significant even if the actor saturates, preventing "locked" policies.
+# v61 (relative to v60):
+# 
+# ANALYSIS SUMMARY (v60 vs v59):
+# - v60 achieved better late-stage stability (std 1.28% vs 2.86% at ep 32768)
+# - But v60 was slower in early training (first 80% at ep 4096-6144 vs ep 3072)
+# - v60 had higher early seed variance at ep 4096 (spread 36.3% vs 13.4%)
+# 
+# v61 CHANGES (addressing v60 limitations while preserving gains):
 #
-# v58 (relative to v57CC):
-# - Major Improvement: Rprop (Resilient Propagation) for Actor Calibration.
-#   - Replaced Newton-based calibration with Rprop to maximize Swing Option Price directly.
-#   - Uses sign-based adaptive step sizes to handle noisy gradient estimates from Monte Carlo.
-#   - Integrated directly into Agent initialization (src/agent.py), removing boilerplate.
+# - Fix #1: Gradual Warmup Noise Ramp (NEW CODE)
+#   - Instead of flat 0.2× noise during warmup, noise now ramps linearly
+#   - At ep 1: noise = 0.3× (start), at ep 1024: noise = 1.0× (full)
+#   - Provides smooth transition from calibration preservation to full exploration
+#   - Addresses: early seed variance at ep 4096 by allowing gradual policy adaptation
 #
-# v57 (relative to v56CC):
-# - Major Improvement: Stratified Sampling for the HHK model (src/hhk.py).
-#   - Replaced pure Monte Carlo with stratified sampling to reduce variance in the spot price distribution.
-#   - Ensures the Replay Buffer is filled with a more representative set of paths (Extreme/Mean/ITM).
+# - Fix #2: Reduced Critic Warmup (1024 episodes, was 2048)
+#   - Critic likely stabilizes before 2048 episodes; shorter warmup speeds convergence
+#   - Actor starts learning 1024 episodes earlier
+#   - Addresses: slow early convergence (targeting first 80% by ep 3072-4096)
 #
-# v56 (relative to v55CC):
-# - Major Improvement: Projected Profitability Gate (src/networks.py).
-#   - Replaces rejection-based gate with a projection that clamps actions to the break-even point.
-# - Major Improvement: Cost-Aware Warmup Calibration (run.py).
-#   - Calibration now derives the target mean from the Greedy Optimal Policy for the warmup paths.
+# - Fix #3: Higher β-Sigmoid Temperature (β=3.0, was β=2.0)
+#   - β=2.0 was nearly identical to tanh01 in practice
+#   - β=3.0 creates more differentiation: saturates at |u|≈1.7 vs tanh01's |u|≈2.5
+#   - Provides softer gradients in boundary regions
+#   - Addresses: potential gradient saturation issues
+#
+# - Fix #4: Later Target Noise Decay Start (ep 18000, was ep 15000)
+#   - Preserve exploration benefits longer before decay
+#   - Decay still completes by ~30k episodes (before end of training)
+#   - Addresses: fine-tuning of v60's successful target noise decay
+#
+# - Fix #5: Higher Target Noise Floor (0.04, was 0.02)
+#   - Less aggressive decay maintains some smoothing effect late
+#   - Prevents over-fitting to noisy Q-estimates
+#
+# - Fix #6: Increased Adaptive Noise Scale (0.6, was 0.5)
+#   - Compensates for potential under-exploration from warmup changes
+#   - Ensures policy can escape saturation regions
+#
+# - Fix #7: Increased Warmup Noise Fraction (0.3, was 0.2)
+#   - Combined with gradual ramp: starts at 0.3× and ramps to 1.0× over warmup
+#   - Higher starting point reduces calibration-to-learning transition shock
+#
+# EXPECTED RESULTS:
+#   a) Early convergence: first 80% by ep 3072-4096 (matching v59)
+#   b) Early seed spread at ep 4096: <15% (vs 36% in v60, 13% in v59)
+#   c) Late-stage std at ep 32768: <2% (preserving v60's improvement)
+#   d) Final Delta%: >112% mean
+#
+# v60 Features retained: Target policy noise decay (with adjusted schedule)
+# v59 Features retained: Critic warmup (shorter), Adaptive pre-squash noise
+# v58 Features retained: Rprop Calibration
+# v57 Features retained: Stratified Sampling, Profitability Gate
 
 args=(
-    # Same scale as v57: 32k training episodes
+    # Same scale as v60: 32k training episodes
     -n_paths=32768
     -eval_every=1024            # Evaluation frequency (episodes): >0 = periodic (includes initial eval at path 1, plus final if misaligned), -1 = end-only; 0 invalid; no-eval not supported
     -n_paths_eval=32768         # Paths per evaluation (for stable pricing estimate)
@@ -69,16 +99,20 @@ args=(
     --weight_decay_actor=5e-5      # Light L2 regularization on the policy network
     --weight_decay_critic=1.2e-4   # Moderate L2 regularization on the value network
     --critic_ema_decay=0.0         # EMA decay for critic eval smoothing (0 disables)
-    --target_policy_noise=0.15     # Stronger target policy smoothing to temper critic overconfidence
+    --target_policy_noise=0.15     # Initial target policy smoothing (will decay via v61 schedule)
     --target_policy_clip=0.25      # Target policy smoothing noise clip
     --compile=0                    # Disable torch.compile (for simplicity and compatibility)
     -n_cores=4                     # Number of CPU cores to utilize for parallel processing
     --disable_csv_logging=1        # Turn off CSV outputs for this sweep
     --limit_logging_frequency=1    # Throttle per-step TensorBoard logging to shrink files
 
-    # v59 New Parameters (Fixing Variance Collapse)
-    --critic_warmup_episodes=2048 # Freeze actor updates until 2048 episodes (approx 45k steps)
-    --adaptive_noise_scale=0.5    # Scale exploration noise by (1 + 0.5*|u|) to prevent saturation gradients death
+    # v61 Parameters (Improved from v60 based on analysis)
+    --critic_warmup_episodes=1024  # v61 Fix #2: Reduced from 2048 to speed early convergence
+    --adaptive_noise_scale=0.6     # v61 Fix #6: Increased from 0.5 for better exploration
+    --warmup_noise_fraction=0.3    # v61 Fix #7: Increased from 0.2 (now with gradual ramp in code)
+    --target_noise_decay_start=18000  # v61 Fix #4: Later start (was 15000) to preserve exploration longer
+    --target_noise_floor=0.04      # v61 Fix #5: Higher floor (was 0.02) for residual smoothing
+    --actor_output_activation=beta_sigmoid_3.0  # v61 Fix #3: Higher β (was 2.0) for more differentiation
 
     # Swing Option Contract parameters (pricing problem definition)
     --strike=1.0                 # Strike price K
@@ -108,16 +142,16 @@ args=(
     --mu_J=0.3                   # Mean jump size (relative jump magnitude)
 )
 
-# Run multiple seeds for robustness
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_v59_1_13" -seed 13
+# Run multiple seeds for robustness (no-cost regime)
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_13" -seed 13
 
 # Run Convex Cost variants (CC)
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_11" -seed 11 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_12" -seed 12 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v59CC_1_13" -seed 13 --c_cost 0.15 --gamma_cost 2.0
+python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_11" -seed 11 --c_cost 0.15 --gamma_cost 2.0 &
+python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_12" -seed 12 --c_cost 0.15 --gamma_cost 2.0 &
+python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_13" -seed 13 --c_cost 0.15 --gamma_cost 2.0
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-# bash runv59CC.sh
+# bash runv61CC.sh

@@ -333,10 +333,35 @@ class ConfigManager:
             help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx)."
         )
         parser.add_argument(
-            "--entropy_reg",
+            "--adaptive_noise_scale",
             type=float,
             default=0.0,
-            help="Coefficient for pre-activation entropy regularization (penalizes saturation). Default: 0.0."
+            help="Scale factor for pre-activation noise relative to |u|. Default: 0.0 (off). Recommended: 0.5."
+        )
+        # v60 parameters
+        parser.add_argument(
+            "--warmup_noise_fraction",
+            type=float,
+            default=1.0,
+            help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2"
+        )
+        parser.add_argument(
+            "--target_noise_decay_start",
+            type=int,
+            default=0,
+            help="v60: Episode to start decaying target policy noise (0 disables). Recommended: 15000"
+        )
+        parser.add_argument(
+            "--target_noise_floor",
+            type=float,
+            default=0.02,
+            help="v60: Minimum target policy noise after decay. Default: 0.02"
+        )
+        parser.add_argument(
+            "--actor_output_activation",
+            type=str,
+            default="tanh01",
+            help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01"
         )
 
         # Network and Learning Parameters
@@ -1402,6 +1427,13 @@ def main():
         log_interval_scale=log_interval_scale,
         replay_memmap=bool(args.replay_memmap),
         actor_type=args.actor_type,
+        critic_warmup_episodes=args.critic_warmup_episodes,
+        adaptive_noise_scale=args.adaptive_noise_scale,
+        # v60 parameters
+        warmup_noise_fraction=args.warmup_noise_fraction,
+        target_noise_decay_start=args.target_noise_decay_start,
+        target_noise_floor=args.target_noise_floor,
+        action_output=args.actor_output_activation,
     )
     try:
         param_device = next(agent.actor_local.parameters()).device

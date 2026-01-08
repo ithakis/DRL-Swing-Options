@@ -89,7 +89,11 @@ class Agent:
         replay_memmap: bool = False,
         actor_type: str = "standard",
         critic_warmup_episodes: int = 0,
-        entropy_reg: float = 0.0,
+        adaptive_noise_scale: float = 0.0,
+        warmup_noise_fraction: float = 1.0,  # v60: reduce noise during critic warmup
+        target_noise_decay_start: int = 0,    # v60: episode to start decaying target policy noise
+        target_noise_floor: float = 0.02,     # v60: minimum target policy noise after decay
+        action_output: str = "tanh01",        # v60: actor output activation
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -196,6 +200,7 @@ class Agent:
         self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
         self.actor_type = (actor_type or "standard").lower()
+        self.action_output = (action_output or "tanh01").lower()  # v60: store action output activation
         if self.actor_type == "finance_informed":
             from .networks import FinanceInformedActor
             actor_cls = FinanceInformedActor
@@ -208,6 +213,7 @@ class Agent:
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
+            action_output=self.action_output,  # v60: pass action output activation
             activation=self.activation,
             norm_type=self.norm_type,
             init_method=self.init_method,
@@ -218,6 +224,7 @@ class Agent:
             random_seed,
             hidden_size=actor_hidden_size,
             n_layers=actor_layers,
+            action_output=self.action_output,  # v60: pass action output activation
             activation=self.activation,
             norm_type=self.norm_type,
             init_method=self.init_method,
@@ -391,10 +398,15 @@ class Agent:
         self.critic_grad_clip = None
         self.critic_grad_clip_type = "none"
 
-        self.critic_grad_clip_type = "none"
-        self.critic_grad_clip_type = "none"
+        # v59/v60 parameters
         self.critic_warmup_episodes = int(critic_warmup_episodes)
-        self.entropy_reg = float(entropy_reg)
+        self.adaptive_noise_scale = float(adaptive_noise_scale)
+        # v60: warmup noise reduction - reduce exploration noise during critic warmup to preserve calibration
+        self.warmup_noise_fraction = float(warmup_noise_fraction)
+        # v60: target policy noise decay - decay target noise late for cleaner Q-targets
+        self.target_noise_decay_start = int(target_noise_decay_start)
+        self.target_noise_floor = float(target_noise_floor)
+        self.target_policy_noise_initial = target_policy_noise  # store initial value for decay
         
         def lr_lambda(step: int, init_lr: float):
             if final_lr_fraction >= 1.0:
@@ -493,14 +505,52 @@ class Agent:
             g["lr"] = min(max_critic, g["lr"] * boost)
 
     def _pre_noise_sigma(self) -> float:
-        """Compute pre-squash noise std based on episode schedule."""
+        """Compute pre-squash noise std based on episode schedule.
+        
+        v60: During critic warmup phase, noise is reduced by warmup_noise_fraction
+        to preserve the calibrated actor policy while still allowing some exploration.
+        
+        v61: Gradual warmup noise ramp. Instead of a flat fraction, noise ramps
+        linearly from warmup_noise_fraction at start to 1.0 at end of warmup.
+        This provides smooth transition from calibration preservation to full exploration.
+        """
         e = max(1, self._episode_count)
         plateau = max(0, self.noise_plateau)
         if plateau > 0 and e < plateau:
-            return self.noise_sigma0
-        t = e - plateau if plateau > 0 else e
-        denom = 1.0 + (t / max(1, plateau if plateau > 0 else 1))
-        return self.noise_floor + (self.noise_sigma0 - self.noise_floor) / denom
+            sigma = self.noise_sigma0
+        else:
+            t = e - plateau if plateau > 0 else e
+            denom = 1.0 + (t / max(1, plateau if plateau > 0 else 1))
+            sigma = self.noise_floor + (self.noise_sigma0 - self.noise_floor) / denom
+        
+        # v61: Gradual warmup noise ramp (was flat fraction in v60)
+        # Ramp from warmup_noise_fraction to 1.0 over the critic warmup period
+        if e <= self.critic_warmup_episodes and self.warmup_noise_fraction < 1.0:
+            warmup_progress = e / max(1, self.critic_warmup_episodes)
+            # Linear ramp: start at warmup_noise_fraction, end at 1.0
+            current_fraction = self.warmup_noise_fraction + (1.0 - self.warmup_noise_fraction) * warmup_progress
+            sigma *= current_fraction
+        
+        return sigma
+
+    def _get_target_policy_noise(self) -> float:
+        """Get current target policy noise with optional late-stage decay.
+        
+        v60: After target_noise_decay_start, linearly decay target policy noise
+        toward target_noise_floor. This reduces variance in Q-targets late in
+        training when the policy should be refining rather than exploring.
+        """
+        if self.target_noise_decay_start <= 0:
+            return self.target_policy_noise  # no decay
+        
+        e = self._episode_count
+        if e < self.target_noise_decay_start:
+            return self.target_policy_noise_initial
+        
+        # Linear decay from initial to floor over same duration as decay started
+        decay_duration = self.target_noise_decay_start  # decay over same period
+        progress = min(1.0, (e - self.target_noise_decay_start) / max(1, decay_duration))
+        return self.target_noise_floor + (self.target_policy_noise_initial - self.target_noise_floor) * (1.0 - progress)
 
     def _squash(self, preact: torch.Tensor) -> torch.Tensor:
         """Map pre-activation values to action space matching actor output activation."""
@@ -509,6 +559,10 @@ class Agent:
             return 0.5 * (torch.tanh(preact) + 1.0)
         if action_output == "sigmoid":
             return torch.sigmoid(preact)
+        if action_output.startswith("beta_sigmoid"):
+            # Match the β-sigmoid from Actor (default β=2.0)
+            beta = getattr(self.actor_local, "_output_beta", 2.0)
+            return torch.sigmoid(beta * preact)
         return torch.tanh(preact)
 
     def _should_log(self, timestamp: int, interval: int) -> bool:
@@ -551,7 +605,14 @@ class Agent:
             if add_noise:
                 sigma = self._pre_noise_sigma()
                 if sigma > 0:
-                    preact = preact + torch.randn_like(preact) * sigma
+                    # Fix 3: Adaptive Pre-Squash Noise
+                    # Scale noise by (1 + scale * |u|) to prevent saturation lock-in
+                    if self.adaptive_noise_scale > 0:
+                        scale = 1.0 + self.adaptive_noise_scale * preact.abs()
+                        noise = torch.randn_like(preact) * sigma * scale
+                    else:
+                        noise = torch.randn_like(preact) * sigma
+                    preact = preact + noise
             # Exploration noise is applied pre-gate; the executed action is always profitability-gated.
             q_raw = self._squash(preact)
             apply_gate = self._actor_apply_profitability_gate
@@ -612,9 +673,10 @@ class Agent:
 
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
-            if self.target_policy_noise and self.target_policy_noise > 0:
-                # No clipping of target policy noise (intentional).
-                noise = torch.randn_like(next_actions) * self.target_policy_noise
+            current_target_noise = self._get_target_policy_noise()
+            if current_target_noise and current_target_noise > 0:
+                # v60: Target policy noise decays late for cleaner Q-targets
+                noise = torch.randn_like(next_actions) * current_target_noise
                 next_actions = next_actions + noise
                 next_actions = torch.clamp(next_actions, 0.0, 1.0)
                 apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
@@ -663,27 +725,9 @@ class Agent:
         actor_loss_val = 0.0
         # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
         if self._episode_count > self.critic_warmup_episodes:
-             # Fix 2: Pre-Activation Entropy Regularization
-             if self.entropy_reg > 0:
-                 preact = self._actor_forward_preact(states)
-                 actions_pred = self._squash(preact)
-                 # Penalize tanh saturation: |tanh(u)| -> 1 implies saturation
-                 # We simply penalize -log(1 - |tanh(u)|)
-                 tanh_u = torch.tanh(preact) if self._actor_action_output != "tanh" else actions_pred
-                 if self._actor_action_output == "tanh01":
-                      # tanh01 = 0.5(tanh(u)+1). We want tanh(u).
-                      # If _squash returns tanh01, we need raw tanh(u).
-                      # Calculate explicitly to be safe:
-                      tanh_u = torch.tanh(preact)
-                 
-                 reg_loss = -torch.log(1.0 - tanh_u.abs().clamp(max=0.999)).mean()
-                 
-                 q_val = self.critic_local(states, actions_pred)
-                 actor_loss = -q_val.mean() + self.entropy_reg * reg_loss
-             else:
-                 actions_pred = self.actor_local(states)
-                 q_val = self.critic_local(states, actions_pred)
-                 actor_loss = -q_val.mean()
+             actions_pred = self.actor_local(states)
+             q_val = self.critic_local(states, actions_pred)
+             actor_loss = -q_val.mean()
              
              self.actor_optimizer.zero_grad(set_to_none=True)
              actor_loss.backward()
@@ -720,9 +764,10 @@ class Agent:
 
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
-            if self.target_policy_noise and self.target_policy_noise > 0:
-                # No clipping of target policy noise (intentional).
-                noise = torch.randn_like(next_actions) * self.target_policy_noise
+            current_target_noise = self._get_target_policy_noise()
+            if current_target_noise and current_target_noise > 0:
+                # v60: Target policy noise decays late for cleaner Q-targets
+                noise = torch.randn_like(next_actions) * current_target_noise
                 next_actions = next_actions + noise
                 next_actions = torch.clamp(next_actions, 0.0, 1.0)
                 apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
@@ -758,20 +803,9 @@ class Agent:
         
         actor_loss_val = 0.0
         if self._episode_count > self.critic_warmup_episodes:
-             if self.entropy_reg > 0:
-                 preact = self._actor_forward_preact(states)
-                 actions_pred = self._squash(preact)
-                 tanh_u = torch.tanh(preact) if self._actor_action_output != "tanh" else actions_pred
-                 if self._actor_action_output == "tanh01":
-                      tanh_u = torch.tanh(preact)
-                 reg_loss = -torch.log(1.0 - tanh_u.abs().clamp(max=0.999)).mean()
-                 
-                 q_pred, _ = self.critic_local(states, actions_pred, self.N)
-                 actor_loss = -q_pred.mean() + self.entropy_reg * reg_loss
-             else:
-                 actions_pred = self.actor_local(states)
-                 q_pred, _ = self.critic_local(states, actions_pred, self.N)
-                 actor_loss = -q_pred.mean()
+             actions_pred = self.actor_local(states)
+             q_pred, _ = self.critic_local(states, actions_pred, self.N)
+             actor_loss = -q_pred.mean()
                  
              self.actor_optimizer.zero_grad(set_to_none=True)
              actor_loss.backward()

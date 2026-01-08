@@ -221,6 +221,13 @@ class Actor(nn.Module):
         self.hidden_size = hidden_size
         self.n_layers = n_layers
         self.action_output = action_output.lower()
+        # Parse β for beta_sigmoid activation (default β=2.0)
+        # Format: "beta_sigmoid" or "beta_sigmoid_X" where X is the temperature
+        if self.action_output.startswith("beta_sigmoid"):
+            parts = self.action_output.split("_")
+            self._output_beta = float(parts[2]) if len(parts) > 2 else 2.0
+        else:
+            self._output_beta = 1.0  # unused for other activations
         self.target_action_mean = target_action_mean
         self.target_action_std = target_action_std
         self.activation_name = activation.lower()
@@ -439,7 +446,13 @@ class Actor(nn.Module):
             return 0.5 * (torch.tanh(out) + 1.0)
         if self.action_output == "sigmoid":
             return torch.sigmoid(out)
-        raise ValueError(f"Unsupported action_output '{self.action_output}'. Expected one of 'tanh', 'tanh01', 'sigmoid'.")
+        if self.action_output.startswith("beta_sigmoid"):
+            # β-sigmoid: sigmoid(β * u) with tunable temperature β
+            # Format: "beta_sigmoid" uses default β=2.0, or "beta_sigmoid_X" uses β=X
+            # Provides softer gradient saturation than tanh01, improving late-stage learning
+            beta = self._output_beta
+            return torch.sigmoid(beta * out)
+        raise ValueError(f"Unsupported action_output '{self.action_output}'. Expected one of 'tanh', 'tanh01', 'sigmoid', 'beta_sigmoid'.")
 
 
 class FinanceInformedActor(Actor):

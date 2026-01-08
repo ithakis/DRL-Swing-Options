@@ -792,15 +792,137 @@ Takeaway: explicit orthogonal initialization appears to be a key stabilizer post
             4.  **Ineffective Noise**: Adding noise to a saturated unit doesn't help if the pre-squash value is huge (e.g., `tanh(10 + noise)` is still ≈ 1).
 - **Conclusion**: Rprop fixed the *calibration* robustness, but the resulting "good" policy is fragile to the "bad" initial gradients from the untrained critic, leading to variance collapse in some seeds.
 
-## v59 Plan: Critic Warmup & Pre-Activation Entropy Regularization
+## v59 Plan: Critic Warmup & Adaptive Pre-Squash Noise
 
-- **Goal**: Prevent Action Variance Collapse (Seed 12 failure) by protecting the Actor from early bad gradients and penalizing saturation.
+- **Goal**: Prevent Action Variance Collapse (Seed 12 failure) by protecting the Actor from early bad gradients and ensuring exploration survives high magnitudes.
 - **Fix 1: Critic Warmup (`--critic_warmup_episodes`)**:
     - **Mechanism**: Freeze Actor updates for the first `N` episodes (e.g., 1024), while strictly updating the Critic.
     - **Why**: Allows the Critic to learn a reasonable estimate of the value function *before* the Actor takes a single gradient step. Prevents the "blind leading the blind" phase where random critic gradients destroy the calibrated policy. Matches `min_replay_size` logic but defined in episodes for clarity.
-- **Fix 2: Pre-Activation Entropy Regularization (`--entropy_reg`)**:
-    - **Mechanism**: Add a penalty term to the Actor loss: `R = -mean(log(1 - |tanh(u)|))`.
-    - **Why**: This penalizes the *pre-activation* `u` from growing too large (which causes saturation). It forces the policy to stay in the linear/active region of the activation function, preserving gradient flow. Unlike output entropy, this directly combats the vanishing gradient mechanics.
+- **Fix 3: Adaptive Pre-Squash Noise (`--adaptive_noise_scale`)**:
+    - **Mechanism**: Scale exploration noise `sigma` by `(1 + k * |u|)`, where `u` is the pre-activation value. `noise = sigma * (1 + 0.5 * |u|) * randn`.
+    - **Why**: As the policy pushes into the saturation region (`|u| >> 1`), standard additive noise becomes irrelevant (squashed to 0). Making noise proportional to magnitude ensures we can still "jump" out of saturation or explore around the boundary. This prevents the "locked" state where gradients die and exploration stops.
 - **Hypothesis**:
-    - **Seed 12 Recovery**: With these fixes, Seed 12 should avoid collapse. The frozen Actor won't be ruined by the random Critic, and if it starts drifting toward saturation, the entropy penalty will push it back.
+    - **Seed 12 Recovery**: Critic Warmup (Fix 1) prevents the initial bad update. Adaptive Noise (Fix 3) ensures that if the actor *does* drift to saturation, it maintains healthy exploration and gradients.
     - **General Stability**: Should reduce variance across all seeds.
+
+## v60: Staggered Warmup, Target Noise Decay & β-Sigmoid Activation
+
+### Root Cause Analysis of v59 Limitations
+
+After detailed analysis of v59's behavior, three persistent issues were identified:
+
+1. **Seed-to-Seed Variance**: Despite critic warmup, some seeds still show divergent learning paths.
+2. **Slow Early Convergence**: The calibrated actor policy degrades during the 2048-episode critic warmup due to continued noise injection.
+3. **Late-Stage Performance Degradation**: After ~23k episodes, `Delta_Percent` sometimes starts degrading (overfitting behavior).
+
+The root causes were traced to:
+- **Critic Warmup Destroys Calibration**: During warmup, the actor is frozen but noise continues at full strength. When actor updates resume, the policy has drifted from its calibrated state.
+- **Tanh01 Gradient Saturation**: The `tanh01` activation has near-zero gradients in saturation zones, causing "sticky" policies that resist correction.
+- **Target Policy Noise Late-Stage Interference**: Constant target policy noise (σ=0.15) creates variance in Q-targets even late when the policy should be refining.
+
+### Changes in v60
+
+**Fix 1: Warmup Noise Reduction (`--warmup_noise_fraction=0.2`)**
+- **Mechanism**: During critic warmup, reduce exploration noise to `fraction × normal_noise` (e.g., 20%).
+- **Rationale**: Preserves the calibrated actor policy during warmup while still allowing minimal exploration. When actor updates resume, the policy is close to its original calibrated state, not drifted into random territory.
+- **Implementation**: Modified `_pre_noise_sigma()` in `agent.py` to multiply noise by `warmup_noise_fraction` when `episode ≤ critic_warmup_episodes`.
+
+**Fix 2: Target Policy Noise Decay (`--target_noise_decay_start=15000`, `--target_noise_floor=0.02`)**
+- **Mechanism**: After episode 15k, linearly decay target policy noise from 0.15 → 0.02 over 15k episodes.
+- **Rationale**: Early training benefits from noisy target actions (smoothing, exploration). Late training benefits from clean Q-target estimates as the policy refines to the optimal.
+- **Implementation**: Added `_get_target_policy_noise()` method to `agent.py` that returns decayed noise based on episode count.
+
+**Fix 3: β-Sigmoid Output Activation (`--actor_output_activation=beta_sigmoid`)**
+- **Mechanism**: Replace `tanh01 = 0.5*(tanh(u)+1)` with `sigmoid(β*u)` where β=2.0.
+- **Rationale**: 
+    - **tanh01** saturates at `|u| ≈ 2.5` (gradients < 1%).
+    - **β-sigmoid(2.0)** saturates more softly, with gradients remaining ~4% at `|u| = 2.5`.
+    - Softer saturation reduces "sticky" boundary behavior and allows the policy to escape suboptimal saturation regions.
+- **Implementation**: Added β-sigmoid parsing to `Actor.__init__()` and `_apply_output_activation()` in `networks.py`.
+
+### Key Parameters (v60)
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `warmup_noise_fraction` | 0.2 | Reduce noise to 20% during critic warmup |
+| `target_noise_decay_start` | 15000 | Episode to begin target noise decay |
+| `target_noise_floor` | 0.02 | Minimum target noise after decay |
+| `actor_output_activation` | beta_sigmoid | Use sigmoid(2×u) instead of tanh01 |
+| `critic_warmup_episodes` | 2048 | (retained from v59) |
+| `adaptive_noise_scale` | 0.5 | (retained from v59) |
+
+### Expected Results
+
+1. **Reduced Seed-to-Seed Variance**: β-sigmoid eliminates gradient death zones; warmup noise reduction preserves calibration consistency.
+2. **Faster Early Convergence**: Actor resumes updates from near-calibrated state (not drifted), accelerating learning.
+3. **Better Late-Stage Stability**: Target noise decay reduces Q-target variance, preventing post-23k overfitting/degradation.
+4. **Tighter Delta_Percent**: Overall combination should yield tighter final spread and higher median performance.
+
+### Verification Plan
+
+Run seeds 11, 12, 13 for both no-cost and convex-cost regimes. Monitor:
+- `Pricing/Delta_Percent` spread: expect tighter band, no late degradation
+- `Policy/Action_variance_mean`: should remain healthy (no collapse)
+- `Actions_at_upper_pct`: should be < 80% (no saturation lock-in)
+- Seed spread at episode 32k: expect < 5% std (vs v59's ~10%+)
+
+## v60 Results: Analysis
+
+Ran seeds 11, 12, 13 for v60CC. Compared against v59CC baseline:
+
+| Metric | v59CC | v60CC | Outcome |
+|--------|-------|-------|---------|
+| Final Delta% mean | 111.63% | 111.93% | v60 +0.30% |
+| Final Delta% std | 2.86% | 1.28% | **v60 55% lower** ✅ |
+| Early Delta% @ ep4096 std | 5.71% | 15.19% | v59 2.7x better ❌ |
+| First 80% (earliest seed) | ep 3072 | ep 4096 | v59 faster ❌ |
+
+**Conclusion**: v60's target noise decay improved late-stage stability, but warmup noise reduction (0.2×) was too aggressive, causing slower early convergence and higher early seed variance.
+
+## v61: Gradual Warmup Ramp & Tuned Schedule
+
+### Changes in v61
+
+Based on v59/v60 comparison, v61 implements 7 targeted fixes:
+
+1. **Gradual Warmup Noise Ramp** (code change):
+   - Noise ramps linearly from `warmup_noise_fraction` to 1.0 over warmup period
+   - Formula: `fraction = 0.3 + 0.7 × (episode / warmup_episodes)`
+   - Smoother transition from calibration preservation to full exploration
+
+2. **Reduced Critic Warmup (1024 episodes, was 2048)**:
+   - Actor starts learning 1k episodes earlier
+   - Critic stabilizes sufficiently by ep 1024
+
+3. **Higher β-Sigmoid (β=3.0, was 2.0)**:
+   - More differentiation from tanh01; saturates at |u|≈1.7
+
+4. **Later Target Noise Decay (ep 18000, was 15000)**:
+   - Preserves exploration benefits longer
+
+5. **Higher Target Noise Floor (0.04, was 0.02)**:
+   - Maintains residual smoothing effect late
+
+6. **Increased Adaptive Noise (0.6, was 0.5)**:
+   - Compensates for warmup changes
+
+7. **Higher Warmup Noise Fraction (0.3, was 0.2)**:
+   - Combined with gradual ramp for smoother transition
+
+### Key Parameters (v61)
+
+| Parameter | v60 | v61 | Rationale |
+|-----------|-----|-----|-----------|
+| `critic_warmup_episodes` | 2048 | 1024 | Faster actor learning |
+| `warmup_noise_fraction` | 0.2 | 0.3 | + gradual ramp |
+| `actor_output_activation` | beta_sigmoid | beta_sigmoid_3.0 | More differentiation |
+| `target_noise_decay_start` | 15000 | 18000 | Longer exploration |
+| `target_noise_floor` | 0.02 | 0.04 | Residual smoothing |
+| `adaptive_noise_scale` | 0.5 | 0.6 | Better exploration |
+
+### Expected Results
+
+1. **Early convergence**: First 80% by ep 3072-4096 (matching v59)
+2. **Early seed spread @ ep4096**: <15% (vs 36% in v60)
+3. **Late-stage std @ ep32768**: <2% (preserving v60's gains)
+4. **Final Delta%**: >112% mean
