@@ -2,25 +2,25 @@
 set -e
 
 scripts=(
-    "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.5.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.01_gamma2.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.01_gamma3.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.02_gamma1.5.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.02_gamma1.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.02_gamma2.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.02_gamma3.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.04_gamma1.5.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.04_gamma1.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.04_gamma2.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.04_gamma3.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.05_gamma1.5.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.05_gamma1.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.05_gamma3.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.08_gamma1.5.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.08_gamma1.sh"
-    "Convex Cost Experiments/SwingOption_20_c0.08_gamma2.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.5.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.01_gamma1.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.01_gamma2.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.01_gamma3.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.02_gamma1.5.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.02_gamma1.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.02_gamma2.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.02_gamma3.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.04_gamma1.5.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.04_gamma1.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.04_gamma2.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.04_gamma3.sh"
+    # "Convex Cost Experiments/SwingOption_20_c0.05_gamma1.5.sh"  # Completed
+    # "Convex Cost Experiments/SwingOption_20_c0.05_gamma1.sh"    # Completed
+    # "Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"    # Completed
+    # "Convex Cost Experiments/SwingOption_20_c0.05_gamma3.sh"    # Completed
+    # "Convex Cost Experiments/SwingOption_20_c0.08_gamma1.5.sh"  # Completed
+    # "Convex Cost Experiments/SwingOption_20_c0.08_gamma1.sh"    # Completed
+    "Convex Cost Experiments/SwingOption_20_c0.08_gamma2.sh"      # Resume from here
     "Convex Cost Experiments/SwingOption_20_c0.10_gamma1.5.sh"
     "Convex Cost Experiments/SwingOption_20_c0.10_gamma1.sh"
     "Convex Cost Experiments/SwingOption_20_c0.10_gamma2.sh"
@@ -33,8 +33,8 @@ for script in "${scripts[@]}"; do
     echo "Running $script"
     bash "$script"
     echo "Completed $script"
-    echo "Cleaning evaluation Parquet files for $script"
-    bash "./cleanup_eval_parquets.sh" "$script"
+    # echo "Cleaning evaluation Parquet files for $script"
+    # bash "./cleanup_eval_parquets.sh" "$script"
 done
 
 

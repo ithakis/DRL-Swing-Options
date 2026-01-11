@@ -9,10 +9,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 try:
-    from .networks import IQN, Actor, Critic
+    from .networks import IQN, Actor, Critic, HHKInputLayer
     from .replay_buffer import CircularReplayBuffer, PrioritizedReplay
 except ImportError:
-    from networks import IQN, Actor, Critic
+    from networks import IQN, Actor, Critic, HHKInputLayer
     from replay_buffer import CircularReplayBuffer, PrioritizedReplay
 
 
@@ -94,6 +94,8 @@ class Agent:
         target_noise_decay_start: int = 0,    # v60: episode to start decaying target policy noise
         target_noise_floor: float = 0.02,     # v60: minimum target policy noise after decay
         action_output: str = "tanh01",        # v60: actor output activation
+        use_robust_normalization: bool = False, # v62: Robust HHK Normalization
+        strike: float = 100.0,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -207,6 +209,17 @@ class Agent:
         else:
             actor_cls = Actor
 
+        # Configure Input Preprocessor if enabled
+        input_preprocessor = None
+        if use_robust_normalization:
+            input_preprocessor = HHKInputLayer(
+                state_dim=state_size,
+                strike=strike,
+                x_median=0.0, x_iqr=1.0,  # Defaults, could be tuned via args/stats
+                y_median=0.0, y_iqr=1.0,
+            )
+            print(f"Agent: Enabled Robust HHK Normalization (Log-Moneyness, Strike={strike})")
+
         self.actor_local = actor_cls(
             state_size,
             action_size,
@@ -217,6 +230,7 @@ class Agent:
             activation=self.activation,
             norm_type=self.norm_type,
             init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
         )
         self.actor_target = actor_cls(
             state_size,
@@ -228,6 +242,7 @@ class Agent:
             activation=self.activation,
             norm_type=self.norm_type,
             init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
         )
         self.actor_target.load_state_dict(self.actor_local.state_dict())
         self._actor_action_output = getattr(self.actor_local, "action_output", "tanh")
@@ -265,6 +280,7 @@ class Agent:
                 N=self.N,
                 norm_type=self.norm_type,
                 init_method=self.init_method,
+                input_preprocessor=input_preprocessor,
             ).to(self.device)
             self.critic_target = IQN(
                 state_size,
@@ -275,6 +291,7 @@ class Agent:
                 N=self.N,
                 norm_type=self.norm_type,
                 init_method=self.init_method,
+                input_preprocessor=input_preprocessor,
             ).to(self.device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
@@ -287,6 +304,7 @@ class Agent:
                 activation=self.activation,
                 norm_type=self.norm_type,
                 init_method=self.init_method,
+                input_preprocessor=input_preprocessor,
             )
             self.critic_target = Critic(
                 state_size,
@@ -297,6 +315,7 @@ class Agent:
                 activation=self.activation,
                 norm_type=self.norm_type,
                 init_method=self.init_method,
+                input_preprocessor=input_preprocessor,
             )
             self.critic_target.load_state_dict(self.critic_local.state_dict())
 

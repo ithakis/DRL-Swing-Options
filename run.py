@@ -73,7 +73,9 @@ class AsyncParquetWriter:
         if self.is_running:
             self.write_queue.put(None)  # Sentinel to stop thread
             if self.writer_thread:
-                self.writer_thread.join(timeout=5.0)
+                # Wait indefinitely for the writer thread to finish pending writes
+                # This prevents closing file handles while the thread is still using them
+                self.writer_thread.join()
             for writer in self._writers.values():
                 try:
                     writer.close()
@@ -573,6 +575,13 @@ class ConfigManager:
             default=1,
             choices=[0, 1],
             help="Use float32 precision for simulation, tensors, and buffers (default: 1). Set 0 for float64.",
+        )
+        parser.add_argument(
+            "--use_robust_normalization",
+            type=int,
+            choices=[0, 1],
+            default=0,
+            help="Enable Robust HHK Normalization (Log-moneyness + Median/IQR scaling). Default: 0 (disabled).",
         )
 
         return parser
@@ -1355,155 +1364,168 @@ def main():
     else:
         print("Parquet logging disabled; skipping writer initialization")
 
-    # Get environment specs
-    action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
-    action_low = train_env.action_space.low[0]          # pyright: ignore[reportAttributeAccessIssue]
-    state_size = train_env.observation_space.shape[0]   # pyright: ignore[reportOptionalSubscript]
-    action_size = train_env.action_space.shape[0]       # pyright: ignore[reportOptionalSubscript]
-
-    actor_hidden_size = args.actor_hidden_size or args.layer_size
-    critic_hidden_size = args.critic_hidden_size or args.layer_size
-
-    agent = Agent(
-        state_size=train_env.observation_space.shape[0],
-        action_size=train_env.action_space.shape[0],
-        n_step=args.nstep,
-        per=args.per,
-        munchausen=args.munchausen,
-        distributional=args.iqn,
-        random_seed=seed,
-        hidden_size=args.layer_size,
-        actor_hidden_size=actor_hidden_size,
-        critic_hidden_size=critic_hidden_size,
-        actor_layers=args.actor_layers,
-        critic_layers=args.critic_layers,
-        optimizer=args.optimizer,
-        weight_decay_actor=args.weight_decay_actor,
-        weight_decay_critic=args.weight_decay_critic,
-        critic_ema_decay=args.critic_ema_decay,
-        target_policy_noise=args.target_policy_noise,
-        target_policy_clip=args.target_policy_clip,
-        BUFFER_SIZE=args.max_replay_size,
-        BATCH_SIZE=args.batch_size,
-        GAMMA=args.gamma,
-        t=args.t,
-        LR_ACTOR=args.lr_a,
-        LR_CRITIC=args.lr_c,
-        LEARN_EVERY=args.learn_every,
-        LEARN_NUMBER=args.learn_number,
-        noise_sigma0=args.noise_sigma0,
-        noise_floor=args.noise_floor,
-        noise_plateau=args.noise_plateau,
-        device=device,
-        paths=args.n_paths,
-        min_replay_size=args.min_replay_size,
-        speed_mode=True,
-        use_compile=args.compile,
-        use_amp=False,
-        per_alpha=args.per_alpha,
-        per_beta_start=args.per_beta_start,
-        per_beta_frames=args.per_beta_frames,
-        per_priority_floor=args.per_priority_floor,
-        per_priority_clip_pct=args.per_priority_clip_pct,
-        per_priority_scheme=args.per_priority_scheme,
-        per_huber_kappa=args.per_huber_kappa,
-        per_alpha_final=args.per_alpha_final,
-        per_alpha_ramp_start=args.per_alpha_ramp_start,
-        per_alpha_ramp_end=args.per_alpha_ramp_end,
-        per_beta_final=args.per_beta_final,
-        per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
-        final_lr_fraction=args.final_lr_fraction,
-        lr_schedule_episodes=args.lr_schedule_episodes,
-        warmup_episodes=args.warmup_episodes,
-        min_lr=args.min_lr,
-        actor_grad_clip=args.actor_grad_clip,
-        critic_grad_clip=args.critic_grad_clip,
-        actor_grad_clip_type=args.actor_grad_clip_type,
-        critic_grad_clip_type=args.critic_grad_clip_type,
-        grad_clip_norm_type=args.grad_clip_norm_type,
-        activation=args.activation,
-        norm_type=args.norm,
-        init_method=args.init_method,
-        log_interval_scale=log_interval_scale,
-        replay_memmap=bool(args.replay_memmap),
-        actor_type=args.actor_type,
-        critic_warmup_episodes=args.critic_warmup_episodes,
-        adaptive_noise_scale=args.adaptive_noise_scale,
-        # v60 parameters
-        warmup_noise_fraction=args.warmup_noise_fraction,
-        target_noise_decay_start=args.target_noise_decay_start,
-        target_noise_floor=args.target_noise_floor,
-        action_output=args.actor_output_activation,
-    )
     try:
-        param_device = next(agent.actor_local.parameters()).device
-    except StopIteration:
-        param_device = torch.device("cpu")
-    print(f"Sanity: model param device = {param_device}")
-    t0 = time.time()
+        # Get environment specs
+        action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
+        action_low = train_env.action_space.low[0]          # pyright: ignore[reportAttributeAccessIssue]
+        state_size = train_env.observation_space.shape[0]   # pyright: ignore[reportOptionalSubscript]
+        action_size = train_env.action_space.shape[0]       # pyright: ignore[reportOptionalSubscript]
 
-    if args.saved_model is not None:
-        agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
-        print("WARNING: Pre-generated paths not available for saved model evaluation.")
-    else:
-        # Warm up the actor using the first 2048 episodes (no training) 
-        # Iteratively optimize bias to maximize swing option price
-        # Warm up the actor using the first warmup_episodes (no training) 
-        # Iteratively optimize bias to maximize swing option price (Rprop)
-        agent.calibrate_bias(
-            env=train_env, 
-            n_episodes=args.warmup_episodes, 
-            max_iterations=20, 
-            target_std=0.005
+        actor_hidden_size = args.actor_hidden_size or args.layer_size
+        critic_hidden_size = args.critic_hidden_size or args.layer_size
+
+        agent = Agent(
+            state_size=train_env.observation_space.shape[0],
+            action_size=train_env.action_space.shape[0],
+            n_step=args.nstep,
+            per=args.per,
+            munchausen=args.munchausen,
+            distributional=args.iqn,
+            random_seed=seed,
+            hidden_size=args.layer_size,
+            actor_hidden_size=actor_hidden_size,
+            critic_hidden_size=critic_hidden_size,
+            actor_layers=args.actor_layers,
+            critic_layers=args.critic_layers,
+            optimizer=args.optimizer,
+            weight_decay_actor=args.weight_decay_actor,
+            weight_decay_critic=args.weight_decay_critic,
+            critic_ema_decay=args.critic_ema_decay,
+            target_policy_noise=args.target_policy_noise,
+            target_policy_clip=args.target_policy_clip,
+            BUFFER_SIZE=args.max_replay_size,
+            BATCH_SIZE=args.batch_size,
+            GAMMA=args.gamma,
+            t=args.t,
+            LR_ACTOR=args.lr_a,
+            LR_CRITIC=args.lr_c,
+            LEARN_EVERY=args.learn_every,
+            LEARN_NUMBER=args.learn_number,
+            noise_sigma0=args.noise_sigma0,
+            noise_floor=args.noise_floor,
+            noise_plateau=args.noise_plateau,
+            device=device,
+            paths=args.n_paths,
+            min_replay_size=args.min_replay_size,
+            speed_mode=True,
+            use_compile=args.compile,
+            use_amp=False,
+            per_alpha=args.per_alpha,
+            per_beta_start=args.per_beta_start,
+            per_beta_frames=args.per_beta_frames,
+            per_priority_floor=args.per_priority_floor,
+            per_priority_clip_pct=args.per_priority_clip_pct,
+            per_priority_scheme=args.per_priority_scheme,
+            per_huber_kappa=args.per_huber_kappa,
+            per_alpha_final=args.per_alpha_final,
+            per_alpha_ramp_start=args.per_alpha_ramp_start,
+            per_alpha_ramp_end=args.per_alpha_ramp_end,
+            per_beta_final=args.per_beta_final,
+            per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
+            final_lr_fraction=args.final_lr_fraction,
+            lr_schedule_episodes=args.lr_schedule_episodes,
+            warmup_episodes=args.warmup_episodes,
+            min_lr=args.min_lr,
+            actor_grad_clip=args.actor_grad_clip,
+            critic_grad_clip=args.critic_grad_clip,
+            actor_grad_clip_type=args.actor_grad_clip_type,
+            critic_grad_clip_type=args.critic_grad_clip_type,
+            grad_clip_norm_type=args.grad_clip_norm_type,
+            activation=args.activation,
+            norm_type=args.norm,
+            init_method=args.init_method,
+            log_interval_scale=log_interval_scale,
+            replay_memmap=bool(args.replay_memmap),
+            actor_type=args.actor_type,
+            critic_warmup_episodes=args.critic_warmup_episodes,
+            adaptive_noise_scale=args.adaptive_noise_scale,
+            # v60 parameters
+            warmup_noise_fraction=args.warmup_noise_fraction,
+            target_noise_decay_start=args.target_noise_decay_start,
+            target_noise_floor=args.target_noise_floor,
+            action_output=args.actor_output_activation,
+            # v62 parameters
+            use_robust_normalization=bool(args.use_robust_normalization),
+            strike=args.strike,
         )
-    
-    if args.eval_benchmark:
-        print("\nRunning standalone evaluation benchmark (evaluation only)...")
-        benchmark_evaluation(
-            agent=agent,
-            eval_env=eval_env,
-            writer=tensorboard_writer,
-            evaluations_dir=evaluations_dir,
-            lsm_price=mean_lsm_price,
-            parquet_writer=parquet_writer,
-            eval_batch_size=args.eval_batch_size,
-            profile=args.profile_eval,
-        )
-        eval_env.close()
+        try:
+            param_device = next(agent.actor_local.parameters()).device
+        except StopIteration:
+            param_device = torch.device("cpu")
+        print(f"Sanity: model param device = {param_device}")
+        t0 = time.time()
+
+        if args.saved_model is not None:
+            agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
+            print("WARNING: Pre-generated paths not available for saved model evaluation.")
+        else:
+            # Warm up the actor using the first 2048 episodes (no training) 
+            # Iteratively optimize bias to maximize swing option price
+            # Warm up the actor using the first warmup_episodes (no training) 
+            # Iteratively optimize bias to maximize swing option price (Rprop)
+            agent.calibrate_bias(
+                env=train_env, 
+                n_episodes=args.warmup_episodes, 
+                max_iterations=20, 
+                target_std=0.005
+            )
+        
+        if args.eval_benchmark:
+            print("\nRunning standalone evaluation benchmark (evaluation only)...")
+            benchmark_evaluation(
+                agent=agent,
+                eval_env=eval_env,
+                writer=tensorboard_writer,
+                evaluations_dir=evaluations_dir,
+                lsm_price=mean_lsm_price,
+                parquet_writer=parquet_writer,
+                eval_batch_size=args.eval_batch_size,
+                profile=args.profile_eval,
+            )
+            eval_env.close()
+            if parquet_writer:
+                parquet_writer.stop()
+                print("✅ AsyncParquetWriter stopped - all Parquet files written")
+            TrainingManager.timer(t0, time.time())
+            return
+
+        if args.saved_model is None:
+            # Run training
+            run_training(
+                agent=agent,
+                train_env=train_env,
+                eval_env=eval_env,
+                tensorboard_writer=tensorboard_writer,
+                args=args,
+                action_low=action_low,
+                action_high=action_high,
+                evaluations_dir=evaluations_dir,
+                lsm_price=mean_lsm_price,
+                parquet_writer=parquet_writer,
+            )
+
+        print("\n" + "=" * 60)
+        print("TRAINING COMPLETED")
+        print("=" * 60)
+
+        t1 = time.time()
+        TrainingManager.timer(t0, t1)
+
+    finally:
+        # Clean up environments
+        if 'eval_env' in locals():
+            eval_env.close()
+        if 'train_env' in locals():
+            train_env.close()
+        
+        # Stop the Parquet writer and wait for any pending writes
         if parquet_writer:
             parquet_writer.stop()
             print("✅ AsyncParquetWriter stopped - all Parquet files written")
-        TrainingManager.timer(t0, time.time())
-        return
 
-    if args.saved_model is None:
-        # Run training
-        run_training(
-            agent=agent,
-            train_env=train_env,
-            eval_env=eval_env,
-            tensorboard_writer=tensorboard_writer,
-            args=args,
-            action_low=action_low,
-            action_high=action_high,
-            evaluations_dir=evaluations_dir,
-            lsm_price=mean_lsm_price,
-            parquet_writer=parquet_writer,
-        )
-
-    print("\n" + "=" * 60)
-    print("TRAINING COMPLETED")
-    print("=" * 60)
-
-    t1 = time.time()
-    eval_env.close()
-    
-    # Stop the Parquet writer and wait for any pending writes
-    if parquet_writer:
-        parquet_writer.stop()
-        print("✅ AsyncParquetWriter stopped - all Parquet files written")
-    
-    TrainingManager.timer(t0, t1)
+        # Close TensorBoard writer
+        if 'tensorboard_writer' in locals():
+            tensorboard_writer.close()
 
     # Save trained model (handle compiled models)
     try:
@@ -1527,4 +1549,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()

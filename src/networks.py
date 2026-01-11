@@ -144,6 +144,104 @@ def _init_linear(layer: nn.Linear, *, method: str, gain: float) -> None:
         raise ValueError(f"Unsupported init_method '{method}'. Choose from 'orthogonal' or 'he'.")
     torch.nn.init.zeros_(layer.bias)
 
+    torch.nn.init.zeros_(layer.bias)
+
+
+class RobustNormalizer(nn.Module):
+    """
+    Robust Normalization using Median and IQR (Inter-Quartile Range).
+    
+    Transformation:
+        x_hat = (x - median) / (IQR + epsilon)
+        
+    Why:
+        Standard Z-score (mean/std) is sensitive to outliers (jumps).
+        Robust statistics scale signals based on their 'typical' range,
+        preventing rare jump events from squashing the distribution of normal events.
+        
+    Args:
+        size: Number of features
+        median: Initial estimate of median (can be updated)
+        iqr: Initial estimate of IQR (can be updated)
+        clip: Optional clipping range (e.g., 10.0) to bound extreme outliers
+    """
+    def __init__(self, size: int, median: float = 0.0, iqr: float = 1.0, clip: float = 10.0):
+        super().__init__()
+        self.register_buffer("median", torch.full((size,), median, dtype=torch.float32))
+        self.register_buffer("iqr", torch.full((size,), iqr, dtype=torch.float32))
+        self.clip = clip
+        self.eps = 1e-6
+
+    def forward(self, x: Tensor) -> Tensor:
+        # Robust centering and scaling
+        x_robust = (x - self.median) / (self.iqr + self.eps)
+        if self.clip > 0:
+            x_robust = torch.clamp(x_robust, -self.clip, self.clip)
+        return x_robust
+
+
+class HHKInputLayer(nn.Module):
+    """
+    Specialized Input Normalization Layer for HHK Swing Process.
+    
+    Applies domain-specific transformations to the 9-dim state vector:
+    1. Spot Price (S_t): Log-Moneyness -> log(S_t / K)
+    2. Factors (X_t, Y_t): Robust Scaling (Median/IQR)
+    3. Time/Inventory: Pass-through (already in [0,1])
+    
+    State mapping (from swing_env.py):
+    [0]: S - K (ignored/replaced by better features)
+    [1]: Q_exercised (normalized)
+    [2]: Q_remaining (normalized)
+    [3]: T_maturity (normalized)
+    [4]: t_current (normalized)
+    [5]: S_t (Raw Spot) -> Converted to Log-Moneyness
+    [6]: X_t (OU Factor) -> Robust Scaled
+    [7]: Y_t (Jump Factor) -> Robust Scaled
+    [8]: Days since exercise (normalized)
+    """
+    def __init__(self, state_dim: int = 9, strike: float = 100.0, 
+                 x_median: float = 0.0, x_iqr: float = 1.0,
+                 y_median: float = 0.0, y_iqr: float = 1.0):
+        super().__init__()
+        self.register_buffer("strike", torch.tensor(strike, dtype=torch.float32))
+        
+        # Robust scalers for X and Y factors
+        self.x_norm = RobustNormalizer(1, median=x_median, iqr=x_iqr)
+        self.y_norm = RobustNormalizer(1, median=y_median, iqr=y_iqr)
+
+    def forward(self, state: Tensor) -> Tensor:
+        """
+        Transform state features IN-PLACE to preserve semantic order.
+        
+        Input/Output order (both 9-dim):
+        [0]: S - K          -> UNCHANGED (kept for profitability gate)
+        [1]: Q_exercised    -> UNCHANGED
+        [2]: Q_remaining    -> UNCHANGED
+        [3]: T_maturity     -> UNCHANGED
+        [4]: t_current      -> UNCHANGED
+        [5]: S_t (raw)      -> log(S_t / K) (Log-Moneyness)
+        [6]: X_t (OU)       -> Robust Scaled X
+        [7]: Y_t (Jump)     -> Robust Scaled Y
+        [8]: Days since     -> UNCHANGED
+        """
+        # Clone to avoid modifying original tensor
+        out = state.clone()
+        
+        # 1. Log-Moneyness: replace S_t at index 5
+        s_t = state[..., 5:6]
+        s_safe = torch.clamp(s_t, min=1e-4)
+        out[..., 5:6] = torch.log(s_safe / self.strike)
+        
+        # 2. Robust-scale X_t at index 6
+        out[..., 6:7] = self.x_norm(state[..., 6:7])
+        
+        # 3. Robust-scale Y_t at index 7
+        out[..., 7:8] = self.y_norm(state[..., 7:8])
+        
+        # Indices 0-4 and 8 are already normalized, pass through unchanged
+        return out
+
 
 class _RMSNorm(nn.Module):
     """Minimal RMSNorm fallback for older PyTorch builds."""
@@ -191,6 +289,7 @@ class Actor(nn.Module):
         activation: str = "silu",
         norm_type: str = "layernorm",
         init_method: str = "orthogonal",
+        input_preprocessor: Optional[nn.Module] = None,
     ) -> None:
         """Initialize the Actor network.
         
@@ -234,6 +333,7 @@ class Actor(nn.Module):
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
         self.norm_type = norm_type.lower()
         self.init_method = _normalize_init_method(init_method)
+        self.input_preprocessor = input_preprocessor
 
         layers: List[nn.Sequential] = []
         input_dim = state_size
@@ -322,6 +422,9 @@ class Actor(nn.Module):
     def forward_preact(self, state: Tensor) -> Tensor:
         """Forward pass up to the final linear layer (pre-activation outputs)."""
         x = state
+        if self.input_preprocessor is not None:
+            x = self.input_preprocessor(x)
+            
         for block in self.hidden_layers:
             x = block(x)
         return self.fc4(x)
@@ -518,6 +621,7 @@ class Critic(nn.Module):
         activation: str = "silu",
         norm_type: str = "layernorm",
         init_method: str = "orthogonal",
+        input_preprocessor: Optional[nn.Module] = None,
     ) -> None:
         """Initialize the Critic network.
         
@@ -547,6 +651,8 @@ class Critic(nn.Module):
         self._activation_factory, self._activation_gain = _build_activation(self.activation_name)
         self.norm_type = norm_type.lower()
         self.init_method = _normalize_init_method(init_method)
+        self.input_preprocessor = input_preprocessor
+        self.input_preprocessor = input_preprocessor
 
         self.state_encoder = nn.Sequential(
             nn.Linear(state_size, hidden_size, bias=True),
@@ -630,6 +736,9 @@ class Critic(nn.Module):
         Returns:
             Q-value tensor of shape (batch_size, 1)
         """
+        if self.input_preprocessor is not None:
+            state = self.input_preprocessor(state)
+            
         xs = self.state_encoder(state)
 
         x = torch.cat((xs, action), dim=1)

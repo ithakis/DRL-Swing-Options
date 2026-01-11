@@ -1,14 +1,10 @@
 #!/bin/bash
-# v53 convex cost experiment: c_cost=0.15, gamma_cost=2
+# v62 convex cost experiment: c_cost=0.15, gamma_cost=2
 args=(
-    # 8192 * 4 = 32768 training episodes total (32k)
-    # 8192 * 2 = 16384 training episodes (16k)
-    # 65k eval paths = 65536
-    # 128k eval paths = 131072
-    # 256k eval paths = 262144
-    -n_paths=65536
-    -eval_every=1024            # Evaluation frequency (episodes): >0 = periodic (includes initial eval at path 1, plus final if misaligned), -1 = end-only; 0 invalid; no-eval not supported
-    -n_paths_eval=131072         # Paths per evaluation (for stable pricing estimate)
+    # 32k training episodes
+    -n_paths=32768
+    -eval_every=1024            # Evaluation frequency (episodes)
+    -n_paths_eval=65536         # Paths per evaluation (for stable pricing estimate)
     -munchausen=0               # Disable Munchausen RL (no entropy bonus in reward)
     -nstep=1
     --per_alpha=0.1             # PER extremely soft to mimic uniform early
@@ -57,6 +53,15 @@ args=(
     --disable_csv_logging=0        # Turn off CSV outputs for this sweep
     --limit_logging_frequency=1    # Throttle per-step TensorBoard logging to shrink files
 
+    # v62 Parameters
+    --critic_warmup_episodes=1024  # Freeze actor updates for 1024 episodes (critic stabilization)
+    --adaptive_noise_scale=0.6     # Adaptive pre-squash noise to avoid saturation lock-in
+    --actor_output_activation=beta_sigmoid_3.0  # β-sigmoid (β=3.0) for softer saturation
+    --warmup_noise_fraction=0.4    # Reduce noise to 40% during critic warmup (gradual ramp to 1.0)
+    --target_noise_decay_start=20000  # Start target noise decay at episode 20k
+    --target_noise_floor=0.04      # Target noise floor after decay
+    --use_robust_normalization=1   # Robust HHK Normalization (Log-Moneyness + Median/IQR scaling)
+
     # Swing Option Contract parameters (pricing problem definition)
     --strike=1.0                 # Strike price K
     --maturity=0.0833            # Time to maturity in years (~1 month)
@@ -67,8 +72,8 @@ args=(
     --Q_max=20.0                 # Global max total volume over the contract
     --risk_free_rate=0.05        # Annual risk-free rate used for discounting
     --min_refraction_periods=0   # Cooldown periods after an exercise (0 = none)
-    --c_cost=0.15                   # Convex exercise cost coefficient (0 disables cost)
-    --gamma_cost=2               # Convex cost exponent (1 = linear cost in q)
+    --c_cost=0.15            # Convex exercise cost coefficient (0 disables cost)
+    --gamma_cost=2    # Convex cost exponent (1 = linear cost in q)
 
     # LSM benchmark controls (continuation value regression)
     --lsm_basis=chebyshev        # Basis family {power, laguerre, hermite, chebyshev}
@@ -85,15 +90,15 @@ args=(
     --mu_J=0.3                   # Mean jump size (relative jump magnitude)
 )
 
-python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_11" -seed 11
-python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_12" -seed 12
-python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_13" -seed 13
-python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_14" -seed 14
-python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_15" -seed 15
+# Parallel execution: seeds 11, 12, 13
+python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_11" -seed 11 &
+python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_12" -seed 12 &
+python run.py "${args[@]}" -name "SwingOption_20_c0.15_gamma2_13" -seed 13 &
+wait
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-# bash SwingOption_20_c0.15_gamma2.sh
+# bash "Convex Cost Experiments/SwingOption_20_c0.15_gamma2.sh"
 
 ## TensorBoard launch command:
 # tensorboard --logdir=runs \
