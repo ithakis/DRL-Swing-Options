@@ -143,14 +143,10 @@ args=(
 )
 
 # Run multiple seeds for robustness (no-cost regime)
-python run.py "${args[@]}" -name "SwingOption_20_v61_1_11" -seed 11 &
-python run.py "${args[@]}" -name "SwingOption_20_v61_1_12" -seed 12 &
-python run.py "${args[@]}" -name "SwingOption_20_v61_1_13" -seed 13
-
-# Run Convex Cost variants (CC)
-python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_11" -seed 11 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_12" -seed 12 --c_cost 0.15 --gamma_cost 2.0 &
-python run.py "${args[@]}" -name "SwingOption_20_v61CC_1_13" -seed 13 --c_cost 0.15 --gamma_cost 2.0
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_11" -seed 11 & pids=($!)
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_12" -seed 12 & pids+=($!)
+python run.py "${args[@]}" -name "SwingOption_20_v61_1_13" -seed 13 & pids+=($!)
+for p in "${pids[@]}"; do wait "$p" || exit 1; done
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11

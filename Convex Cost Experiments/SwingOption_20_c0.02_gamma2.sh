@@ -91,10 +91,23 @@ args=(
 )
 
 # Parallel execution: seeds 11, 12, 13
+pids=()
 python run.py "${args[@]}" -name "SwingOption_20_c0.02_gamma2_11" -seed 11 &
+pids+=($!)
 python run.py "${args[@]}" -name "SwingOption_20_c0.02_gamma2_12" -seed 12 &
+pids+=($!)
 python run.py "${args[@]}" -name "SwingOption_20_c0.02_gamma2_13" -seed 13 &
-wait
+pids+=($!)
+
+# Wait for all background processes and collect exit codes
+exit_code=0
+for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+        exit_code=1
+    fi
+done
+
+exit $exit_code
 
 ## To activate the correct environment, run:
 # cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
