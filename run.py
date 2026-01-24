@@ -39,7 +39,6 @@ except Exception:  # pragma: no cover - SciPy is optional
 
 from src.agent import Agent
 from src.agent_evaluation import benchmark_evaluation, evaluate_agent
-from src.fdm_swing_pricer import price_swing_option_fdm
 from src.lsm_swing_pricer import fit_lsm_estimators, price_swing_option_lsm_oos
 
 # Import LSM pricer for benchmarking
@@ -1335,13 +1334,6 @@ def main():
         csv_path=lsm_parquet_path,
     )
     print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")
-    # Price with Quantlib - Finite Differences Method
-    fdm_price = price_swing_option_fdm(
-        contract=swing_contract,
-        stochastic_process_params=stochastic_process_params,
-        tGrid=25, xGrid=25, yGrid=50
-    )
-    print(f"Quantlib's Finite Differences Method Price: {fdm_price:.4f}")
     print('\n\n\n\n' + '=' * 60)
 
     ############################################################################################
