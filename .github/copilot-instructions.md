@@ -119,3 +119,4 @@ tensorboard --logdir=runs --load_fast=true
 2. **Reward includes discounting**: Use `gamma = 1` in D4PG
 3. **LSM uses out-of-sample evaluation**: Separate train/test datasets
 4. **Pre-squash noise**: Exploration noise added before tanh01/beta-sigmoid squashing
+5. **LSM convex cost caveat**: The terminal step must gate on **net profitability** (`payoff_net > 0`), not just ITM (`payoff_gross > 0`). With `c > 0`, exercising at the last step can be unprofitable even when in-the-money.

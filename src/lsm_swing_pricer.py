@@ -70,15 +70,18 @@ def _lsm_core_ols(prices, strike, qmax, R, cooldown, cost_coeff, cost_exp, df, p
     # Terminal step
     payoff_T_gross = qmax * np.maximum(prices[:, -1] - strike, 0.0)
     payoff_T_net = payoff_T_gross - exercise_cost_qmax
-    itm_T = payoff_T_gross > 0.0
+    profitable_T = payoff_T_net > 0.0  # gate on NET profitability, not just ITM
 
     for c in range(cooldown + 1):
         for r in range(1, R + 1):
             if c == 0:
-                values[c, r] = payoff_T_net
+                # Only exercise at terminal if net payoff is positive
                 for i in range(n_paths):
-                    if itm_T[i]:
+                    if profitable_T[i]:
+                        values[c, r, i] = payoff_T_net[i]
                         exercise[c, r, i, n_steps - 1] = True
+                    else:
+                        values[c, r, i] = 0.0
             else:
                 values[c, r] = 0.0
 
@@ -400,13 +403,14 @@ def price_swing_option_lsm(
 
         payoff_T_gross = qmax * np.maximum(prices[:, -1] - strike, 0.0)
         payoff_T_net = payoff_T_gross - exercise_cost_qmax
-        itm_T = payoff_T_gross > 0.0
+        profitable_T = payoff_T_net > 0.0  # gate on NET profitability, not just ITM
         # Terminal step: can exercise only if cooldown state c==0 and r>=1
         for c in range(cooldown + 1):
             for r in range(1, R + 1):
                 if c == 0:
-                    values[c, r] = payoff_T_net
-                    exercise[c, r, itm_T, n_steps - 1] = True
+                    # Only exercise at terminal if net payoff is positive
+                    values[c, r] = np.where(profitable_T, payoff_T_net, 0.0)
+                    exercise[c, r, profitable_T, n_steps - 1] = True
                 else:
                     # Cannot exercise at terminal if in cooldown; value is zero (no future)
                     values[c, r] = 0.0
@@ -588,9 +592,10 @@ def fit_lsm_estimators(
     values = np.zeros((cooldown + 1, rights + 1, n_paths), dtype=np.float64)
     payoff_T_gross = qmax * np.maximum(prices[:, -1] - strike, 0.0)
     payoff_T_net = payoff_T_gross - exercise_cost_qmax
+    profitable_T = payoff_T_net > 0.0  # gate on NET profitability
     for c in range(cooldown + 1):
         for r in range(1, rights + 1):
-            values[c, r] = payoff_T_net if c == 0 else 0.0
+            values[c, r] = np.where(profitable_T, payoff_T_net, 0.0) if c == 0 else 0.0
 
     betas_keep = np.zeros((n_steps - 1, cooldown + 1, rights + 1, poly_degree + 1), dtype=np.float64)
     betas_ex = np.zeros_like(betas_keep)
@@ -675,12 +680,13 @@ def price_swing_option_lsm_oos(
 
     payoff_T_gross = qmax * np.maximum(prices[:, -1] - strike, 0.0)
     payoff_T_net = payoff_T_gross - exercise_cost_qmax
-    itm_T = payoff_T_gross > 0.0
+    profitable_T = payoff_T_net > 0.0  # gate on NET profitability, not just ITM
     for c in range(cooldown + 1):
         for r in range(1, rights + 1):
             if c == 0:
-                values[c, r] = payoff_T_net
-                exercise[c, r, itm_T, n_steps - 1] = True
+                # Only exercise at terminal if net payoff is positive
+                values[c, r] = np.where(profitable_T, payoff_T_net, 0.0)
+                exercise[c, r, profitable_T, n_steps - 1] = True
             else:
                 values[c, r] = 0.0
 

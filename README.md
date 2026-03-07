@@ -76,6 +76,8 @@ With **convex exercise costs** (cost = c · q^γ, where γ > 1), the optimal pol
 | Convex costs | Native support | Requires modification |
 | Computation | Train once, fast inference | Re-solve per path |
 
+> **⚠️ LSM with convex costs**: When implementing LSM for swing options with convex exercise costs (`c > 0`, `γ > 1`), the terminal time step must gate exercises on **net profitability** (`payoff - cost > 0`), not just in-the-money status (`payoff > 0`). Failing to do so causes unprofitable exercises at the last step, undervaluing the option.
+
 ---
 
 ## The Algorithm

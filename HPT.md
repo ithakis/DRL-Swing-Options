@@ -1,4 +1,4 @@
-# Hyperparameter Tuning Journey (v1 → v62)
+# Hyperparameter and Algorithmic Tuning Journey (v1 → v62)
 
 A comprehensive record of algorithmic evolution for **D4PG-based swing option pricing** using the Hambly-Howison-Kluge (HHK) stochastic process.
 
@@ -527,7 +527,8 @@ else:  # Convex costs (continuous optimal)
 | Disable actor gate | v62 | ⚠️ | Works for non-CC, fails for CC |
 | RMSNorm | v45 | ❌ | Increases TD tail risk |
 | Remove clipping | v44 | ❌ | Clipping essential for stability |
+| LSM terminal step | — | ✅ | Gate on net profitability (`payoff_net > 0`), not ITM, when `c > 0` |
 
 ---
 
-*Document last updated: v62 (January 2026)*
+*Document last updated: v62 (March 2026)*

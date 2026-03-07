@@ -1,0 +1,289 @@
+@article{Jones2003TheDynamics,
+  title={The dynamics of stochastic volatility: evidence from underlying and options markets},
+  author={Jones, Christopher S},
+  journal={Journal of econometrics},
+  volume={116},
+  number={1-2},
+  pages={181--224},
+  year={2003},
+  publisher={Elsevier}
+}
+@article{hestonModel,
+  title={A closed-form solution for options with stochastic volatility with applications to bond and currency options},
+  author={Heston, Steven L},
+  journal={The review of financial studies},
+  volume={6},
+  number={2},
+  pages={327--343},
+  year={1993},
+  publisher={Oxford University Press}
+}
+1-3 Classical Solutions ========================================================================
+@article{ccr,
+  title={Option pricing: A simplified approach},
+  author={Cox, John C and Ross, Stephen A and Rubinstein, Mark},
+  journal={Journal of financial Economics},
+  volume={7},
+  number={3},
+  pages={229--263},
+  year={1979},
+  publisher={Elsevier}
+}
+@article{BlackScholes1973,
+  title={The Pricing of Options and Corporate Liabilities},
+  author={Black, Fischer and Scholes, Myron},
+  journal={Journal of Political Economy},
+  volume={81},
+  number={3},
+  pages={637--654},
+  year={1973},
+  publisher={The University of Chicago Press},
+  doi={10.1086/260062}
+}
+@article{FDM_american,
+ title = {Finite Difference Methods and Jump Processes Arising in the Pricing of Contingent Claims: A Synthesis},
+ author = {Michael J. Brennan and Eduardo S. Schwartz},
+ ISSN = {00221090, 17566916},
+ URL = {http://www.jstor.org/stable/2330152},
+ journal = {The Journal of Financial and Quantitative Analysis},
+ number = {3},
+ pages = {461--474},
+ publisher = {Cambridge University Press},
+ urldate = {2024-04-01},
+ volume = {13},
+ year = {1978}
+}
+General DRL ========================================================================
+@article{DRL_1,
+  title={Playing atari with deep reinforcement learning},
+  author={Mnih, Volodymyr and Kavukcuoglu, Koray and Silver, David and Graves, Alex and Antonoglou, Ioannis and Wierstra, Daan and Riedmiller, Martin},
+  journal={arXiv preprint arXiv:1312.5602},
+  year={2013}
+}
+@article{DRL_2,
+  title={Continuous control with deep reinforcement learning},
+  author={Lillicrap, Timothy P and Hunt, Jonathan J and Pritzel, Alexander and Heess, Nicolas and Erez, Tom and Tassa, Yuval and Silver, David and Wierstra, Daan},
+  journal={arXiv preprint arXiv:1509.02971},
+  year={2015}
+}
+@article{DRL_3,
+  title={Distributed distributional deterministic policy gradients},
+  author={Barth-Maron, Gabriel and Hoffman, Matthew W and Budden, David and Dabney, Will and Horgan, Dan and Tb, Dhruva and Muldal, Alistair and Heess, Nicolas and Lillicrap, Timothy},
+  journal={arXiv preprint arXiv:1804.08617},
+  year={2018}
+}
+@inproceedings{DR_4,
+  title={Addressing function approximation error in actor-critic methods},
+  author={Fujimoto, Scott and Hoof, Herke and Meger, David},
+  booktitle={International conference on machine learning},
+  pages={1587--1596},
+  year={2018},
+  organization={PMLR}
+}
+
+DRL Papers ========================================================================
+@article{DH_01,
+   title={Deep Hedging of Derivatives Using Reinforcement Learning},
+   volume={3},
+   ISSN={2640-3943},
+   url={http://dx.doi.org/10.3905/jfds.2020.1.052},
+   DOI={10.3905/jfds.2020.1.052},
+   number={1},
+   journal={The Journal of Financial Data Science},
+   publisher={With Intelligence LLC},
+   author={Cao, Jay and Chen, Jacky and Hull, John and Poulos, Zissis},
+   year={2020},
+   month=dec, pages={10–27} }
+
+@article{DH_1,
+  title={Gamma and vega hedging using deep distributional reinforcement learning},
+  author={Cao, Jay and Chen, Jacky and Farghadani, Soroush and Hull, John and Poulos, Zissis and Wang, Zeyu and Yuan, Jun},
+  journal={Frontiers in Artificial Intelligence},
+  volume={6},
+  pages={1129370},
+  year={2023},
+  publisher={Frontiers}
+}
+@article{DH_2,
+  title={Empirical deep hedging},
+  author={Mikkil{\"a}, Oskari and Kanniainen, Juho},
+  journal={Quantitative Finance},
+  volume={23},
+  number={1},
+  pages={111--122},
+  year={2023},
+  publisher={Taylor \& Francis}
+}
+
+@article{DH_3,
+  title={Hedging using reinforcement learning: Contextual k-armed bandit versus Q-learning},
+  author={Cannelli, Loris and Nuti, Giuseppe and Sala, Marzio and Szehr, Oleg},
+  journal={The Journal of Finance and Data Science},
+  volume={9},
+  pages={100101},
+  year={2023},
+  publisher={Elsevier}
+}
+
+@misc{DH_A,
+      title={Hedging {American} Put Options with Deep Reinforcement Learning}, 
+      author={Reilly Pickard and Finn Wredenhagen and Julio De Jesus and Mario Schlener and Yuri Lawryshyn},
+      year={2024},
+      eprint={2405.06774},
+      archivePrefix={arXiv},
+      primaryClass={q-fin.RM},
+      url={https://arxiv.org/abs/2405.06774}, 
+}
+
+@Article{DH_R,
+AUTHOR = {Pickard, Reilly and Lawryshyn, Yuri},
+TITLE = {Deep Reinforcement Learning for Dynamic Stock Option Hedging: A Review},
+JOURNAL = {Mathematics},
+VOLUME = {11},
+YEAR = {2023},
+NUMBER = {24},
+ARTICLE-NUMBER = {4943},
+URL = {https://www.mdpi.com/2227-7390/11/24/4943},
+ISSN = {2227-7390},
+ABSTRACT = {This paper reviews 17 studies addressing dynamic option hedging in frictional markets through Deep Reinforcement Learning (DRL). Specifically, this work analyzes the DRL models, state and action spaces, reward formulations, data generation processes and results for each study. It is found that policy methods such as DDPG are more commonly employed due to their suitability for continuous action spaces. Despite diverse state space definitions, a lack of consensus exists on variable inclusion, prompting a call for thorough sensitivity analyses. Mean-variance metrics prevail in reward formulations, with episodic return, VaR and CvaR also yielding comparable results. Geometric Brownian motion is the primary data generation process, supplemented by stochastic volatility models like SABR (stochastic alpha, beta, rho) and the Heston model. RL agents, particularly those monitoring transaction costs, consistently outperform the Black–Scholes Delta method in frictional environments. Although consistent results emerge under constant and stochastic volatility scenarios, variations arise when employing real data. The lack of a standardized testing dataset or universal benchmark in the RL hedging space makes it difficult to compare results across different studies. A recommended future direction for this work is an implementation of DRL for hedging American options and an investigation of how DRL performs compared to other numerical American option hedging methods.},
+DOI = {10.3390/math11244943}
+}
+
+@article{heston_sim,
+  title={Efficient simulation of the {Heston} stochastic volatility model},
+  author={Andersen, Leif BG},
+  journal={Available at SSRN 946405},
+  year={2007}
+}
+
+@article{MCS_og,
+  title={{Unconditional stability of second-order ADI schemes applied to multi-dimensional diffusion equations with mixed derivative terms}},
+  author={In't Hout, KJ and Welfert, BD},
+  journal={Applied Numerical Mathematics},
+  volume={59},
+  number={3-4},
+  pages={677--692},
+  year={2009},
+  publisher={Elsevier}
+}
+
+@incollection{cox2005theory,
+  title={A theory of the term structure of interest rates},
+  author={Cox, John C and Ingersoll Jr, Jonathan E and Ross, Stephen A},
+  booktitle={Theory of valuation},
+  pages={129--164},
+  year={2005},
+  publisher={World Scientific}
+}
+
+@book{hestonBookVBA,
+  title={{The heston model and its extensions in VBA}},
+  author={Rouah, Fabrice D},
+  year={2015},
+  publisher={John Wiley \& Sons}
+}
+
+@book{hestonBookMatlab,
+  title={{The Heston model and its extensions in Matlab and C}},
+  author={Rouah, Fabrice D},
+  year={2013},
+  publisher={John Wiley \& Sons}
+}
+
+@article{edwards2015numerical,
+  title={Numerical and Analytic Methods in Option Pricing},
+  author={Edwards, Dexter},
+  journal={Overleaf},
+  year={2015},
+  note={Available at \url{https://www.overleaf.com/articles/numerical-and-analytic-methods-in-option-pricing/rwpzvzwksgrc}},
+  license={Creative Commons CC BY 4.0}
+}
+
+@misc{hestonADI,
+      title={{ADI finite difference schemes for option pricing in the Heston model with correlation}}, 
+      author={K. J. in 't Hout and S. Foulon},
+      year={2011},
+      eprint={0811.3427},
+      archivePrefix={arXiv},
+      primaryClass={math.NA},
+      url={https://arxiv.org/abs/0811.3427}, 
+}
+
+@misc{SABRshortcommings,
+      title={{Proof of non-convergence of the short-maturity expansion for the SABR model}}, 
+      author={Alan L. Lewis and Dan Pirjol},
+      year={2021},
+      eprint={2107.12439},
+      archivePrefix={arXiv},
+      primaryClass={q-fin.MF},
+      url={https://arxiv.org/abs/2107.12439}, 
+}
+
+@misc{Tsoskounoglou2024,
+  author    = {Alexander Tsoskounoglou},
+  title     = {{Simulating the {H}eston model with the Quadratic Exponential scheme}},
+  journal   = {Medium},
+  year      = {2024},
+  url      = {https://medium.com/@alexander.tsoskounoglou/simulating-the-heston-model-with-quadratic-exponential-50cf2b1366b5},
+  note      = {Accessed: 2025-02-28}
+}
+
+@mastersthesis{tsoskounoglou2025msc,
+  author       = {Alexander Tsoskounoglou},
+  title        = {Dynamic Higher-Order Hedging with DRL: Risk and Cost Optimization for American Options},
+  school       = {University of Amsterdam},
+  year         = {2025},
+  url          = {https://dspace.uba.uva.nl/server/api/core/bitstreams/11c39c60-0f3e-41fc-a85a-561cef3184c7/content},
+  note         = {Available online}
+}
+
+
+
+% Heston DRL papers 
+%=================================================================================
+@article{buhler2019deep,
+  title={Deep Hedging},
+  author={B{\"u}hler, Hans and Gonon, Lukas and Teichmann, Josef and Wood, Ben},
+  journal={Quantitative Finance},
+  volume={19},
+  number={8},
+  pages={1271--1291},
+  year={2019},
+  publisher={Taylor \& Francis},
+  doi={10.1080/14697688.2019.1571683},
+  url={https://arxiv.org/abs/1802.03042}
+}
+
+@article{giurca2021delta,
+  title={Delta Hedging of Derivatives Using Deep Reinforcement Learning},
+  author={Giurca, Alexandru and Borovkova, Svetlana},
+  journal={SSRN Electronic Journal},
+  year={2021},
+  publisher={Elsevier},
+  doi={10.2139/ssrn.3847272},
+  url={https://ssrn.com/abstract=3847272}
+}
+
+@inproceedings{murray2022deep,
+  title={Deep Hedging: Continuous Reinforcement Learning for Hedging of General Portfolios across Multiple Risk Aversions},
+  author={Murray, Phillip and Wood, Ben and B{\"u}hler, Hans and Wiese, Magnus and Pakkanen, Mikko},
+  booktitle={Proceedings of the Third ACM International Conference on AI in Finance},
+  pages={1--9},
+  year={2022},
+  organization={ACM},
+  doi={10.1145/3533271.3561731},
+  url={https://dl.acm.org/doi/10.1145/3533271.3561731}
+}
+
+@article{zheng2023option,
+  title={Option Dynamic Hedging Using Reinforcement Learning},
+  author={Zheng, Luyang and Liu, Jiajun and Wang, Yifan and Zhang, Junyi and Li, Xiaowei},
+  journal={Journal of Financial Data Science},
+  volume={5},
+  number={2},
+  pages={44--57},
+  year={2023},
+  publisher={With Intelligence LLC},
+  doi={10.3905/jfds.2022.1.097},
+  url={https://jfds.pm-research.com/content/5/2/44}
+}
