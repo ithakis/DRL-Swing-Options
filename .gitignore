@@ -218,6 +218,7 @@ tb_logs/
 
 # Data files
 *.csv
+!Jupyter Notebooks/*.csv
 *.json
 *.parquet
 *.feather
