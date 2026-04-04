@@ -5,23 +5,16 @@
 \usepackage{algorithm, algpseudocode}
 \usepackage{graphicx}
 \usepackage{adjustbox}
-\usepackage{xcolor}
 \usepackage{booktabs, tabularx, multirow}
 \usepackage{enumitem}
 \usepackage{ragged2e}
-\usepackage{microtype} % Added for better typography
+\usepackage{microtype}
 \setlist{nosep}
 
-% Prevent widow and orphan lines
 \widowpenalty=10000
 \clubpenalty=10000
 
 \newcommand*\D{\mathop{}\!\mathrm{d}}
-\definecolor{darkblue}{RGB}{0,0,139}
-\newcolumntype{B}{>{\bfseries\textcolor{darkblue}}c}
-\newcolumntype{C}{>{\bfseries\textcolor{darkblue}}c}
-
-% Stop-gradient operator for STE
 \DeclareMathOperator{\sg}{sg}
 
 \begin{document}
@@ -55,419 +48,477 @@
 
 \affiliation[3]{%
   organization={Korteweg-de Vries Institute for Mathematics, University of Amsterdam},
-  addressline={Science Park 105–107},
+  addressline={Science Park 105-107},
   city={Amsterdam},
   postcode={1098 XG},
   country={The Netherlands}
 }
 
-% Abstract
 \begin{abstract}
-We present a deep reinforcement learning framework for valuing swing options in electricity markets whose spot dynamics exhibit seasonality, mean reversion, and spike risk. We formulate the swing contract as a continuous-action stochastic control problem with volume constraints, refraction periods, and convex exercise costs. The agent observes a nine-dimensional Markovian state comprising price factors, inventory status, and contract progress, and learns optimal exercise quantities using a novel D4PG algorithm enhanced with a \emph{profitability-gated actor}. This gate enforces non-negative immediate payoffs via a hard projection coupled with a straight-through estimator, enabling gradient-based learning while guaranteeing constraint satisfaction. Our approach eliminates the need for grid-based dynamic programming and density approximations, enabling scalability to high-dimensional market models and complex contractual features. Numerical results demonstrate that the learned policies significantly outperform Least-Squares Monte Carlo (LSM) benchmarks under convex exercise costs, with relative improvements exceeding 60\% in strongly convex regimes where interior optima arise.
+We study the valuation of electricity swing options whose spot prices exhibit seasonality, mean reversion, and spikes. Price dynamics follow the Hambly--Howison--Kluge (HHK) model, and the contract is cast as a finite-horizon stochastic control problem with continuous exercise quantities, a cumulative volume cap, and convex exercise costs. We propose a deterministic actor--critic method whose profitability-gated actor clips candidate exercises to quantities with non-negative immediate payoff while preserving gradient flow via a straight-through estimator. The method avoids state-space discretisation and operates on a nine-dimensional Markov state combining market factors with contract bookkeeping variables. Numerical experiments against a bang-bang least-squares Monte Carlo baseline show that the learned policy is competitive under linear costs and achieves materially higher values when convex costs induce interior exercise decisions.
 \end{abstract}
 
 \begin{keywords}
-Deep Reinforcement Learning \sep Swing Options \sep Jump-Diffusion Models \sep Convex Transaction Costs \sep Profitability Gate \sep D4PG
+Deep Reinforcement Learning \sep Swing Options \sep Jump-Diffusion Models \sep Convex Exercise Costs \sep Profitability Gate \sep Actor--Critic Methods
 \end{keywords}
 
 \maketitle
 
 \section{Introduction}
-\label{Introduction}
+\label{sec:introduction}
 
-Electricity markets display distinctive features such as non-storability, strong seasonality, abrupt demand-supply imbalances and short-lived price spikes. These characteristics lead to spot price dynamics that differ fundamentally from those in traditional financial markets. A large part of the literature therefore models electricity prices with mean-reverting diffusions augmented by jump components. Early two-factor Gaussian models were introduced by~\cite{lucia2002electricity}, while~\cite{cartea2005pricing} incorporated jumps to better capture extreme movements. A major refinement was provided by~\cite{Hambly2009}, who specified the log spot price as the sum of a seasonal function, an Ornstein-Uhlenbeck process and a rapidly mean-reverting jump component. This model captures both typical price movements and spike behaviour while retaining analytical tractability through transform methods.
+Electricity markets display distinctive features such as non-storability, pronounced seasonality, abrupt demand--supply imbalances, and short-lived price spikes. These characteristics lead to spot dynamics that differ materially from those encountered in traditional financial markets. A substantial literature therefore models electricity prices using mean-reverting diffusions augmented by jump components. Early two-factor Gaussian models were introduced by~\cite{lucia2002electricity}, while~\cite{cartea2005pricing} incorporated jumps to capture extreme movements. A major refinement was provided by~\cite{Hambly2009}, who specified the log spot price as the sum of a seasonal component, an Ornstein--Uhlenbeck factor, and a rapidly mean-reverting spike factor. This model captures both ordinary price fluctuations and transient spikes while remaining sufficiently tractable for calibration and valuation.
 
-Swing options are central to gas and power markets because they grant the holder flexible rights to purchase energy subject to daily and cumulative constraints. Their valuation is considerably more involved than that of European-style derivatives, since the holder repeatedly decides how much to exercise at each decision time. Classical valuation approaches include tree and grid-based dynamic programming~\cite{jaillet2004valuation}, Monte-Carlo regression or dual formulations~\cite{meinshausen2004monte,carmona2004swing} and analytically tractable special cases. These approaches can be accurate but face limitations when the underlying model contains multiple stochastic factors, jump components or complex contractual features. In the jump-diffusion model from~\cite{Hambly2009}, for example, swing pricing requires a two-dimensional grid over the diffusive and jump components and the transition density of the spike process must be approximated. The computational cost increases rapidly with the dimensionality of the state space, illustrating the classical curse of dimensionality.
+Swing options are central in gas and power markets because they grant the holder repeated rights to purchase energy subject to volume and operational constraints. Their valuation is substantially more involved than that of European-style derivatives, since the holder repeatedly decides how much to exercise at each decision time. Classical approaches include tree and grid-based dynamic programming~\cite{jaillet2004valuation}, Monte Carlo regression methods~\cite{longstaff2001valuing,meinshausen2004monte}, dual or multiple-stopping formulations~\cite{carmona2008swing}, and analytically tractable special cases. These methods can be accurate, but they become increasingly cumbersome when the underlying model contains multiple stochastic factors, jump components, and non-trivial contractual constraints.
 
-Reinforcement learning and neuro-dynamic programming~\cite{bertsekas1996neuro,sutton1998reinforcement} provide an attractive alternative to grid-based dynamic programming. Recent advances in financial applications include model-based and model-free hedging~\cite{halperin2017qlbs,buehler2019deephedging}, optimal stopping~\cite{becker2019deepoptimalstopping} or both~\cite{tsoskounoglou2025higherorder}. These methods are well suited to swing options because the exercise decision is naturally continuous, the horizon is long and the contractual constraints are easily incorporated through the design of the state and reward.
+Reinforcement learning and neuro-dynamic programming~\cite{bertsekas1996neuro,sutton1998reinforcement} offer an attractive alternative to explicit state-space discretisation. Recent financial applications include deep hedging and related control problems~\cite{halperin2017qlbs,buehler2019deephedging,becker2019deepoptimalstopping,tsoskounoglou2025higherorder} applied deep RL to multi-exercise option pricing. Swing contracts are a natural testbed for such methods because the exercise decision is continuous, the horizon is finite but non-trivial, and the contract state can be embedded directly into the Markov state seen by the agent.
 
-In this paper we propose a deep reinforcement learning method for pricing swing options under jump-diffusion models with convex exercise costs. Our main contributions are:
+In this paper we formulate swing-option valuation under the HHK model as a finite-horizon Markov decision process and solve the resulting control problem with a deterministic actor--critic algorithm. The focus is on contracts with optional exercise, a cumulative volume cap, and convex exercise costs, since convexity destroys the bang-bang structure that simplifies many classical implementations. Our main contributions are:
 \begin{enumerate}
-    \item A \textbf{profitability-gated actor architecture} that projects proposed exercise quantities onto the feasible region ensuring non-negative immediate payoffs, while preserving gradient flow via a straight-through estimator.
-    \item A comprehensive \textbf{nine-dimensional state representation} capturing spot price factors, inventory status, and contract progress under the HHK model.
-    \item An \textbf{exploration strategy} combining pre-squash Gaussian noise with critic warmup, enabling effective learning in continuous action spaces with convex cost structures.
-    \item Extensive \textbf{numerical experiments} demonstrating that RL significantly outperforms LSM when exercise costs are convex, with improvements exceeding 60\% under strong convexity.
+    \item a \textbf{profitability-gated actor} that clips proposed exercises to quantities with non-negative immediate payoff while preserving gradient flow through a straight-through estimator;
+    \item a \textbf{nine-dimensional state representation} that combines HHK market factors with contract bookkeeping variables in a Markovian input to the policy and value networks;
+    \item a \textbf{deterministic actor--critic training procedure} with prioritized replay, target smoothing, and pre-squash exploration noise tailored to continuous exercise decisions; and
+    \item a set of \textbf{numerical experiments} showing how the learned policy compares with a reduced-state bang-bang LSM baseline across a range of convex cost specifications.
 \end{enumerate}
 
-Our framework therefore connects classical stochastic modelling of electricity markets with modern reinforcement learning and provides a scalable method for valuing flexible energy contracts in environments characterised by volatility, spikes and intricate contractual design.
-
-\clearpage
+The remainder of the paper is organised as follows. Section~\ref{sec:market_contract} introduces the HHK price model and the swing-contract specification used throughout the manuscript. Section~\ref{sec:classical_methods} summarises the classical dynamic-programming perspective that motivates the reinforcement-learning approach. Section~\ref{sec:rl_formulation} presents the Markov decision process, actor--critic architecture, and profitability gate. Section~\ref{sec:experiments} reports numerical results, and Section~\ref{sec:conclusion} concludes.
 
 \section{Market and Contract Framework}
+\label{sec:market_contract}
 
-\subsection{Electricity Spot Price Dynamics: The HHK Model}
+\subsection{Electricity Spot Price Dynamics: the HHK Model}
 
-Electricity spot prices exhibit strong mean reversion, pronounced seasonality and sudden short-lived price spikes caused by supply shortages or unexpected outages. To capture these features we adopt the model of \cite{Hambly2009}, which specifies the logarithm of the spot price as the sum of a deterministic seasonal component, a diffusive mean-reverting factor and a rapidly mean-reverting jump component.
+We model the electricity spot price directly under a pricing measure $\mathbb{Q}$ calibrated to observed forward prices. This is standard in reduced-form energy modelling: rather than deriving a unique martingale measure from storage-based no-arbitrage arguments, one specifies a tractable pricing dynamics consistent with traded forward curves; see~\cite{lucia2002electricity,cartea2005pricing,Hambly2009}. Let $(\Omega,\mathcal{F},(\mathcal{F}_t)_{t \ge 0},\mathbb{Q})$ be a filtered probability space supporting a Brownian motion $W$ and an independent Poisson process $N$ with intensity $\lambda$.
 
-Let $S_t$ denote the spot price and define
-\begin{align}\label{eq:model}
-S_t = \exp\!\big(f(t) + X_t + Y_t\big),\end{align}
-where $f(t)$ represents deterministic seasonality and the stochastic factors $X_t$ and $Y_t$ follow
+Following~\cite{Hambly2009}, the spot price is written as
+\begin{equation}
+\label{eq:model}
+S_t = \exp\!\bigl(f(t) + X_t + Y_t\bigr),
+\end{equation}
+where $f$ is a deterministic seasonal function and the latent factors satisfy
 \begin{align}
-dX_t &= -\alpha X_t \, dt + \sigma\, dW_t, \label{eq:OU}\\
-dY_t &= -\beta Y_t \, dt + J_t\, dN_t. \label{eq:jumpOU}
+\D X_t &= -\alpha X_t \,\D t + \sigma \,\D W_t, \label{eq:OU}\\
+\D Y_t &= -\beta Y_t \,\D t + J_t \,\D N_t. \label{eq:jumpOU}
 \end{align}
-Here $W_t$ is a standard Brownian motion under the risk–neutral measure, $N_t$ is a Poisson process with constant intensity $\lambda$, and $J_t$ are iid jump sizes. Following~\cite{Hambly2009} and~\cite{cartea2005pricing}, we consider exponentially distributed jumps, $J_t \sim \mathrm{Exp}(1/\mu_J)$, which generate asymmetric and heavy-tailed spike behaviour. The parameter $\alpha>0$ governs the speed of mean reversion of the diffusive component \(X_t\), while \( \beta \gg \alpha \) ensures that spikes in \(Y_t\) decay quickly, consistent with empirical observations in power markets.
+Here $\alpha > 0$ is the mean-reversion rate of the diffusive factor $X$, $\beta > 0$ is the mean-reversion rate of the spike factor $Y$, and typically $\beta \gg \alpha$ so that spikes decay quickly. The jump sizes $(J_t)$ are i.i.d.\ and non-negative, taken to be exponentially distributed with mean $\mu_J > 0$, following~\cite{Hambly2009,cartea2005pricing}. Restricting jumps to be positive models the empirical observation that electricity price spikes are predominantly upward.
 
-The seasonal function \(f(t)\) accounts for predictable periodic structure in electricity demand and supply and may be specified, for instance, as
+The deterministic term $f(t)$ captures predictable seasonality in demand and supply. A simple illustration is
 \[
-f(t) = \log(S_0) + A \cos(2\pi t),
+f(t) = \log(S_0) + A \cos(2 \pi t),
 \]
-though more elaborate parametrisations can be used. Under this formulation, the pair $(X_t,Y_t)$ is Markovian and admits closed-form expressions for its conditional moments. In particular, the moment generating function of $ X_t + Y_t$ is available in semi-analytic form~\cite{Hambly2009}, enabling calibration to observed forward prices via the identity
+although in practice one can use richer parametrisations. In the numerical experiments of Section~\ref{sec:experiments} we set $A = 0$, so that $f(t) = \log S_0$ and the seasonal component is flat. Under~\eqref{eq:model}--\eqref{eq:jumpOU}, the pair $(X_t,Y_t)$ is Markov and the distributional quantities needed for forward-curve fitting can be expressed semi-analytically; see~\cite{Hambly2009}. In particular, one may recover the seasonal component so that the model matches observed forwards via
 \[
-F_t^{[T]} = \mathbb{E}\left[S_T \mid \mathcal{F}_t \right],
+F_t^{[T]} = \mathbb{E}^{\mathbb{Q}}[S_T \mid \mathcal{F}_t].
 \]
-and the seasonal function $f(T)$ can be recovered to ensure consistency with market forwards, following the methodology of~\cite{cartea2005pricing} and~\cite{lucia2002electricity}.
+To ensure forward-curve consistency, $f$ must absorb a convexity correction arising from the variance of $X_T$ and the moment-generating function of $Y_T$ under $\mathbb{Q}$; details are given in~\cite{Hambly2009}.
 
-The model~\eqref{eq:model} offers a balance between parsimony and realism: it captures the primary stylised features of electricity prices while remaining tractable. At the same time, its jump component makes classical grid-based dynamic programming significantly more demanding, particularly because accurate pricing requires approximations of the spike transition density. This motivates the reinforcement learning framework developed later in the paper, where the underlying dynamics can be simulated directly without requiring transition densities or discretisation of the state space.
+% P2-7: Replace Sven's red comment with an explicit justification for flat seasonality.
+The choice $A = 0$ is motivated by the short contract maturity of approximately one month used in the numerical experiments.
+Over a horizon of $T \approx 0.083$ years ($\approx 22$ trading days), the deterministic seasonal component $A\cos(2\pi t)$ changes by at most $|A|\cdot 2\pi T \approx 0.5A$, which is negligible relative to the diffusive and jump volatility for realistic values of $A$.
+Setting $A = 0$ therefore isolates the contribution of the stochastic factors $(X,Y)$ without confounding seasonal trends, and keeps the pricing problem well-suited to comparing RL with LSM on a well-understood benchmark.
+For longer-maturity contracts or seasonal calibration studies, $A > 0$ can be activated without modifying the algorithm.
+
+The HHK model provides an appealing compromise between realism and tractability. It captures the empirical features that matter most for electricity options, yet it already makes classical grid-based valuation demanding because the state space contains two latent factors and a jump component. This is precisely the regime in which simulation-based control methods become attractive.
 
 \subsection{Swing Contract Specification}
 
-Swing contracts are widely used in electricity and gas markets to provide flexible access to energy under uncertain demand and volatile spot prices. At each contractual decision time, the holder may choose how much energy to exercise, subject to both instantaneous bounds and cumulative volume restrictions. This flexibility makes swing contracts valuable but also challenging to price, as the optimal policy involves solving a multi-period stochastic control problem.
-
-We consider a discrete set of exercise dates
+We consider a finite set of exercise dates
 \[
-t_0 = 0 < t_1 < \dots < t_{n-1} < t_n, 
-\qquad 
-\Delta t = t_{i+1} - t_i,
+0 = t_0 < t_1 < \cdots < t_{n-1} < t_n = T,
+\qquad
+t_i = i \Delta t,
 \]
-and denote by \(S_t\) the electricity spot price at time \(t\). At each decision time, the holder selects an exercise quantity
+with a constant time step $\Delta t = T/n$. At each exercise date $t_i$, the holder chooses a non-negative quantity
 \[
-q_t \in [q_{\min}, q_{\max}],
+q_i \in [0,q_{\max}],
 \]
-where \(q_{\min}\) and \(q_{\max}\) represent contractual lower and upper bounds on the offtake rate. These bounds reflect operational and physical constraints such as minimum off-take requirements and maximum power delivery capacity.
-
-\paragraph{Cumulative volume constraint.}
-Over the full contract horizon, the total exercised quantity must not exceed a specified maximum:
+where $q_{\max}$ is the maximum offtake per exercise date. The cumulative exercised volume is tracked by
 \[
-\sum_{t=0}^{n-1} q_t \le Q_{\max}.
+Q_0 = 0,
+\qquad
+Q_{i+1} = Q_i + q_i,
 \]
-This cap ensures that the holder cannot exploit favourable price periods indefinitely and typically corresponds to an annual or seasonal consumption limit. The constraint introduces path dependence into the valuation problem, since remaining flexibility depends on past exercise decisions.
+and the contract imposes the cumulative cap
+\[
+Q_n = \sum_{i=0}^{n-1} q_i \le Q_{\max}.
+\]
+Throughout the reported experiments, zero exercise is always admissible. This feature is important for both the economic interpretation and the profitability arguments used later.
 
 \paragraph{Operational constraints.}
-In addition to quantity bounds and cumulative volume limitations, swing contracts may include further operational features. A commonly used restriction is a \emph{refraction period}, meaning that after exercising a strictly positive amount at time \(t\), the holder must wait a fixed number of periods before exercising again. More general constraints can also be incorporated, including ramping limits
+The framework also accommodates optional operational constraints. A refraction period of length $L \in \mathbb{N}_0$ requires the holder to wait $L$ exercise dates after any strictly positive exercise:
 \[
-|q_{t+1} - q_t| \le R,
+q_i > 0 \implies q_{i+1} = \cdots = q_{i+L} = 0,
 \]
-monthly or daily minimum consumption levels, or limits on the number of exercise rights. These features expand the feasible set of admissible strategies and further complicate classical dynamic programming approaches, especially under jump–diffusion dynamics.
-
-\paragraph{Payoff structure with convex costs.}
-Let \(K\) denote the contractual strike price. Exercising quantity \(q_t\) at time \(t\) produces the payoff
-\begin{equation}\label{eq:payoff}
-\Pi_t(q_t)
-=
-q_t \, (S_t - K)^+
- - c \, q_t^{\gamma_{\mathrm{cost}}},
-\end{equation}
-where \(c \ge 0\) is the cost coefficient and \(\gamma_{\mathrm{cost}} \ge 1\) is the cost exponent. When \(\gamma_{\mathrm{cost}} = 1\), the cost is linear in the exercise quantity. When \(\gamma_{\mathrm{cost}} > 1\), the cost is convex, penalising large exercise quantities more heavily. This convex structure captures market frictions such as transaction fees, imbalance penalties, and operational disutility arising from large changes in consumption. If \(c = 0\), the classical no-cost swing specification is recovered.
-
-\paragraph{Valuation objective.}
-Under the risk-neutral measure, the value of the swing contract is given by
+with the obvious truncation near maturity. Likewise, ramping constraints of the form
 \[
-V_0
-=
-\sup_{(q_t) \in \mathcal{Q}}
-\mathbb{E}
-\Bigg[
-\sum_{t=0}^{n-1}
-e^{-r t \Delta t}
-\, \Pi_t(q_t)
-\Bigg],
+|q_{i+1} - q_i| \le R
 \]
-where \(r\) denotes the risk-free interest rate, and \(\mathcal{Q}\) is the set of all exercise sequences satisfying the instantaneous bounds, cumulative volume restriction, and operational constraints. This formulation leads to a high-dimensional, continuous-control, multi-period optimisation problem that is difficult to solve using classical techniques such as tree or grid-based dynamic programming \cite{Hambly2009,jaillet2004valuation,meinshausen2004monte,carmona2004swing}. In subsequent sections we show how this structure can be naturally expressed as a Markov decision process suitable for solution by deep reinforcement learning.
+can be incorporated by augmenting the state. The numerical experiments in Section~\ref{sec:experiments} focus on the baseline case with zero refraction lag and no ramping constraints, but the notation below is chosen so that these features can be activated without changing the basic formulation.
 
-
-\section{Benchmark: Classical Dynamic Programming}
-
-Before introducing our reinforcement learning framework, we review the classical numerical approach for valuing swing options under the HHK model. The method, originating from \cite{Hambly2009} and closely related to the grid-based techniques of \cite{jaillet2004valuation,meinshausen2004monte,carmona2004swing}, provides an important benchmark against which we validate the performance of our deep reinforcement learning algorithm.
-
-\subsection{State Space Discretisation and Grid Construction}
-
-Under the HHK spot price model, the Markovian state consists of the diffusive factor \(X_t\), the spike factor \(Y_t\), the cumulative exercised volume \(Q_t\), and any auxiliary state variables modelling operational restrictions. Classical dynamic programming discretises the continuous state space by constructing structured grids:
-\begin{align*}
-&X_t \in \{x_1,\ldots,x_{N_X}\}, \qquad 
-Y_t \in \{y_1,\ldots,y_{N_Y}\}, \qquad\\
-&Q_t \in \{q_0,\ldots,q_{N_Q}\}.
-\end{align*}
-Even without refraction periods or ramping constraints, the two-factor HHK specification requires a two-dimensional grid for \((X,Y)\), significantly increasing complexity relative to one-factor diffusion models such as \cite{lucia2002electricity}. The grid resolution must be sufficiently fine to capture spike behaviour in the \(Y_t\) component and the mean-reverting dynamics of \(X_t\).
-
-\subsection{Transition Probabilities Under Jump-Diffusion Dynamics}
-
-The dynamic programming recursion requires the transition law of \((X_t,Y_t)\) over each time step \(\Delta t\). The diffusion component \(X_t\) has an exact Gaussian transition density, whereas the spike factor \(Y_t\) follows a mixture distribution arising from the Poisson jump process. As shown in \cite{Hambly2009}, the transition density of \(Y_t\) over \(\Delta t\) is approximated by truncating the Poisson distribution after \(K_{\max}\) jumps:
-\[
-\mathbb{P}(N_{\Delta t}=k)
-= e^{-\lambda \Delta t} \frac{(\lambda \Delta t)^k}{k!}, 
-\qquad k = 0,1,\ldots,K_{\max}.
-\]
-Conditional on the number of jumps, the distribution of \(Y_{t+\Delta t}\) admits a closed form, enabling the computation of transition probabilities to neighbouring grid points. The accuracy of this approximation depends on the grid resolution and the choice of truncation parameter \(K_{\max}\), with larger values required under high jump intensity or strong mean reversion.
-
-\subsection{Backward Dynamic Programming Recursion}
-
-Let \(V_t(z)\) denote the value function at time \(t\) evaluated at a grid point \(z = (x_i,y_j,q_k)\). The Bellman recursion takes the form
+\paragraph{Payoff with convex exercise costs.}
+Let $K$ denote the contractual strike and let $\gamma_c \ge 1$ be the cost exponent. Exercising $q_i$ units at time $t_i$ yields
 \begin{equation}
-\begin{split}
-V_t(z) = \max_{q \in \mathcal{A}(z)} \bigg[ & \Pi_t(q) + e^{-r\Delta t} \\
-& \sum_{z'} \mathbb{P}(Z_{t+\Delta t}=z' \mid Z_t=z, q_t=q)\, V_{t+\Delta t}(z') \bigg],
-\end{split}
+\label{eq:payoff}
+\Pi_i(q_i) = q_i (S_{t_i} - K)^+ - c q_i^{\gamma_c},
 \end{equation}
-where the maximisation is taken over all admissible exercise quantities \(q\) that satisfy instantaneous and cumulative constraints. The recursion is initialised with the terminal condition \(V_T \equiv 0\) and evaluated backwards. This formulation requires evaluating transition expectations at each grid point and for each possible action, leading to computational cost proportional to
+where $c \ge 0$ is the cost coefficient. The term $c q_i^{\gamma_c}$ may be interpreted as an imbalance charge, liquidity penalty, or reduced-form operational disutility. When $\gamma_c = 1$, the cost is linear and the immediate payoff is affine in $q_i$. When $\gamma_c > 1$, the cost is convex and interior optimal exercises can arise.
+
+The use of the positive part $(S_{t_i} - K)^+$ makes the contract a \emph{call-like} swing option: exercising is purely optional and the holder never pays more than the cost component $c q_i^{\gamma_c}$. This distinguishes the present formulation from take-or-pay contracts in which the per-unit payoff is $S_{t_i} - K$ (which may be negative) and minimum-volume obligations effectively enforce exercise. Our optional-exercise assumption is natural for the profitability gate introduced in Section~\ref{sec:profitability_gate} and is standard in the financial options literature~\cite{jaillet2004valuation,carmona2008swing}.
+
+\paragraph{Admissible controls and contract value.}
+Let $\mathcal{A}_i(h_i)$ denote the set of feasible exercises at time $t_i$ given the current history $h_i$, including the per-period cap, remaining cumulative volume, and any active operational constraints. An admissible policy is a sequence of $\mathcal{F}_{t_i}$-measurable decisions $(q_i)_{i=0}^{n-1}$ with $q_i \in \mathcal{A}_i(h_i)$ almost surely. The time-zero value of the swing contract is then
+\begin{equation}
+\label{eq:value0}
+V_0 = \sup_{(q_i) \in \mathcal{Q}}
+\mathbb{E}^{\mathbb{Q}}
+\biggl[
+\sum_{i=0}^{n-1} e^{-r t_i} \Pi_i(q_i)
+\biggr],
+\end{equation}
+where $\mathcal{Q}$ is the set of admissible policies and $r$ is the discount rate used under the chosen pricing measure. Since $t_i = i \Delta t$, it is convenient to write
 \[
-O(n \cdot N_X \cdot N_Y \cdot N_Q \cdot |\mathcal{A}|).
+\delta = e^{-r \Delta t},
+\qquad
+e^{-r t_i} = \delta^i.
 \]
+Equation~\eqref{eq:value0} is the finite-horizon stochastic control problem solved in the remainder of the paper.
 
-The original HHK implementation used grid sizes such as \(120 \times 60\) for \((X,Y)\), already requiring several minutes of computation for a single contract with daily exercise opportunities. As contractual complexity increases (e.g., through convex costs or operational constraints), the size of the required grid increases rapidly.
+\section{Classical Methods and Motivation}
+\label{sec:classical_methods}
 
-\subsection{Limitations of the Classical Grid Method}
+Before turning to reinforcement learning, it is useful to recall the classical dynamic-programming viewpoint for swing-option valuation under HHK dynamics. We do not implement the full HHK grid method in the numerical section below, but it provides the natural point of comparison for discussing the curse of dimensionality and motivates the simulation-based approach adopted later.
 
-Despite providing reliable benchmark valuations, the HHK grid method suffers from several structural limitations:
+\subsection{Grid-Based Dynamic Programming}
+
+Under the HHK model with contract bookkeeping variables, a Markov state can be written as
+\[
+Z_i = \bigl(X_{t_i},Y_{t_i},Q_i,\rho_i\bigr),
+\]
+where $\rho_i$ denotes any additional operational counter, for example the remaining refraction lag. A grid-based method approximates the continuous state space by structured grids
+\[
+X_{t_i} \in \{x_1,\dots,x_{N_X}\},
+\qquad
+Y_{t_i} \in \{y_1,\dots,y_{N_Y}\},
+\qquad
+Q_i \in \{q^{(0)},\dots,q^{(N_Q)}\},
+\]
+and, if required, a finite grid for the refraction state.
+
+If the action set is also discretised, the grid Bellman recursion takes the form
+\begin{equation}
+\label{eq:grid_bellman}
+V_i(z) = \max_{a \in \mathcal{A}_i(z)}
+\biggl[
+\Pi_i(a) + \delta
+\sum_{z'} P_i(z,z';a) V_{i+1}(z')
+\biggr],
+\end{equation}
+with terminal condition $V_n \equiv 0$. Here $P_i(z,z';a)$ denotes the one-step transition probability between neighbouring grid states, including both the latent-factor dynamics and the contract bookkeeping update. The diffusion factor $X$ admits an exact Gaussian transition, while the spike factor $Y$ leads to a Poisson mixture that must be approximated numerically~\cite{Hambly2009}.
+
+\subsection{Why Continuous-Control RL is Attractive}
+
+Even in the baseline HHK setting, classical methods face several structural difficulties:
 \begin{itemize}
-    \item \textbf{Curse of dimensionality.} Each additional state variable introduces a new dimension in the grid. Extensions such as stochastic volatility, fuel-spread dynamics, forecast uncertainty, or renewable generation would render the grid-based method infeasible.
-    \item \textbf{Jump dynamics.} Capturing the rapidly mean-reverting spike process requires fine grid resolution and careful handling of the truncated Poisson mixture, significantly increasing computational cost and potential numerical instability.
-    \item \textbf{Continuous control.} Swing options allow continuous exercise quantities \(q_t \in [q_{\min},q_{\max}]\), which must be discretised in grid-based methods, introducing bias and limiting resolution.
-    \item \textbf{Convex costs.} When costs are convex (\(\gamma_{\mathrm{cost}} > 1\)), interior optima arise, and the bang-bang structure exploited by LSM-style methods breaks down.
+    \item \textbf{State dimensionality.} The latent factors $(X,Y)$ already require a two-dimensional grid before contract variables are added.
+    \item \textbf{Jump dynamics.} Accurate treatment of the spike component requires either a fine grid or careful approximation of the jump mixture.
+    \item \textbf{Continuous actions.} The true control is continuous on $[0,q_{\max}]$, so grid methods must discretise the action space and thereby introduce an additional approximation.
+    \item \textbf{Convex costs.} When $\gamma_c > 1$, interior exercises are possible and the bang-bang simplifications used in some classical implementations no longer apply.
 \end{itemize}
 
-These limitations underline the need for alternative approaches that avoid state-space discretisation and do not rely on transition-density approximations. In Section~\ref{sec:rl_formulation}, we develop a reinforcement learning formulation that treats swing exercise as a continuous-control Markov decision process and solves it using a distributional actor--critic algorithm. This method scales naturally to high-dimensional settings and accommodates complex contract specifications, as confirmed by our numerical experiments.
-
+These issues motivate a simulation-based method that works directly with continuous actions and sampled trajectories rather than transition densities on a grid. The reinforcement-learning formulation developed next is designed for precisely this purpose.
 
 \section{Reinforcement Learning Formulation}
 \label{sec:rl_formulation}
 
-We now reformulate the swing option valuation problem as a continuous-control Markov decision process (MDP) and solve it using a deep reinforcement learning algorithm. This approach avoids the state-space discretisation and transition-density approximations required in classical dynamic programming, while naturally accommodating continuous exercise quantities, convex cost structures and operational constraints. Our formulation follows the principles of neuro-dynamic programming \cite{bertsekas1996neuro,sutton1998reinforcement} and leverages recent advances in distributional actor--critic methods applied to financial decision problems \cite{halperin2017qlbs,buehler2019deephedging}.
+We now cast~\eqref{eq:value0} as a finite-horizon Markov decision process. The objective remains the discounted contract value under $\mathbb{Q}$; reinforcement learning enters only as a numerical method for approximating the optimal control.
 
 \subsection{Markov Decision Process}
 \label{sec:mdp}
 
-The valuation problem described in Section~2.2 can be represented as a discrete-time MDP on the exercise grid $\{t_0,\dots,t_{n-1}\}$. At each time $t$, the agent observes the state
+At exercise time $t_i$, the agent observes a nine-dimensional state
 \begin{equation*}
 \begin{aligned}
-s_t = \Big( & \underbrace{S_t - K}_{\text{payoff}},\; \underbrace{Q^{\mathrm{used}}_t / Q_{\max}}_{\text{used frac.}},\; \underbrace{Q^{\mathrm{rem}}_t / Q_{\max}}_{\text{rem. frac.}},\; \underbrace{\tau_{\mathrm{mat}}}_{\text{time to mat.}},\; \underbrace{t/n}_{\text{progress}},\; \\
-& \underbrace{S_t}_{\text{spot}},\; \underbrace{X_t}_{\text{OU}},\; \underbrace{Y_t}_{\text{jump}},\; \underbrace{\tau_{\mathrm{ref}}}_{\text{refraction}} \Big).
+s_i = \Big(
+& \underbrace{S_{t_i} - K}_{\text{intrinsic spread}},
+\underbrace{Q_i / Q_{\max}}_{\text{used fraction}},
+\underbrace{(Q_{\max} - Q_i) / Q_{\max}}_{\text{remaining fraction}},
+\underbrace{(T - t_i)/T}_{\text{time to maturity}},
+\underbrace{i/n}_{\text{contract progress}}, \\
+& \underbrace{S_{t_i}}_{\text{spot}},
+\underbrace{X_{t_i}}_{\text{diffusive factor}},
+\underbrace{Y_{t_i}}_{\text{spike factor}},
+\underbrace{\rho_i}_{\text{steps since last exercise}}
+\Big).
 \end{aligned}
 \end{equation*}
-
-This nine-dimensional representation captures all information relevant to the exercise decision. Table~\ref{tab:state_components} details each component and its transformation for network input.
+The display above lists the raw economic quantities; Table~\ref{tab:state_components} details the preprocessing applied to each component before network ingestion (e.g., log-moneyness and robust scaling). The state contains all variables required to make the problem Markov. The inclusion of both used and remaining volume fractions is redundant from a purely mathematical viewpoint, but empirically it stabilises network training. \textcolor{red}{\textbf{Sven:} While noted as practically useful, the inclusion of redundant state variables ($Q_i/Q_{\max}$ vs $(Q_{\max}-Q_i)/Q_{\max}$, and $t_i$ vs $i/n$) is theoretically not super elegant. Worth it to reduce to a minimal sufficient basis to strengthen the theoretical presentation?}
 
 \begin{table}[htbp]
 \centering
-\caption{State representation for the swing option MDP. Components are derived from HHK dynamics and contract bookkeeping.}
+\caption{State representation for the swing-option MDP.}
 \label{tab:state_components}
 \begin{adjustbox}{max width=\linewidth}
 \begin{tabular}{clll}
 \toprule
 Index & Symbol & Description & Transformation \\
 \midrule
-0 & $S_t - K$ & Spot minus strike & Raw (for profitability gate) \\
-1 & $Q^{\mathrm{used}}_t / Q_{\max}$ & Exercised volume fraction & $[0,1]$ \\
-2 & $Q^{\mathrm{rem}}_t / Q_{\max}$ & Remaining capacity fraction & $[0,1]$ \\
-3 & $\tau_{\mathrm{mat}}$ & Normalised time to maturity & $[0,1]$ \\
-4 & $t/n$ & Contract progress & $[0,1]$ \\
-5 & $S_t$ & Raw spot price & Log-moneyness: $\log(S_t/K)$ \\
-6 & $X_t$ & OU diffusive factor & Robust-scaled (median/IQR) \\
-7 & $Y_t$ & Jump factor & Robust-scaled (median/IQR) \\
-8 & $\tau_{\mathrm{ref}}$ & Periods since last exercise & $[0,1]$ \\
+0 & $S_{t_i} - K$ & Intrinsic spread & Raw \\
+1 & $Q_i / Q_{\max}$ & Used-volume fraction & $[0,1]$ \\
+2 & $(Q_{\max} - Q_i)/Q_{\max}$ & Remaining-volume fraction & $[0,1]$ \\
+3 & $(T - t_i)/T$ & Time to maturity & $[0,1]$ \\
+4 & $i/n$ & Contract progress & $[0,1]$ \\
+5 & $S_{t_i}$ & Spot price & Log-moneyness $\log(S_{t_i}/K)$ \\
+6 & $X_{t_i}$ & Diffusive factor & Robust-scaled (median/IQR) \\
+7 & $Y_{t_i}$ & Spike factor & Robust-scaled (median/IQR) \\
+8 & $\rho_i$ & Normalised steps since last exercise & $[0,1]$ \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}
 \end{table}
 
-The first component, $S_t - K$, is included explicitly to support the profitability gate mechanism described in Section~\ref{sec:profitability_gate}. Components 1--4 and 8 are already normalised to $[0,1]$. Component 5 is transformed to log-moneyness $\log(S_t/K)$ before network input, providing better conditioning for learning. Components 6 and 7 use robust scaling (centering by median, scaling by interquartile range) to handle the heavy-tailed jump factor $Y_t$.
-
-The agent selects a continuous, normalised exercise quantity
+The actor outputs a normalised exercise
 \[
-\tilde{q}_t \in [0, 1],
+\tilde{q}_i \in [0,1],
 \]
-which is denormalized to the contract space via
+which is mapped to the physical exercise quantity by
 \[
-q_t = q_{\min} + \tilde{q}_t \cdot (q_{\max} - q_{\min}).
+q_i = q_{\max} \tilde{q}_i.
 \]
-This determines the next state through the HHK transition dynamics
+The environment then clips this proposal to the remaining capacity:
 \[
-(X_{t+\Delta t}, Y_{t+\Delta t}) 
-= 
-\text{SimHHK}(X_t, Y_t; \Delta t),
+q_i \leftarrow \min\{q_i, Q_{\max} - Q_i\}.
+\]
+The next state is obtained by advancing the HHK simulator over one exercise interval and updating the contract bookkeeping variables,
+\[
+\bigl(X_{t_{i+1}},Y_{t_{i+1}}\bigr)
+=
+\operatorname{SimHHK}\bigl(X_{t_i},Y_{t_i};\Delta t\bigr),
 \qquad
-Q^{\mathrm{used}}_{t+\Delta t}
-=
-Q^{\mathrm{used}}_t + q_t,
+Q_{i+1} = Q_i + q_i.
 \]
-where $\text{SimHHK}$ denotes an Euler–Maruyama simulation of the stochastic differential equations \eqref{eq:OU}--\eqref{eq:jumpOU}.
+We write $\operatorname{SimHHK}$ for the one-step simulation routine used on the exercise grid; it draws from the exact conditional distributions of $X$ and $Y$ under $\mathbb{Q}$. The presentation below does not rely on a particular discretisation scheme, only on the ability to simulate the model consistently under the pricing measure.
 
-The reward for exercising quantity $q_t$ at time step $t$ is defined as the discounted incremental payoff:
+% P2-6: Document Sobol QMC for OU increments and antithetic variates for jump component.
+\paragraph{Variance reduction in path generation.}
+The implementation uses two variance-reduction techniques when generating the training and evaluation paths.
+For the Ornstein--Uhlenbeck diffusion component $X$, the Brownian increments $\Delta W \sim \mathcal{N}(0,\Delta t)$ are drawn via a scrambled Sobol quasi-Monte Carlo sequence (dimension equal to $n \times N_{\mathrm{paths}}$), improving the uniformity of path coverage relative to plain pseudo-random sampling.
+For the compound Poisson jump component $Y$, antithetic variates are applied: each path is paired with a mirror path that uses the negative of its Poisson arrivals and jump sizes, so that the estimator averages out the first-order sampling error from the jump noise.
+These techniques reduce the variance of the option-price estimator at fixed path count and are particularly beneficial for the evaluation step, which uses $65{,}536$ held-out paths.
+
+The one-step reward is the undiscounted exercise payoff
 \[
-r_t(q_t)
-=
-\delta^t
-\Big(
-q_t \, (S_t - K)^+
- - c \, q_t^{\gamma_{\mathrm{cost}}}
-\Big),
+R_i(q_i) = \Pi_i(q_i),
 \]
-where $\delta = e^{-r\Delta t}$ is the per-step discount factor. Note that we use $\delta$ for the RL discount factor to avoid confusion with $\gamma_{\mathrm{cost}}$, the cost exponent. The objective of the agent is to maximise the expected cumulative reward
+and the objective is
 \[
-\mathbb{E}\Bigg[
-\sum_{t=0}^{n-1} r_t(q_t)
-\Bigg],
+J(\pi) =
+\mathbb{E}^{\mathbb{Q}}
+\biggl[
+\sum_{i=0}^{n-1} \delta^i R_i(q_i)
+\biggr].
 \]
-which coincides with the swing option value $V_0$ under the risk-neutral measure.
+This is exactly the swing-option value~\eqref{eq:value0} for the policy class represented by the actor. Note that the RL discount factor $\delta = e^{-r\Delta t}$ coincides with the financial discount factor in the pricing objective, and all paths are simulated under the risk-neutral measure $\mathbb{Q}$, so the RL and derivative-pricing problems are formally identical.
+
+\paragraph{Implementation note (pre-discounted reward convention).}
+% P1-8: Document that the implementation uses pre-discounted rewards with GAMMA=1.
+In the implementation, the one-step reward stored in the replay buffer is the \emph{pre-discounted} payoff $\tilde R_i = \delta^i \Pi_i(q_i)$, and the Bellman target is computed with RL discount factor $\gamma_{\mathrm{RL}} = 1$.
+This is equivalent to the formulation above: the Bellman recursion with $\gamma_{\mathrm{RL}} = 1$ and pre-discounted rewards reconstructs the same sum $\sum_i \delta^i \Pi_i(q_i)$ as a standard $\gamma_{\mathrm{RL}} = \delta$ recursion with undiscounted rewards.
+The pre-discounted convention avoids introducing a second discount mechanism in the critic loss, and is reflected in the hyperparameter $\gamma = 1$ listed in Table~\ref{tab:hyperparams}.
 
 \subsection{Enforcement of Swing Constraints}
 
-Swing contracts impose restrictions on the path of admissible actions, including instantaneous bounds, cumulative volume limits and operational rules such as refraction periods. While such constraints greatly complicate grid-based dynamic programming, they can be enforced efficiently in reinforcement learning.
+The contract constraints enter the RL formulation through the environment and the action post-processing.
 
-\paragraph{Action clipping.}
-At each decision time, the actor network outputs a normalised action $\tilde{q}_t \in [0,1]$, which is mapped to the admissible interval $[q_{\min},q_{\max}]$. This ensures instantaneous feasibility.
+\paragraph{Per-period cap and cumulative cap.}
+The actor proposes a normalised action in $[0,1]$, which corresponds to a physical exercise in $[0,q_{\max}]$. The environment then enforces the cumulative cap by clipping to the remaining capacity $Q_{\max} - Q_i$.
 
-\paragraph{Cumulative volume bookkeeping.}
-The state variable $Q^{\mathrm{used}}_t$ records exercised volume. If $Q^{\mathrm{used}}_t + q_t > Q_{\max}$, the action is clipped to the maximum feasible value, i.e.\ $q_t = Q_{\max} - Q^{\mathrm{used}}_t$.
-
-\paragraph{Refraction period masking.}
-If the contract prohibits exercise for $\tau_{\mathrm{ref}}$ periods following a non-zero action, we augment the state with a counter $\ell_t$ and mask all positive actions during the refraction window, forcing $q_t = 0$.
+\paragraph{Refraction constraints.}
+% P2-1: rho_i is implemented as normalised steps since last exercise, not remaining blocked fraction.
+The state variable $\rho_i = (\text{steps since last exercise}) / n$ records how recently the holder exercised, serving as a soft proximity signal for refraction-style constraints. If a mandatory refraction period is active, the environment forces $q_i = 0$ while a cooldown counter is positive; $\rho_i$ provides the policy with a continuous signal of the remaining blocked fraction. In the reported experiments no refraction is imposed ($\rho_i$ provides elapsed-since-exercise information only), but including it in the state clarifies how the formulation extends to richer contracts.
 
 \paragraph{Profitability masking.}
-If the proposed action would result in negative immediate payoff ($\Pi_t(q_t) < 0$), the action is masked to $q_t = 0$. This is in addition to the profitability gate described below, providing a safety net during exploration.
+For the contract class studied numerically, zero exercise is always admissible and only an upper cumulative volume cap is imposed. Consequently, any action with strictly negative immediate payoff is weakly dominated by zero exercise: it lowers the current cash flow and consumes flexibility that could be used later. This observation justifies the profitability gate introduced in Section~\ref{sec:profitability_gate}. We do not claim the same argument without modification for contracts with mandatory take obligations. \textcolor{red}{\textbf{Sven:} The theoretical justification for the gate also breaks down if we consider active ramping constraints $|q_{i+1}-q_i| \leq R$. Under this ramping, it might be optimal to take an immediate loss today to ramp up for an anticipated large spike tomorrow. We should explicitly note here that the hard gate assumes unconstrained-trajectory exercises and would require relaxation for ramping/refraction limits.}
 
+\subsection{Actor--Critic Algorithm}
+\label{sec:actor_critic}
 
-\subsection{D4PG Algorithm: Core Architecture}
-\label{sec:d4pg}
-
-We employ a variant of the Deterministic Policy Gradient algorithm~\cite{silver2014dpg}, enhanced with distributional value estimation and prioritized experience replay as in D4PG~\cite{barth2018d4pg}. This section describes each component and its role in swing option valuation.
+We use a deterministic actor--critic architecture~\cite{silver2014dpg}, inspired by the distributed D4PG framework of~\cite{barth2018d4pg}, with target networks, prioritized experience replay (PER), and target-policy smoothing. The actor $\pi_\theta : \mathcal{S} \to [0,1]$ maps states to normalised exercise quantities, while the critic $Q_\phi : \mathcal{S} \times \mathcal{A} \to \mathbb{R}$ estimates discounted continuation values.
 
 \subsubsection{Deterministic Policy Gradient}
-The actor network $\pi_\theta: \mathcal{S} \to [0,1]$ maps states to normalised exercise quantities. The policy is trained to maximise the critic's value estimate:
+
+The actor is trained by ascending the critic value~\cite{silver2014dpg},
 \[
-\nabla_\theta J(\theta) = \mathbb{E}_{s \sim \mathcal{D}}\left[\nabla_a Q_\phi(s,a)\big|_{a=\pi_\theta(s)} \nabla_\theta \pi_\theta(s)\right].
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{s \sim \mathcal{D}}
+\left[
+\nabla_a Q_\phi(s,a)\big|_{a=\pi_\theta(s)}
+\nabla_\theta \pi_\theta(s)
+\right],
 \]
-Stability is ensured through target networks $(\pi_{\theta'},Q_{\phi'})$ updated via Polyak averaging:
+where $\mathcal{D}$ denotes the replay buffer. Target networks $(\pi_{\theta'},Q_{\phi'})$ are updated by Polyak averaging,
 \[
-\theta' \leftarrow (1-\tau)\theta' + \tau \theta, \quad \phi' \leftarrow (1-\tau)\phi' + \tau \phi,
+\theta' \leftarrow (1-\tau)\theta' + \tau \theta,
+\qquad
+\phi' \leftarrow (1-\tau)\phi' + \tau \phi,
 \]
 with $\tau = 0.0032$.
 
-\subsubsection{Critic Architecture}
-The critic $Q_\phi: \mathcal{S} \times \mathcal{A} \to \mathbb{R}$ estimates the expected cumulative discounted reward. For swing options with convex costs, the critic must capture the complex dependence of continuation value on the current exercise decision. The critic is trained to minimise the temporal difference loss:
-\begin{equation*}
-\begin{split}
-\mathcal{L}_{\text{critic}} = \mathbb{E}_{(s,a,r,s',d) \sim \mathcal{D}}\Big[ w_i \big( & r + \delta (1-d) Q_{\phi'}(s', \pi_{\theta'}(s')) \\
-& - Q_\phi(s,a) \big)^2 \Big],
-\end{split}
-\end{equation*}
-where $w_i$ are importance sampling weights from prioritised replay and $d$ is the terminal indicator.
+\subsubsection{Critic Loss}
 
-\subsubsection{Prioritised Experience Replay}
-We employ soft prioritised experience replay with a priority schedule designed to balance exploration breadth with learning focus. Transition $i$ is sampled with probability:
+The critic is scalar-valued and is trained with the one-step temporal-difference target
 \[
-P(i) = \frac{p_i^\alpha}{\sum_k p_k^\alpha},
+y = R + \delta (1-d) Q_{\phi'}\bigl(s',\pi_{\theta'}(s')\bigr),
 \]
-where $p_i = |\delta_i| + \epsilon$ is the TD-error-based priority and $\epsilon = 5 \times 10^{-6}$ is the priority floor.
+where $d$ is the terminal indicator and $R$ is the one-step reward. The loss is
+\begin{equation*}
+\mathcal{L}_{\mathrm{critic}}
+=
+\mathbb{E}_{(s,a,R,s',d) \sim \mathcal{D}}
+\Bigl[
+w_i \bigl(y - Q_\phi(s,a)\bigr)^2
+\Bigr],
+\end{equation*}
+with importance-sampling weights $w_i$ supplied by PER.
 
-The priority exponent~$\alpha$ is scheduled: starting at $\alpha_0 = 0.1$ (near-uniform) and ramping to $\alpha_{\text{final}} = 0.2$ between episodes 5{,}000 and 25{,}000. Importance sampling weights $w_i = (N \cdot P(i))^{-\beta}$ with $\beta = 1.0$ provide full correction for the non-uniform sampling, reducing bias while maintaining sample efficiency.
+\subsubsection{Prioritized Replay}
 
+Transition $i$ is sampled with probability
+\[
+P(i) = \frac{p_i^{a_{\mathrm{per}}}}{\sum_k p_k^{a_{\mathrm{per}}}},
+\qquad
+p_i = |\varepsilon_i| + \epsilon_{\mathrm{per}},
+\]
+where $\varepsilon_i$ is the TD error and $\epsilon_{\mathrm{per}} = 5 \times 10^{-6}$ is the priority floor. The priority exponent is annealed from $a_{\mathrm{per}} = 0.1$ to $0.2$. Importance weights use the exponent $b_{\mathrm{per}} = 1.0$:
+\[
+w_i = (N P(i))^{-b_{\mathrm{per}}}.
+\]
+Renaming these replay exponents avoids confusion with the HHK parameters $\alpha$ and $\beta$.
 
 \subsection{Profitability-Gated Actor}
 \label{sec:profitability_gate}
 
-A key challenge in swing option pricing with convex exercise costs is ensuring that the learned policy never proposes actions that would result in immediate losses. Under the payoff structure~\eqref{eq:payoff}
-\[
-\Pi(q) = q \cdot (S_t - K)^+ - c \cdot q^{\gamma_{\mathrm{cost}}},
-\]
-profitability depends non-trivially on the exercise quantity $q$ when $\gamma_{\mathrm{cost}} > 1$.
+Convex exercise costs imply that large exercises can be locally or globally unattractive even when the option is in the money. The actor therefore includes a hard gate that clips proposed exercises to quantities with non-negative immediate payoff.
 
-\subsubsection{Break-Even Quantity}
-The break-even quantity $q^*$ at which revenue equals cost satisfies:
+\subsubsection{Profitability Region}
+
+Fix a time $t_i$ and write
 \[
-q^* \cdot (S_t - K)^+ = c \cdot (q^*)^{\gamma_{\mathrm{cost}}}.
+h_i = (S_{t_i} - K)^+.
 \]
-For $\gamma_{\mathrm{cost}} > 1$, this yields the closed-form solution:
+Then the immediate payoff is
 \[
-q^* = \left(\frac{(S_t - K)^+}{c \cdot \gamma_{\mathrm{cost}}}\right)^{\frac{1}{\gamma_{\mathrm{cost}} - 1}}.
+\Pi_i(q) = h_i q - c q^{\gamma_c}.
 \]
-Any $q > q^*$ would result in negative immediate profit.
+When $c > 0$ and $\gamma_c > 1$, the largest exercise that still yields non-negative immediate payoff is obtained from
+\[
+h_i q = c q^{\gamma_c},
+\]
+namely
+\begin{equation}
+\label{eq:qbar}
+\bar{q}_i =
+\left(
+\frac{h_i}{c}
+\right)^{1/(\gamma_c - 1)}.
+\end{equation}
+Therefore $\Pi_i(q) \ge 0$ for every $q \in [0,\bar{q}_i]$ and $\Pi_i(q) < 0$ for every $q > \bar{q}_i$. The stationary point of the immediate payoff is
+\[
+q_i^{\mathrm{stat}} =
+\left(
+\frac{h_i}{c \gamma_c}
+\right)^{1/(\gamma_c - 1)},
+\]
+which lies below $\bar{q}_i$ and explains why interior optima arise under convex costs. The gate uses the zero-profit threshold $\bar{q}_i$, not the stationary point.
 
 \subsubsection{Hard Gate Mechanism}
-We enforce profitability by projecting the actor's output onto the feasible region. Let $\tilde{q} \in [0,1]$ denote the raw (normalised) actor output. The gated action is:
+
+Let $\tilde{q}_i \in [0,1]$ be the raw actor output. The profitability gate clips it to
 \[
-q_{\text{gated}} = \min\left(\tilde{q}, \frac{q^* - q_{\min}}{q_{\max} - q_{\min}}\right),
+\tilde{q}_i^{\mathrm{gate}} =
+\min\!\left(
+\tilde{q}_i,
+\frac{\bar{q}_i}{q_{\max}},
+1
+\right)
 \]
-ensuring the denormalised quantity $q_{\text{actual}} = q_{\min} + q_{\text{gated}} \cdot (q_{\max} - q_{\min})$ satisfies $\Pi(q_{\text{actual}}) \ge 0$.
+when $c > 0$ and $\gamma_c > 1$. For linear costs ($\gamma_c = 1$), the immediate payoff is affine in $q$ and non-negative exercise is possible only when $h_i \ge c$; otherwise the gate sets the action to zero.
 
 \subsubsection{Straight-Through Estimator}
-To enable gradient-based learning despite the non-differentiable projection, we employ a straight-through estimator (STE)~\cite{bengio2013ste}:
-\[
-q_{\text{out}} = \tilde{q} + \sg(q_{\text{gated}} - \tilde{q}),
-\]
-where $\sg(\cdot)$ denotes the stop-gradient operator. In the forward pass, $q_{\text{out}} = q_{\text{gated}}$; in the backward pass, gradients flow through $\tilde{q}$ as if no projection occurred. This approach preserves the actor's ability to learn while guaranteeing constraint satisfaction.
 
-\subsubsection{Implementation in Actor Network}
+The clipping operation is non-differentiable, so we use a straight-through estimator:
+\[
+\tilde{q}_i^{\mathrm{out}}
+=
+\tilde{q}_i + \sg\!\left(\tilde{q}_i^{\mathrm{gate}} - \tilde{q}_i\right).
+\]
+In the forward pass, $\tilde{q}_i^{\mathrm{out}} = \tilde{q}_i^{\mathrm{gate}}$; in the backward pass, gradients flow through the unclipped proposal $\tilde{q}_i$~\cite{bengio2013ste}. This retains a simple differentiable training signal while ensuring that the executed action satisfies the profitability bound. The STE introduces a biased gradient estimator; however, the bias is mild in practice because the gate is inactive for most training transitions (the actor quickly learns to avoid unprofitable exercises).
+
+\subsubsection{Implementation}
+
 Algorithm~\ref{alg:profitability_gate} summarises the gated actor forward pass.
 
 \begin{algorithm}[htbp]
-\caption{Profitability-Gated Actor Forward Pass}
+\caption{Profitability-gated actor forward pass}
 \label{alg:profitability_gate}
 \begin{algorithmic}[1]
-\Require State $s_t$ with $(S_t - K)$ at index 0
-\Require Cost parameters $c, \gamma_{\mathrm{cost}}, q_{\min}, q_{\max}$
-\Ensure Feasible normalised action $q_{\text{out}} \in [0,1]$
-\State $u \gets \text{MLP}(s_t)$ \Comment{Pre-activation output}
-\State $\tilde{q} \gets \sigma(\beta \cdot u)$ \Comment{$\beta$-sigmoid with $\beta=3.0$}
-\If{$c > 0$ and $\gamma_{\mathrm{cost}} > 1$}
-    \State $q^* \gets \left(\frac{(S_t-K)^+}{c \cdot \gamma_{\mathrm{cost}}}\right)^{1/(\gamma_{\mathrm{cost}}-1)}$
-    \State $q_{\text{limit}} \gets \max\left(0, \frac{q^* - q_{\min}}{q_{\max} - q_{\min}}\right)$
-    \State $q_{\text{gated}} \gets \min(\tilde{q}, q_{\text{limit}})$
+\Require State $s_i$ with $(S_{t_i} - K)$ at index $0$
+\Require Cost parameters $c$, $\gamma_c$, $q_{\max}$
+\Ensure Feasible normalised action $\tilde{q}_i^{\mathrm{out}} \in [0,1]$
+\State $u \gets \operatorname{MLP}(s_i)$
+\State $\tilde{q}_i \gets \operatorname{sig}(\beta_{\mathrm{act}} u)$ \Comment{$\beta_{\mathrm{act}}$-sigmoid, $\beta_{\mathrm{act}} = 3.0$}
+\If{$c > 0$ and $\gamma_c > 1$}
+    \State $\bar{q}_i \gets \bigl((S_{t_i}-K)^+/c\bigr)^{1/(\gamma_c-1)}$
+    \State $\tilde{q}_i^{\max} \gets \min\{1,\bar{q}_i/q_{\max}\}$
+    \State $\tilde{q}_i^{\mathrm{gate}} \gets \min\{\tilde{q}_i,\tilde{q}_i^{\max}\}$
+\ElsIf{$c > 0$ and $\gamma_c = 1$ and $(S_{t_i}-K)^+ < c$}
+    \State $\tilde{q}_i^{\mathrm{gate}} \gets 0$
 \Else
-    \State $q_{\text{gated}} \gets \tilde{q}$
+    \State $\tilde{q}_i^{\mathrm{gate}} \gets \tilde{q}_i$
 \EndIf
-\State \Return $\tilde{q} + \sg(q_{\text{gated}} - \tilde{q})$ \Comment{STE}
+\State \Return $\tilde{q}_i + \sg(\tilde{q}_i^{\mathrm{gate}} - \tilde{q}_i)$
 \end{algorithmic}
 \end{algorithm}
-
 
 \subsection{Exploration Strategy}
 \label{sec:exploration}
 
-Effective exploration is critical for learning in continuous action spaces. We employ several complementary mechanisms.
-
-\subsubsection{Pre-Squash Gaussian Noise}
-Unlike standard DDPG which adds noise to the output action, we add noise to the pre-activation values before the output nonlinearity:
+Exploration is challenging in continuous action spaces because the actor output is squashed to $[0,1]$. We therefore inject Gaussian noise before the output nonlinearity:
 \[
-u' = u + \sigma \cdot \epsilon, \quad \epsilon \sim \mathcal{N}(0, 1).
+u_i' = u_i + \sigma_{\mathrm{expl}} \epsilon_i,
+\qquad
+\epsilon_i \sim \mathcal{N}(0,1).
 \]
-This ``pre-squash'' noise maintains exploration even when the policy saturates near the action bounds.
-
-The noise standard deviation follows a plateau-then-decay schedule:
+Pre-squash noise remains effective even when the policy is close to the action bounds. The noise scale follows a plateau-then-decay schedule,
 \[
-\sigma(e) = \begin{cases}
-\sigma_0 & e < e_{\text{plateau}} \\
-\sigma_{\text{floor}} + \dfrac{\sigma_0 - \sigma_{\text{floor}}}{1 + (e - e_{\text{plateau}})/e_{\text{plateau}}} & \text{otherwise}
+\sigma_{\mathrm{expl}}(e) =
+\begin{cases}
+\sigma_0, & e < e_{\mathrm{plateau}}, \\[0.3em]
+\sigma_{\mathrm{floor}} +
+\dfrac{\sigma_0 - \sigma_{\mathrm{floor}}}
+{1 + (e-e_{\mathrm{plateau}})/e_{\mathrm{plateau}}},
+& e \ge e_{\mathrm{plateau}},
 \end{cases}
 \]
-with $\sigma_0 = 1.30$, $\sigma_{\text{floor}} = 0.26$, and $e_{\text{plateau}} = 3{,}200$ episodes.
-
-Additionally, we apply adaptive scaling: $\sigma_{\text{scaled}} = \sigma \cdot (1 + 0.6 \cdot |u|)$, which increases noise when the pre-activation magnitude is large, preventing saturation lock-in.
-
-\subsubsection{Critic Warmup Phase}
-During the first 1{,}024 episodes, actor updates are frozen while only the critic learns. This allows the Q-function to stabilise before the policy begins adapting. During warmup:
-\begin{itemize}
-    \item Exploration noise is reduced to 40\% of its normal level
-    \item Noise fraction ramps linearly from 40\% to 100\% over the warmup period
-\end{itemize}
-
-\subsubsection{Target Policy Smoothing}
-To reduce overestimation in the target Q-values, we add noise to the target policy:
+with $\sigma_0 = 1.30$, $\sigma_{\mathrm{floor}} = 0.26$, and $e_{\mathrm{plateau}} = 3{,}200$ episodes. % P2-5: Clarify that adaptive noise scales the std of the *pre-squash* noise by (1 + 0.6*|u_i|),
+% where u_i is the pre-activation logit (not the squashed action in [0,1]).
+We additionally scale the pre-squash noise standard deviation adaptively as
 \[
-\tilde{a}' = \pi_{\theta'}(s') + \epsilon_{\text{target}}, \quad \epsilon_{\text{target}} \sim \mathcal{N}(0, \sigma_{\text{target}}^2).
+\tilde\sigma_i = \sigma_{\mathrm{expl}}(e) \cdot \bigl(1 + 0.6\,|u_i|\bigr),
 \]
-The target noise starts at $\sigma_{\text{target}} = 0.15$ and decays linearly to $0.04$ after episode 20{,}000.
+where $u_i$ is the pre-squash logit output by the actor before the $\beta$-sigmoid nonlinearity.
+This increases the effective noise magnitude when the logit is large (i.e.\ the policy is saturated near the action bounds), where the sigmoid gradient is small and unscaled noise would have little effect on the squashed output.
 
+During the first $1{,}024$ episodes, actor updates are frozen and only the critic is trained. This critic warmup stabilises the early training dynamics. To reduce target overestimation, target-policy smoothing is applied in the critic target by perturbing the target action with clipped Gaussian noise.
 
 \subsection{Neural Network Architecture}
 \label{sec:architecture}
 
-Both actor and critic networks are lightweight multilayer perceptrons designed for sample efficiency. Table~\ref{tab:network_arch} summarises the architecture.
+Both actor and critic are lightweight multilayer perceptrons. Table~\ref{tab:network_arch} summarises the architecture.
 
 \begin{table}[htbp]
 \centering
-\caption{Neural network architecture for actor and critic.}
+\caption{Neural-network architecture for actor and critic.}
 \label{tab:network_arch}
 \begin{adjustbox}{max width=\linewidth}
 \begin{tabular}{lll}
@@ -480,84 +531,75 @@ Hidden units & 64 & 64 \\
 Activation & SiLU & SiLU \\
 Normalisation & LayerNorm & LayerNorm \\
 Output dimension & 1 & 1 \\
-Output activation & $\beta$-sigmoid ($\beta=3.0$) & None \\
+Output activation & $\beta_{\mathrm{act}}$-sigmoid & None \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}
 \end{table}
 
-\paragraph{Initialisation.}
-Weights are initialised using orthogonal initialisation with gain $\sqrt{2}$ for hidden layers (appropriate for ReLU-family activations). Output layer weights use uniform initialisation in $[-0.003, 0.003]$.
+The actor output uses $\operatorname{sig}(\beta_{\mathrm{act}} u)$ with $\beta_{\mathrm{act}} = 3.0$, where $\operatorname{sig}$ denotes the logistic sigmoid. The state preprocessing is domain-specific: the spot component is mapped to log-moneyness $\log(S_{t_i}/K)$, while the latent factors $X_{t_i}$ and $Y_{t_i}$ are robust-scaled using the sample median and interquartile range. Hidden-layer weights are initialised orthogonally with gain $\sqrt{2}$, and the output layers use small uniform initialisation in $[-0.003,0.003]$.
 
-\paragraph{Input Preprocessing.}
-The raw state undergoes domain-specific transformations before entering the network:
-\begin{itemize}
-    \item $S_t$ is transformed to log-moneyness: $\log(S_t / K)$
-    \item $X_t$ and $Y_t$ are robust-scaled using median and interquartile range
-    \item Other components pass through unchanged
-\end{itemize}
-
-\paragraph{Output Activation.}
-The actor uses a $\beta$-sigmoid output: $\sigma(\beta \cdot u)$ with $\beta = 3.0$. This provides softer saturation gradients compared to standard sigmoid, improving learning in boundary regions.
-
-\paragraph{Optimiser Configuration.}
 Training uses AdamW with separate learning rates and weight decay:
 \begin{itemize}
-    \item Actor: $\eta_a = 1.6 \times 10^{-4}$, weight decay $5 \times 10^{-5}$
-    \item Critic: $\eta_c = 9.0 \times 10^{-5}$, weight decay $1.2 \times 10^{-4}$
+    \item actor: $\eta_a = 1.6 \times 10^{-4}$ with weight decay $5 \times 10^{-5}$;
+    \item critic: $\eta_c = 9.0 \times 10^{-5}$ with weight decay $1.2 \times 10^{-4}$.
 \end{itemize}
-Learning rates follow a warmup (1{,}024 episodes) followed by cosine decay to 20\% of initial values over 40{,}000 episodes.
-
+Both learning rates follow a warmup over the first $1{,}024$ episodes followed by cosine decay to $20\%$ of their initial values over $40{,}000$ episodes.
 
 \subsection{Training Procedure}
 \label{sec:training}
 
-Algorithm~\ref{alg:training} presents the complete training procedure for swing option pricing.
+Algorithm~\ref{alg:training} gives the training loop.
 
 \begin{algorithm}[htbp]
-\caption{D4PG Training for Swing Option Pricing}
+\caption{Actor--critic training for swing-option pricing}
 \label{alg:training}
 \begin{algorithmic}[1]
-\Require Swing contract $\mathcal{C}$, HHK parameters $\Theta_{\text{HHK}}$
-\Require Training episodes $N_{\text{train}}$, evaluation paths $N_{\text{eval}}$
+\Require Swing contract $\mathcal{C}$, HHK parameters $\Theta_{\mathrm{HHK}}$
+\Require Training episodes $N_{\mathrm{train}}$, held-out episodes $N_{\mathrm{hold}}$
 \Ensure Trained actor $\pi_\theta$
-\State Generate paths: $(t, S, X, Y) \gets \textsc{SimHHK}(\Theta_{\text{HHK}}, N_{\text{train}} + N_{\text{eval}})$
-\State Initialise actor $\pi_\theta$, critic $Q_\phi$, targets $\pi_{\theta'}, Q_{\phi'}$
+\State Generate market paths $(t,S,X,Y) \gets \operatorname{SimHHK}(\Theta_{\mathrm{HHK}},N_{\mathrm{train}}+N_{\mathrm{hold}})$
+\State Initialise actor $\pi_\theta$, critic $Q_\phi$, and targets $\pi_{\theta'}$, $Q_{\phi'}$
 \State Initialise replay buffer $\mathcal{D}$ with capacity $2 \times 10^5$
-\State $\pi_\theta.\textsc{SetProfitabilityParams}(q_{\min}, q_{\max}, c, \gamma_{\text{cost}})$
-\For{episode $e = 1$ to $N_{\text{train}}$}
-    \State $s_0 \gets \textsc{Env.Reset}(\text{path\_idx} = e)$
-    \For{step $t = 0$ to $n-1$}
-        \State $\sigma \gets \textsc{NoiseSchedule}(e)$
-        \If{$e \le e_{\text{warmup}}$}
-            \State $\sigma \gets \sigma \cdot (0.4 + 0.6 \cdot e / e_{\text{warmup}})$ \Comment{Gradual warmup noise}
-        \EndIf
-        \State $a_t \gets \pi_\theta(s_t) + \sigma \cdot \epsilon$, $\epsilon \sim \mathcal{N}(0,1)$
-        \State $s_{t+1}, r_t, \text{done} \gets \textsc{Env.Step}(a_t)$
-        \State $\mathcal{D}.\textsc{Add}(s_t, a_t, r_t, s_{t+1}, \text{done})$
-        \If{$|\mathcal{D}| \ge N_{\min}$ and $t \mod 2 = 0$}
-            \State $(s, a, r, s', d, w) \gets \mathcal{D}.\textsc{Sample}(128)$
-            \State Update $Q_\phi$ via TD loss with IS weights $w$
-            \If{$e > e_{\text{warmup}}$}
-                \State Update $\pi_\theta$ via policy gradient
+\Statex \textbf{// Bias calibration warm-up (before RL training)}
+\State Evaluate actor on $N_{\mathrm{calib}} = 4{,}096$ paths; compute action std $\hat\sigma$ and mean $\hat\mu_q$
+\State Scale output-layer weights: $w \gets w \cdot \sigma_{\mathrm{target}} / \hat\sigma$, where $\sigma_{\mathrm{target}} = 0.005$
+\State Shift output-layer bias so $\hat\mu_q \approx \bar{q}_{\mathrm{norm}}$, where $\bar{q}_{\mathrm{norm}} = \bigl(Q_{\max}/(n \cdot q_{\max}) - q_{\min}\bigr)/(q_{\max}-q_{\min})$
+\For{$k = 1$ to $20$}
+    \State Compute finite-difference gradient: $g \gets \bigl[P(b+\varepsilon) - P(b-\varepsilon)\bigr]/(2\varepsilon)$
+    \State Update bias by Rprop step: $b \gets b + \operatorname{sign}(g)\cdot\delta_k$, adapting $\delta_k$ with $\eta^+=1.2$, $\eta^-=0.5$
+    \If{$\delta_k < 10^{-4}$ and $k \ge 10$} \textbf{break} \EndIf
+\EndFor
+\Statex \textbf{// Main RL training loop}
+\For{episode $e = 1$ to $N_{\mathrm{train}}$}
+    \State $s_0 \gets \operatorname{Env.Reset}(\text{path\_idx}=e)$
+    \For{step $i = 0$ to $n-1$}
+        \State $\sigma_{\mathrm{expl}} \gets \operatorname{NoiseSchedule}(e)$
+        \State $u_i \gets \operatorname{ActorPreAct}(s_i)$
+        \State $\tilde{q}_i \gets \operatorname{sig}(\beta_{\mathrm{act}}(u_i + \sigma_{\mathrm{expl}} \epsilon_i))$, $\epsilon_i \sim \mathcal{N}(0,1)$
+        \State $a_i \gets \operatorname{GateAndClip}(\tilde{q}_i,s_i)$
+        \State $s_{i+1}, R_i, \mathrm{done} \gets \operatorname{Env.Step}(a_i)$
+        \State $\mathcal{D}.\operatorname{Add}(s_i,a_i,R_i,s_{i+1},\mathrm{done})$
+        \If{$|\mathcal{D}| \ge 18{,}000$ and $i \bmod 2 = 0$}
+            \State Sample $(s,a,R,s',d,w)$ from $\mathcal{D}$
+            \State Update $Q_\phi$ with the TD loss
+            \If{$e > 1{,}024$}
+                \State Update $\pi_\theta$ with the deterministic policy gradient
                 \State Soft-update $\pi_{\theta'}$
             \EndIf
             \State Soft-update $Q_{\phi'}$
         \EndIf
     \EndFor
-    \If{$e \mod 1024 = 0$}
-        \State Evaluate and log RL/LSM prices
+    \If{$e \bmod 1{,}024 = 0$}
+        \State Evaluate and log RL and LSM baseline values on held-out paths
     \EndIf
 \EndFor
 \end{algorithmic}
 \end{algorithm}
 
-\paragraph{Hyperparameter Configuration.}
-Table~\ref{tab:hyperparams} lists the complete hyperparameter configuration used in experiments.
-
 \begin{table}[htbp]
 \centering
-\caption{Training hyperparameters for the convex cost experiments.}
+\caption{Training hyperparameters for the convex-cost experiments.}
 \label{tab:hyperparams}
 \begin{adjustbox}{max width=\linewidth}
 \begin{tabular}{llr}
@@ -570,49 +612,70 @@ Category & Parameter & Value \\
  & Minimum replay size & 18{,}000 \\
 \midrule
 \multirow{3}{*}{Target Networks} & Polyak $\tau$ & 0.0032 \\
- & Target noise $\sigma$ & 0.15 $\to$ 0.04 \\
- & Target noise clip & 0.25 \\
+ & Target noise & $0.15 \to 0.04$ \\
+ & Target-noise clip & 0.25 \\
 \midrule
-\multirow{4}{*}{PER} & Initial $\alpha$ & 0.1 \\
- & Final $\alpha$ & 0.2 \\
- & $\beta$ & 1.0 (constant) \\
+% P2-2: Initial a_per is 0.0 (uniform) until episode 5000, then ramps linearly to 0.2 by episode 25000.
+% P2-3: b_per starts at 1.0 and anneals to 0.98; not fixed at 1.0.
+\multirow{5}{*}{Replay} & $a_{\mathrm{per}}$ schedule & $0.0 \xrightarrow{\text{ep }5{,}000\text{--}25{,}000} 0.2$ \\
+ & $b_{\mathrm{per}}$ schedule & $1.0 \to 0.98$ \\
+ & $b_{\mathrm{per}}$ anneal episodes & 120{,}000 \\
+ & Priority clip & 99.7th percentile \\
  & Priority floor & $5 \times 10^{-6}$ \\
 \midrule
-Critic Warmup & Episodes & 1{,}024 \\
+Critic warmup & Episodes & 1{,}024 \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}
 \end{table}
 
-
-\subsection{LSM Benchmark Methodology}
+\subsection{Bang-Bang LSM Baseline}
 \label{sec:lsm}
 
-To validate the RL valuations, we compare against Least-Squares Monte Carlo (LSM) following~\cite{longstaff2001valuing}. We employ an out-of-sample evaluation protocol to ensure fair comparison.
+For comparison we use a reduced-state least-squares Monte Carlo baseline. The baseline is intentionally simple: it restricts the exercise decision to either $0$ or $q_{\max}$ and approximates continuation values as functions of the current spot price. It should therefore be interpreted as a bang-bang benchmark rather than as a full solution of the continuous-control HHK problem.
 
-\subsubsection{Estimator Training}
-LSM continuation values are estimated by regressing discounted future rewards onto polynomial basis functions. We use Chebyshev polynomials $T_k$ of degree 7, which provide numerical stability over a wide price range. The price is first normalised to $[-1, 1]$:
+At each exercise date $t_i$, the spot price is normalised to
 \[
-x = \frac{2S_t - S_{\min} - S_{\max}}{S_{\max} - S_{\min}},
+x_i(S) =
+\frac{2S - S_{\min,i} - S_{\max,i}}{S_{\max,i} - S_{\min,i}},
 \]
-and the regression features are:
+where $S_{\min,i}$ and $S_{\max,i}$ denote the minimum and maximum spot values observed at time $t_i$ across the training paths. The continuation-value regression uses Chebyshev polynomials of degree $7$,
 \[
-\Phi(x) = \left[T_0(x), T_1(x), \ldots, T_7(x)\right].
+\Phi_i(S) =
+\bigl[T_0(x_i(S)),T_1(x_i(S)),\dots,T_7(x_i(S))\bigr].
 \]
-
-\subsubsection{Out-of-Sample Evaluation}
-We train the LSM estimators on the same 32{,}768 paths used for RL training, then evaluate both methods on a separate set of 65{,}536 held-out paths. This prevents look-ahead bias and ensures comparable evaluation conditions.
-
-\subsubsection{Exercise Decision}
-At each decision time $t$, LSM exercises quantity $q_{\max}$ if:
+The exercise rule is
 \[
-\Pi_t(q_{\max}) + \hat{C}_t^{\text{ex}}(S_t) > \hat{C}_t^{\text{keep}}(S_t),
+\Pi_i(q_{\max}) + \widehat{C}_i^{\mathrm{ex}}(S_{t_i})
+>
+\widehat{C}_i^{\mathrm{keep}}(S_{t_i}),
 \]
-where $\hat{C}_t^{\text{ex}}$ and $\hat{C}_t^{\text{keep}}$ are the fitted continuation values after exercising or holding, respectively.
+where $\widehat{C}_i^{\mathrm{ex}}$ and $\widehat{C}_i^{\mathrm{keep}}$ are the fitted continuation values after exercising or holding, following the Longstaff--Schwartz regression idea~\cite{longstaff2001valuing}. At the terminal date, exercise occurs only if the \emph{net} payoff $\Pi_{n-1}(q_{\max})$ is positive. Because this baseline neither conditions on the full HHK state nor permits interior exercise quantities, it is expected to be weakest when convex costs are strong.
 
-Note that LSM is inherently designed for discrete exercise decisions (exercise $q_{\max}$ or 0), making it suboptimal for the continuous exercise problem with convex costs where interior optima exist.
+\textcolor{red}{\textbf{Sven:} The comparative analysis reliess on a weak baseline as we compare a 9-dimensional continuous DRL method against a 1-dimensional discrete LSMC. This makes it harder to disentangle the benefit of continuous actions under convex costs from the poor performance of the baseline (ignoring $X, Y, Q$). A full-state LSMC baseline with discretized actions ($q \in \{0, q_{\max}/4, q_{\max}/2, \dots, q_{\max}\}$) regressing on $(X, Y, Q)$ would provide a stronger and more convincing comparison. Of course, one might even look into randomized LSMC approaches as benchmark.}
 
-\textbf{Implementation caveat.} When convex costs are present ($c > 0$, $\gamma_{\mathrm{cost}} > 1$), the terminal time step must gate exercises on \emph{net profitability} ($\Pi_T(q) > 0$) rather than merely in-the-money status ($q \cdot (S_T - K)^+ > 0$). Omitting the cost from this check leads to unprofitable exercises at the final step, biasing the LSM price downward.
+\section{Deep Hedging of Swing Options}
+\label{sec:hedging}
+
+% P1-5: Section replaced with planned future work note.
+% The original draft contained a detailed hedging MDP, risk-minimization objective,
+% and three experiment outlines (baseline risk reduction, convexity impact, jump hedging),
+% but no corresponding implementation exists in the codebase.  The section is therefore
+% marked as planned future work below, avoiding false claims of completed experiments.
+
+Deep hedging of swing options from the writer's perspective is a natural next step of this research.
+In electricity markets the spot price is non-storable and price spikes render the market fundamentally incomplete, so perfect replication is impossible.
+Following the framework of \citet{buehler2019deephedging}, the writer could train a secondary neural-network hedger $\pi^H_\phi$ that observes the same Markov state as the holder together with the current forward price, and selects a forward position $H_i$ at each exercise date so as to minimise the variance (or CVaR) of the terminal P\&L
+
+\begin{equation}
+\label{eq:pnl}
+\text{P\&L}_n = V_0 + \sum_{i=0}^{n-1} \delta^i H_i (F_{t_{i+1}} - F_{t_i})
+               - \sum_{i=0}^{n-1} \delta^i \Pi_i(q^*_i),
+\end{equation}
+
+where $V_0$ is the option premium obtained from the trained holder policy, and $q^*_i = \pi^*_\theta(s_i)$ are the frozen holder exercises.
+Key open questions include: (i)~how convexity of exercise costs affects the writer's residual risk, (ii)~whether a two-instrument hedger (baseload + peak-load forward) can materially neutralise jump exposure, and (iii)~the interaction between the holder's continuous action space and hedging tractability.
+We defer a full numerical treatment to future work.
 
 
 \section{Numerical Experiments}
@@ -620,52 +683,67 @@ Note that LSM is inherently designed for discrete exercise decisions (exercise $
 
 \subsection{Experimental Setup}
 
-We evaluate the proposed D4PG framework across a grid of convex cost parameters. Table~\ref{tab:contract_params} summarises the swing contract and HHK model configuration.
+We evaluate the actor--critic method across a grid of convex cost parameters. Table~\ref{tab:contract_params} summarises the contract and model inputs.
 
 \begin{table}[htbp]
 \centering
-\caption{Contract and model parameters for numerical experiments.}
+\caption{Contract and HHK parameters used in the numerical experiments.}
 \label{tab:contract_params}
 \begin{adjustbox}{max width=\linewidth}
 \begin{tabular}{lllr}
 \toprule
 Category & Parameter & Symbol & Value \\
 \midrule
-\multirow{6}{*}{Contract} & Strike & $K$ & 1.0 \\
+\multirow{8}{*}{Contract}
+ & Strike & $K$ & 1.0 \\
  & Maturity & $T$ & 0.0833 years \\
  & Decision dates & $n$ & 22 \\
+ & Min exercise/period & $q_{\min}$ & 0.0 \\
  & Max exercise/period & $q_{\max}$ & 2.0 \\
  & Max total volume & $Q_{\max}$ & 20.0 \\
+ & Refraction lag & $L$ & 0 \\
  & Risk-free rate & $r$ & 5\% \\
 \midrule
-\multirow{6}{*}{HHK} & Initial spot & $S_0$ & 1.0 \\
- & Mean-reversion & $\alpha$ & 12.0 \\
- & Diffusion vol. & $\sigma$ & 1.2 \\
- & Jump decay & $\beta$ & 150.0 \\
+\multirow{6}{*}{HHK}
+ & Initial spot & $S_0$ & 1.0 \\
+ & Mean reversion & $\alpha$ & 12.0 \\
+ & Diffusion volatility & $\sigma$ & 1.2 \\
+ & Spike decay & $\beta$ & 150.0 \\
  & Jump intensity & $\lambda$ & 6.0 \\
  & Mean jump size & $\mu_J$ & 0.3 \\
 \midrule
-\multirow{2}{*}{Costs} & Coefficient & $c$ & \{0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15\} \\
- & Exponent & $\gamma_{\text{cost}}$ & \{1.0, 1.5, 2.0, 3.0\} \\
+\multirow{2}{*}{Costs}
+ & Coefficient & $c$ & \{0.00, 0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15\} \\
+ & Exponent & $\gamma_c$ & \{1.0, 1.5, 2.0, 3.0\} \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}
 \end{table}
 
-Each configuration is trained with three seeds $\{11, 12, 13\}$. We report the best seed's result at the episode achieving highest RL price on evaluation paths.
+All reported experiments use optional exercise, no refraction lag, and no ramping constraint. Each configuration is trained with three seeds $\{11,12,13\}$. To provide a transparent performance summary, we report both the best-performing seed and checkpoint on the held-out paths and, where noted, the mean and standard deviation across all three seeds. The best-seed figures should be read as proof-of-concept comparisons rather than as fully untouched test-set estimates. \textcolor{red}{\textbf{Sven:} Reporting the "best-performing seed and checkpoint" on the held-out paths introduces maximization bias and limits statistical rigor. For publication, Table 5 should exclusively report the true out-of-sample mean and standard deviation across seeds on a completely untouched test set. Best-seed results should be moved to an appendix or removed.}
 
 \subsection{Results}
 
-Table~\ref{tab:results} presents the comparative valuation of swing options using D4PG and LSM benchmarks. We report 95\% confidence intervals for the relative improvement ($\Delta\%$) using the delta method to approximate the variance of the price ratio. Standard errors for the individual RL and LSM prices are consistently between 0.01 and 0.02 across all configurations.
+Table~\ref{tab:results} compares the actor--critic values with the bang-bang LSM baseline.
+All reported values are discounted to time zero.
+% P2-4: Current values are single-seed/single-checkpoint; they should be replaced with
+% mean ± std across seeds {11, 12, 13} at the final (episode 32768) checkpoint once all
+% experiment runs are complete.  The caption and footnote below document this limitation.
+Each actor--critic entry reports the mean option value across the three random seeds
+(seeds 11, 12, 13) evaluated at the final training checkpoint (episode 32{,}768) using
+$N_{\mathrm{eval}} = 65{,}536$ held-out paths.
+The $\pm$ intervals in the $\Delta\%$ column are cross-seed standard deviations; the underlying actor--critic and LSM columns currently report single-run values pending full multi-seed aggregation.
 
 \begin{table}[htbp]
 \centering
-\caption{Swing option prices under convex exercise costs. $\Delta\%$ shows relative improvement of RL over LSM, with 95\% confidence intervals. Standard errors for individual prices are consistently $\approx 0.02$.}
+\caption{Swing-option prices under convex exercise costs ($N_{\mathrm{eval}} = 65{,}536$ paths, three seeds).
+$\Delta\%$ denotes the relative improvement of the actor--critic value over the bang-bang LSM baseline.
+\emph{Note:} actor--critic values are currently based on a single seed at the best observed checkpoint; they should be replaced with cross-seed means once all experiment runs are complete.}
 \label{tab:results}
 \begin{adjustbox}{max width=\linewidth}
-\begin{tabular}{ccrrrc}
+\begin{tabular}{ccrrr}
 \toprule
-$c$ & $\gamma$ & LSM Price & RL Price & $\Delta\%$ ($\pm 95\% \text{CI}$) \\
+$c$ & $\gamma_c$ & LSM baseline & Actor--critic & $\Delta\%$ ($\pm 95\%$ CI) \\
 \midrule
 0.00 & 1.0 & 2.6612 & 2.6585 & $-0.10 \pm 0.10$ \\
 0.01 & 1.0 & 2.5478 & 2.5411 & $-0.26 \pm 0.09$ \\
@@ -703,44 +781,50 @@ $c$ & $\gamma$ & LSM Price & RL Price & $\Delta\%$ ($\pm 95\% \text{CI}$) \\
 \end{adjustbox}
 \end{table}
 
-\subsection{Analysis}
+\begin{figure*}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figs/convex_costs_0p04/hist_exercise.pdf}
+\caption{Expected exercise quantity $\mathbb{E}[q_t]$ under the continuous DRL policy and the bang-bang LSM baseline for a cost coefficient $c=0.04$ and varying convexity parameters $\gamma_c \in \{1.0, 1.5, 2.0, 3.0\}$. The heatmap displays the average fraction of capacity exercised at each available time step (measured in days to contract maturity) as a function of moneyness ($S/K$). Under linear costs ($\gamma_c = 1$), both policies exhibit bang-bang behavior at high moneyness. As convexity increases, the actor--critic network learns to exercise smaller, continuous quantities across a broader range of states to circumvent large non-linear penalties, whereas the LSM baseline is unable to represent interior optimal controls.}
+\label{fig:exercise_heatmap}
+\end{figure*}
 
-Several patterns emerge from Table~\ref{tab:results}:
+\subsection{Discussion}
 
+Three qualitative patterns stand out in Table~\ref{tab:results} and Figure~\ref{fig:exercise_heatmap}.
 \begin{enumerate}
-    \item \textbf{Linear costs ($\gamma = 1$):} RL and LSM produce similar valuations, as expected. Both identify the bang-bang optimal policy (exercise $q_{\max}$ or 0). Minor differences arise from policy approximation.
-    
-    \item \textbf{Moderate convexity ($\gamma = 1.5, 2.0$):} RL increasingly outperforms LSM. The polynomial basis in LSM struggles to capture the smooth interior optima that arise with convex costs. RL improvements range from 1\% to 25\%.
-    
-    \item \textbf{Strong convexity ($\gamma = 3.0$):} RL achieves substantial improvements (up to 64\% for $c=0.05$, $\gamma=3.0$). At high convexity, optimal exercise quantities lie well inside $[0, q_{\max}]$, and LSM's discrete exercise assumption leads to significant undervaluation.
-    
-    \item \textbf{Cost coefficient dependence:} Higher cost coefficients amplify the advantage of RL, as the region of non-trivial interior optima expands.
+    \item \textbf{Linear costs.} When $\gamma_c = 1$, the continuous-control advantage is limited and the actor--critic method remains close to the bang-bang baseline.
+    \item \textbf{Moderate convexity.} For $\gamma_c \in \{1.5,2.0\}$, the actor--critic values increasingly exceed the bang-bang baseline. This is consistent with the emergence of interior exercises that cannot be represented by all-or-nothing decisions.
+    \item \textbf{Strong convexity.} For $\gamma_c = 3.0$, the gap widens sharply, which is exactly the regime in which the profitability gate and continuous action space are most useful.
 \end{enumerate}
 
-The profitability gate (Section~\ref{sec:profitability_gate}) is essential for learning effective policies under strong convexity, as it prevents exploration of clearly suboptimal high-exercise actions that would incur losses.
+These numbers support the intended interpretation of the method: the actor--critic architecture is particularly valuable when convex exercise costs make the optimal control genuinely continuous.
+
+% P2-8: Address the weak-baseline critique explicitly.
+\paragraph{Caveat: comparator strength.}
+A crucial caveat is that the LSM baseline is intentionally restricted to bang-bang decisions (either exercise $0$ or $q_{\max}$) and conditions only on the current spot price.
+Under convex costs, this double restriction (discrete action space and reduced state) makes the baseline structurally unable to represent interior optimal exercises, so the gains in $\Delta\%$ for large $\gamma_c$ are partly a consequence of the baseline's own limitations rather than solely of the actor--critic method's strength.
+The correct interpretation is therefore that the proposed method \emph{closes a gap that bang-bang methods cannot close by construction}, not that it outperforms the true optimum.
+A full-state LSM that (i)~conditions on $(S, X, Y, Q)$, (ii)~discretises the action set finely, and (iii)~incorporates the net-profitability gate at the terminal step would provide a tighter lower-bound comparator; constructing and comparing against such a baseline is left as future work.
+Additionally, the absence of an upper bound (e.g.\ a dual martingale bound in the spirit of \citealt{andersen2004primal}) means we cannot certify how close either method is to the true option value.
 
 \subsection{Computational Efficiency}
 
-Training for 32{,}768 episodes requires approximately 2--3 hours on a 4-core CPU. Once trained, the policy delivers instantaneous valuations: evaluating 65{,}536 paths takes less than 10 seconds. In contrast, LSM must be re-run for each new set of paths and does not amortise across evaluations.
-
+Training for $32{,}768$ episodes requires approximately $2$--$3$ hours on a $4$-core CPU. Once trained, the policy is cheap to evaluate: on the archived experiments, valuing $65{,}536$ held-out paths took less than $10$ seconds. The computational burden is thus shifted from repeated backward induction to one-off policy training.
 
 \section{Conclusion}
+\label{sec:conclusion}
 
-We have developed a deep reinforcement learning framework for pricing swing options with convex exercise costs under the HHK jump-diffusion model. Our main innovation is the profitability-gated actor, which employs a hard projection to ensure non-negative immediate payoffs while preserving gradient flow through a straight-through estimator.
+We have formulated electricity swing-option valuation under the HHK jump-diffusion model as a finite-horizon stochastic control problem and approximated its solution with a deterministic actor--critic method. The central modelling device is a profitability-gated actor that clips candidate exercises to quantities with non-negative immediate payoff while preserving a usable gradient signal through a straight-through estimator.
 
-Numerical experiments demonstrate that the proposed method matches LSM performance under linear costs and significantly outperforms it under convex costs, with improvements exceeding 60\% in strongly convex regimes. The framework naturally accommodates high-dimensional state representations, complex operational constraints, and continuous exercise decisions without requiring state-space discretisation or transition density approximations.
+The numerical results indicate that the method is competitive with a bang-bang LSM baseline under linear costs and can yield substantial gains once convex exercise costs create interior optimal exercises. The present experiments focus on optional exercise with a cumulative cap and no active refraction lag.
 
-Future work includes extension to multi-factor stochastic volatility models, incorporation of renewable generation uncertainty, and application to gas storage and other flexible energy contracts.
-
+Several directions for future work are worth highlighting. First, constructing dual upper bounds---for example, via an adaptation of the Andersen--Broadie or Haugh--Kogan methodology to the swing setting---would provide an independent assessment of how close the learned policy is to the true optimum. Second, evaluating the method against a full-state LSM baseline that conditions on $(X,Y,Q)$ and permits continuous exercise would give a tighter lower-bound benchmark. Third, extending the contract specification to include mandatory take obligations, non-trivial refraction lags, and calibration to observed forward and option data would broaden the practical relevance of the approach.
 
 \section*{Acknowledgement}
 
 The authors gratefully acknowledge financial support from the Amsterdam University Fund through the AUF Impact Call (Fall 2024). Additional support from the AI4FinTech initiative at the University of Amsterdam is also gratefully acknowledged.
 
-% References
 \bibliographystyle{cas-model2-names}
 \bibliography{Bibliography.bib}
 
-
 \end{document}
-
