@@ -52,6 +52,22 @@ Open the Jupyter Notebooks:
 - `5: Convex Costs LSM vs RL.ipynb` — Main comparison analysis
 - `6: Convex costs 0.04 Analysis.ipynb` — Detailed case study
 
+### 5. Build The Paper
+
+```bash
+cd /path/to/DRL-Swing-Options
+./tools/build_latex.sh "$PWD/Paper" DRL_Swing_Options.tex
+```
+
+This compiles the manuscript in a temporary directory and copies the final PDF and auxiliary artifacts to `Paper/build/`.
+
+To remove generated manuscript artifacts:
+
+```bash
+cd /path/to/DRL-Swing-Options
+./tools/clean_latex.sh
+```
+
 ---
 
 ## Research Context
@@ -195,6 +211,7 @@ python run.py \
 | `runs/<name>.pth` | Saved actor weights |
 | `runs/<name>.json` | Hyperparameters |
 | `Jupyter Notebooks/Convex Costs Results *.csv` | Aggregated results |
+| `Paper/build/DRL_Swing_Options.pdf` | Built manuscript PDF |
 
 ### Key Metrics
 
@@ -223,6 +240,13 @@ python run.py \
 DRL-Swing-Options/
 ├── run.py                      # Main training script
 ├── conv_cost_exps.sh           # Experiment sweep orchestrator
+├── Paper/
+│   ├── DRL_Swing_Options.tex   # Main manuscript source
+│   ├── Bibliography.bib        # Manuscript bibliography
+│   ├── cas-dc.cls              # Elsevier class file
+│   ├── cas-common.sty          # Elsevier shared style file
+│   ├── model1-num-names.bst    # Bibliography style
+│   └── build/                  # Generated manuscript artifacts
 ├── Convex Cost Experiments/    # Individual experiment configs
 │   └── SwingOption_20_c*.sh    # 25 configurations (c × γ)
 ├── src/
@@ -233,6 +257,9 @@ DRL-Swing-Options/
 │   ├── simulate_hhk_spot.py    # HHK simulation
 │   └── replay_buffer.py        # PER and circular buffers
 ├── Jupyter Notebooks/          # Analysis and validation
+├── tools/
+│   ├── build_latex.sh          # Local paper build script
+│   └── clean_latex.sh          # Paper artifact cleanup
 ├── logs/                       # Training outputs
 ├── runs/                       # Saved models
 └── HPT.md                      # Hyperparameter tuning history

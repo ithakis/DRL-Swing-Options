@@ -50,6 +50,14 @@ tensorboard --logdir=runs --load_fast=true
 | `src/swing_contract.py` | Contract specification: exercise bounds, refraction, discounting |
 | `src/replay_buffer.py` | Replay buffers: Circular and PER with Fenwick tree |
 
+### Paper Layout
+- Manuscript sources live in `Paper/`
+- Main paper entrypoint: `Paper/DRL_Swing_Options.tex`
+- `Paper/sven.tex` preserves Sven's original red-comment review version; when working on manuscript claims, tables, or figures, treat Sven's feedback there as active review context we are trying to address
+- Paper-local assets: `Paper/Bibliography.bib`, `Paper/cas-dc.cls`, `Paper/cas-common.sty`, `Paper/model1-num-names.bst`
+- Generated paper artifacts live in `Paper/build/`
+- Figures remain in `figs/` and are referenced from the manuscript via `../figs/...`
+
 ---
 
 ## Default Configuration (Convex Cost Experiments)
@@ -110,6 +118,49 @@ tensorboard --logdir=runs --load_fast=true
 | `Jupyter Notebooks/` | Validation and results analysis |
 | `results.md` | Quick results summary |
 | `Convex Cost Experiments/` | Pre-configured experiment scripts |
+
+### Paper Build
+```bash
+cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options
+./tools/build_latex.sh "$PWD/Paper" DRL_Swing_Options.tex
+```
+This compiles in a temporary directory and copies the final artifacts to `Paper/build/`.
+
+### Paper Clean
+```bash
+cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options
+./tools/clean_latex.sh
+```
+
+### Paper Figure Regeneration
+The three paper figures are generated from `Jupyter Notebooks/6: Convex costs 0.04 Analysis.ipynb`.
+
+Minimum reliable rerun path from a fresh kernel:
+- Run cells 2, 3, 4, 5, and 6 to load paths, helper functions, evaluation data, and figure labels.
+- For Figure 1 (`hist_exercise.pdf`): run cell 22.
+- For Figure 2 (`spot_income_pv_hist.png`): run cell 14 first to rebuild `path_stats`, then run cell 25.
+- For Figure 3 (`bang_bangness_rl.pdf`): run cell 27 first to refresh Bang-Bangness values in `Convex Costs Results 6.csv`, then run cell 28.
+
+Minimum rerun path when the kernel already has the setup state loaded:
+- Figure 1 only: rerun cell 22.
+- Figure 2 only: rerun cell 25, unless `path_stats` was invalidated, in which case rerun cell 14 first.
+- Figure 3 only: rerun cell 28, unless the underlying Bang-Bangness data changed, in which case rerun cell 27 first.
+
+If multiple paper figures are edited in one pass, the smallest safe sequence from a fresh kernel is cells 2, 3, 4, 5, 6, 14, 22, 25, 27, and 28.
+
+Minimum rerun path after editing the figure-producing cells themselves:
+- If you edit cell 22 only, rerun cell 22 only.
+- If you edit cell 25 only, rerun cell 25 only, as long as cells 2, 3, 4, 5, 6, and 14 are still valid in the current kernel.
+- If you edit cell 27 only, rerun cells 27 and 28, because cell 27 updates the CSV consumed by cell 28.
+- If you edit cell 28 only, rerun cell 28 only, as long as cell 27 has already produced up-to-date Bang-Bangness values.
+- If you edit both cells 27 and 28, rerun cells 27 and 28.
+- If you edit cells 14 and 25, rerun cells 14 and 25.
+
+Smallest safe rebuild sets for agentic figure work:
+- Figure 1 only: cells 22.
+- Figure 2 only: cells 14 and 25 from a fresh setup, or just cell 25 if `path_stats` is already current.
+- Figure 3 only: cells 27 and 28 when the metric data changes, or just cell 28 for styling-only edits.
+- All three figures from a fresh kernel: cells 2, 3, 4, 5, 6, 14, 22, 25, 27, and 28.
 
 ---
 
