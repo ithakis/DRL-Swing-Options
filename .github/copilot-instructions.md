@@ -4,35 +4,54 @@
 
 Research-grade implementation of **D4PG** (Deep Deterministic Policy Gradient) for pricing **swing options** in energy markets. The algorithm prices options with **convex exercise costs** using the **Hambly-Howison-Kluge (HHK)** stochastic process and benchmarks against **Least-Squares Monte Carlo (LSM)**.
 
+## Agent Execution Guardrails
+
+- Prefer named repo commands (`make ...`) or VS Code tasks over reconstructing long shell commands from memory.
+- Do not run the full convex-cost sweep unless the user explicitly asks for it.
+- Use the currently selected Python environment; do not assume a machine-specific absolute path.
+- Keep searches focused on source, tools, docs, and paper files unless the task explicitly targets generated outputs in `logs/`, `runs/`, or notebook artifacts.
+
+---
+
+## Color Legend (manuscript diffs)
+
+When reviewing the manuscript we annotate inserted text with colors to indicate provenance. Use the following legend when giving feedback:
+
+- **Purple**: Text inserted specifically to address Sven's review comments (benchmark strength, state-space, profitability-gate scope, or reporting bias). If you want to give targeted feedback on reviewer-driven edits, quote or reference the purple text.
+- **Orange**: New statistical methodology and results added in the current revision (evaluation protocol, Results table orange columns, Seed Robustness section). Use `\textcolor{revisionorange}{...}` (defined as `\definecolor{revisionorange}{RGB}{179,90,0}`).
+- **Green**: New material or analysis added independently of Sven's comments (e.g., new figures, metrics, or explanatory paragraphs). These are broader content additions rather than direct responses.
+- **Red**: Sven's original inline reviewer comments preserved in the draft for traceability.
+
+When you want to provide feedback on a purple passage, please either (a) paste the purple sentence(s) into your message, or (b) specify the file and line range (for example: [Paper/DRL_Swing_Options.tex](Paper/DRL_Swing_Options.tex#L320-L330)). This makes it easy to locate the targeted fragment and apply edits.
+
 ---
 
 ## Running Experiments
 
 ### Main Experiment Sweep
 ```bash
-cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options && conda activate EP11
-bash conv_cost_exps.sh
+make sweep
 ```
 This runs individual scripts from `Convex Cost Experiments/` (e.g., `SwingOption_20_c0.05_gamma2.sh`).
 
 ### Single Experiment
 ```bash
-bash "Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
+make single-exp EXP_SCRIPT="Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
 ```
 
 ### Direct Python Training
 ```bash
-python run.py -name "Test" -seed 42 -n_paths 8192 --c_cost 0.05 --gamma_cost 2 [other args]
+make train ARGS='-name "Test" -seed 42 -n_paths 8192 --c_cost 0.05 --gamma_cost 2 [other args]'
 ```
 
 ### Evaluation
 ```bash
-python evaluate_saved_agent.py --run_name <name> --runs 100
+make eval RUN_NAME=<name> RUNS=100
 ```
 
 ### TensorBoard
 ```bash
-tensorboard --logdir=runs --load_fast=true
+make tensorboard
 ```
 
 ---
@@ -45,10 +64,14 @@ tensorboard --logdir=runs --load_fast=true
 | `src/agent.py` | D4PG agent: networks, PER, noise schedules, optimizer configuration |
 | `src/swing_env.py` | Gymnasium environment: state representation, reward calculation, contract constraints |
 | `src/networks.py` | Neural architectures: Actor (profitability-gated), Critic, IQN |
-| `src/lsm_swing_pricer.py` | LSM benchmark: Longstaff-Schwartz with polynomial basis |
+| `src/lsm_swing_pricer.py` | LSM benchmarks: discretized-action ($M$-level) Longstaff-Schwartz with volume-based DP |
 | `src/simulate_hhk_spot.py` | HHK simulation: 2-factor OU with jumps, Sobol sequence |
 | `src/swing_contract.py` | Contract specification: exercise bounds, refraction, discounting |
 | `src/replay_buffer.py` | Replay buffers: Circular and PER with Fenwick tree |
+| `tools/compare_lsm_state_modes.py` | Compare reduced-state vs full-state LSM outputs and summary metrics |
+| `tools/update_convex_costs_results.py` | Refresh convex-cost result tables/CSVs after benchmark reruns |
+| `tools/rebuild_results_v7.py` | Regenerate `Convex Costs Results 7.csv` and `Convex Costs Results 7 focal.csv` from logs |
+| `tools/generate_seed_robustness_figure.py` | Generate Figure 4 (seed robustness strip+box plot) from the focal results CSV |
 
 ### Paper Layout
 - Manuscript sources live in `Paper/`
@@ -78,7 +101,8 @@ tensorboard --logdir=runs --load_fast=true
 - `gamma_cost ∈ {1, 1.5, 2, 3}`
 
 ### Training
-- Episodes: `32768`, Batch: `128`, Seeds: `{11, 12, 13}`
+- Episodes: `32768`, Batch: `128`, Seeds: `{11, 12, 13}` (standard sweep)
+- **Focal robustness study**: c=0.04, γ=2 uses seeds 11–25 (15 seeds); see `Convex Cost Experiments/SwingOption_20_c0.04_gamma2_focal.sh`
 - PER: soft alpha ramp (0.1 → 0.2), beta ≈ 1.0
 - Noise: pre-squash Gaussian, plateau + hyperbolic decay
 - Networks: 2×64 SiLU MLPs, LayerNorm, orthogonal init
@@ -92,7 +116,9 @@ tensorboard --logdir=runs --load_fast=true
 | `logs/<run>/` | Training/evaluation CSVs, parquet files |
 | `runs/<name>.pth` | Saved actor weights |
 | `runs/<name>.json` | Run hyperparameters |
-| `Jupyter Notebooks/*.csv` | Aggregated results tables |
+| `Jupyter Notebooks/Convex Costs Results 7.csv` | Aggregated results (standard 3-seed sweep) |
+| `Jupyter Notebooks/Convex Costs Results 7 focal.csv` | Focal 15-seed results for c=0.04, γ_c=2 |
+| `Jupyter Notebooks/Convex Costs Results *.csv` | Earlier result snapshots (1–6) |
 
 ---
 
@@ -121,46 +147,25 @@ tensorboard --logdir=runs --load_fast=true
 
 ### Paper Build
 ```bash
-cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options
-./tools/build_latex.sh "$PWD/Paper" DRL_Swing_Options.tex
+make paper
 ```
 This compiles in a temporary directory and copies the final artifacts to `Paper/build/`.
 
 ### Paper Clean
 ```bash
-cd /Users/alexanderithakis/Documents/GitHub/DRL-Swing-Options
-./tools/clean_latex.sh
+make clean-paper
 ```
 
 ### Paper Figure Regeneration
-The three paper figures are generated from `Jupyter Notebooks/6: Convex costs 0.04 Analysis.ipynb`.
+The paper has **four figures**:
+- **Figures 1–3** (HHK paths, main results grid, Bang-Bangness) are generated from `Jupyter Notebooks/6: Convex costs 0.04 Analysis.ipynb`.
+- **Figure 4** (Seed Robustness strip+box plot) is generated from the standalone script:
+  ```bash
+  /path/to/conda run -p /path/to/EP11 python tools/generate_seed_robustness_figure.py
+  ```
+  or via `make` if a target is added.
 
-Minimum reliable rerun path from a fresh kernel:
-- Run cells 2, 3, 4, 5, and 6 to load paths, helper functions, evaluation data, and figure labels.
-- For Figure 1 (`hist_exercise.pdf`): run cell 22.
-- For Figure 2 (`spot_income_pv_hist.png`): run cell 14 first to rebuild `path_stats`, then run cell 25.
-- For Figure 3 (`bang_bangness_rl.pdf`): run cell 27 first to refresh Bang-Bangness values in `Convex Costs Results 6.csv`, then run cell 28.
-
-Minimum rerun path when the kernel already has the setup state loaded:
-- Figure 1 only: rerun cell 22.
-- Figure 2 only: rerun cell 25, unless `path_stats` was invalidated, in which case rerun cell 14 first.
-- Figure 3 only: rerun cell 28, unless the underlying Bang-Bangness data changed, in which case rerun cell 27 first.
-
-If multiple paper figures are edited in one pass, the smallest safe sequence from a fresh kernel is cells 2, 3, 4, 5, 6, 14, 22, 25, 27, and 28.
-
-Minimum rerun path after editing the figure-producing cells themselves:
-- If you edit cell 22 only, rerun cell 22 only.
-- If you edit cell 25 only, rerun cell 25 only, as long as cells 2, 3, 4, 5, 6, and 14 are still valid in the current kernel.
-- If you edit cell 27 only, rerun cells 27 and 28, because cell 27 updates the CSV consumed by cell 28.
-- If you edit cell 28 only, rerun cell 28 only, as long as cell 27 has already produced up-to-date Bang-Bangness values.
-- If you edit both cells 27 and 28, rerun cells 27 and 28.
-- If you edit cells 14 and 25, rerun cells 14 and 25.
-
-Smallest safe rebuild sets for agentic figure work:
-- Figure 1 only: cells 22.
-- Figure 2 only: cells 14 and 25 from a fresh setup, or just cell 25 if `path_stats` is already current.
-- Figure 3 only: cells 27 and 28 when the metric data changes, or just cell 28 for styling-only edits.
-- All three figures from a fresh kernel: cells 2, 3, 4, 5, 6, 14, 22, 25, 27, and 28.
+Use the `paper-figure-regen` skill for the detailed notebook choreography, minimum rerun paths, and figure-specific rebuild rules. Keep the global instructions focused on the codebase and invoke the skill when the task is specifically about figure regeneration.
 
 ---
 
@@ -170,4 +175,6 @@ Smallest safe rebuild sets for agentic figure work:
 2. **Reward includes discounting**: Use `gamma = 1` in D4PG
 3. **LSM uses out-of-sample evaluation**: Separate train/test datasets
 4. **Pre-squash noise**: Exploration noise added before tanh01/beta-sigmoid squashing
-5. **LSM convex cost caveat**: The terminal step must gate on **net profitability** (`payoff_net > 0`), not just ITM (`payoff_gross > 0`). With `c > 0`, exercising at the last step can be unprofitable even when in-the-money.
+5. **LSM convex cost caveat**: Both terminal and non-terminal steps must gate on **net profitability** (`payoff_net > 0`), not just ITM (`payoff_gross > 0`). With `c > 0`, exercising can be unprofitable even when in-the-money, so the net-payoff gate must be applied consistently throughout the backward induction.
+6. **Bang-Bangness metric**: `B = fraction of exercises at q_max`. Decreases with γ. Column `RL_BangBangness_mean` in `Convex Costs Results 7.csv`. In-text estimates: ~66% at γ=1, ~21% at γ=2.
+7. **Results 7 is canonical**: The current paper uses `Convex Costs Results 7.csv` (not the older Results 1–6). Regenerate with `tools/rebuild_results_v7.py`.

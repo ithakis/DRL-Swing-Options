@@ -250,6 +250,12 @@ class ConfigManager:
             default=1e-6,
             help="Regularization strength alpha for ridge/lasso LSM (default: 1e-6).",
         )
+        parser.add_argument(
+            "--lsm_n_actions",
+            type=int,
+            default=5,
+            help="Number of discretized exercise levels for LSM baseline (default: 5).",
+        )
 
         # HHK Stochastic Process Parameters
         parser.add_argument("--S0", type=float, default=100.0, help="Initial spot price, default = 100.0")
@@ -1325,6 +1331,7 @@ def main():
         basis_type=args.lsm_basis,
         reg_type=args.lsm_reg,
         reg_alpha=args.lsm_reg_alpha,
+        n_actions=args.lsm_n_actions,
     )
     mean_lsm_price, (th5q_price, th95q_price) = price_swing_option_lsm_oos(
         contract=swing_contract,

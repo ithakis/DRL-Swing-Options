@@ -32,6 +32,7 @@ find "$build_dir" -maxdepth 1 \( \
 
 cd "$doc_dir"
 BIBINPUTS="$doc_dir:" BSTINPUTS="$doc_dir:" latexmk \
+	-f \
 	-pdf \
 	-interaction=nonstopmode \
 	-file-line-error \

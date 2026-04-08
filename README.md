@@ -13,25 +13,17 @@ A research-grade implementation of **D4PG** (Distributional Deep Deterministic P
 ### 1. Environment Setup
 
 ```bash
-# Create conda environment (Python 3.11, conda-forge only)
-conda create -n EP11 -c conda-forge python=3.11
+# Create the research environment from the tracked manifest
+conda env create -f environment.yml
 conda activate EP11
-
-# Core dependencies
-conda install -c conda-forge \
-    numpy scipy pandas matplotlib seaborn scikit-learn \
-    tqdm gymnasium tensorboard ipykernel numba
-
-# PyTorch CPU (avoid pip to prevent OpenMP conflicts)
-conda install -c conda-forge pytorch torchvision torchaudio
 ```
+
+If you prefer a manual setup, `environment.yml` records the same conda-forge based package stack used by this repository.
 
 ### 2. Run the Convex Cost Experiments
 
 ```bash
-cd /path/to/DRL-Swing-Options
-conda activate EP11
-bash conv_cost_exps.sh
+make sweep
 ```
 
 This sweeps over convex cost configurations (c × γ) and runs 3 seeds each.
@@ -39,11 +31,7 @@ This sweeps over convex cost configurations (c × γ) and runs 3 seeds each.
 ### 3. Monitor Training
 
 ```bash
-tensorboard --logdir=runs \
-  --load_fast=true \
-  --samples_per_plugin=scalars=500 \
-  --reload_interval=30 \
-  --max_reload_threads=4
+make tensorboard
 ```
 
 ### 4. Analyze Results
@@ -55,8 +43,7 @@ Open the Jupyter Notebooks:
 ### 5. Build The Paper
 
 ```bash
-cd /path/to/DRL-Swing-Options
-./tools/build_latex.sh "$PWD/Paper" DRL_Swing_Options.tex
+make paper
 ```
 
 This compiles the manuscript in a temporary directory and copies the final PDF and auxiliary artifacts to `Paper/build/`.
@@ -64,8 +51,21 @@ This compiles the manuscript in a temporary directory and copies the final PDF a
 To remove generated manuscript artifacts:
 
 ```bash
-cd /path/to/DRL-Swing-Options
-./tools/clean_latex.sh
+make clean-paper
+```
+
+### Stable Repo Commands
+
+The repository now exposes a small set of stable entry points for humans and agents:
+
+```bash
+make help
+make sweep
+make single-exp EXP_SCRIPT="Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
+make train ARGS='-name "MyExperiment" -seed 42 -n_paths 32768 --c_cost 0.05 --gamma_cost 2.0'
+make eval RUN_NAME=MyExperiment RUNS=100
+make compare-lsm-state-modes
+make paper
 ```
 
 ---
@@ -92,7 +92,11 @@ With **convex exercise costs** (cost = c · q^γ, where γ > 1), the optimal pol
 | Convex costs | Native support | Requires modification |
 | Computation | Train once, fast inference | Re-solve per path |
 
-> **⚠️ LSM with convex costs**: When implementing LSM for swing options with convex exercise costs (`c > 0`, `γ > 1`), the terminal time step must gate exercises on **net profitability** (`payoff - cost > 0`), not just in-the-money status (`payoff > 0`). Failing to do so causes unprofitable exercises at the last step, undervaluing the option.
+The repository now distinguishes two bang-bang LSM baselines:
+- `LSM_minimal`: legacy reduced-state regression on spot-price basis functions only.
+- `LSM_full`: upgraded full-state regression on the HHK and contract state, used for the current paper comparisons.
+
+> **⚠️ LSM with convex costs**: The LSM exercise gate must check **net profitability** (`payoff_net > 0`), not gross in-the-money status, at both terminal and non-terminal decisions. The current implementation applies this consistently throughout backward induction.
 
 ---
 
@@ -146,6 +150,16 @@ The main experiments (`conv_cost_exps.sh`) sweep over:
 
 Each configuration runs with seeds {11, 12, 13} for robustness.
 
+### Focal Seed Robustness Study
+
+For the representative configuration c = 0.04, γ = 2, an extended focal study trains 15 seeds (11–25) to assess training variability:
+
+```bash
+make single-exp EXP_SCRIPT="Convex Cost Experiments/SwingOption_20_c0.04_gamma2_focal.sh"
+```
+
+Results: RL mean **1.9613 ± 0.0088** (CV 0.45%) vs LSM baseline **1.8634** — all 15 seeds exceed LSM by at least +4.2%.
+
 ### HHK Parameters
 
 | Parameter | Value | Description |
@@ -164,26 +178,26 @@ Each configuration runs with seeds {11, 12, 13} for robustness.
 ### Full Sweep
 
 ```bash
-bash conv_cost_exps.sh
+make sweep
 ```
 
 ### Individual Configuration
 
 ```bash
-bash "Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
+make single-exp EXP_SCRIPT="Convex Cost Experiments/SwingOption_20_c0.05_gamma2.sh"
 ```
 
 ### Custom Run
 
 ```bash
-python run.py \
+make train ARGS=' \
     -name "MyExperiment" \
     -seed 42 \
     -n_paths 32768 \
     --c_cost 0.05 \
     --gamma_cost 2.0 \
     -eval_every 1024 \
-    -n_paths_eval 65536
+    -n_paths_eval 65536'
 ```
 
 ### Key CLI Flags
@@ -208,16 +222,26 @@ python run.py \
 | Path | Contents |
 |------|----------|
 | `logs/<run>/` | Training/evaluation CSVs, parquet files |
+| `logs/lsm_full_state/` | Full-state LSM reruns and parquet diagnostics |
 | `runs/<name>.pth` | Saved actor weights |
 | `runs/<name>.json` | Hyperparameters |
 | `Jupyter Notebooks/Convex Costs Results *.csv` | Aggregated results |
 | `Paper/build/DRL_Swing_Options.pdf` | Built manuscript PDF |
+
+### Benchmark Maintenance Tools
+
+- `tools/compare_lsm_state_modes.py` compares `LSM_minimal` and `LSM_full` and writes benchmark summaries to `logs/`.
+- `tools/update_convex_costs_results.py` refreshes the convex-cost result tables and CSVs used by the paper and notebooks after rerunning evaluations.
+- `tools/rebuild_results_v7.py` regenerates `Convex Costs Results 7.csv` and `Convex Costs Results 7 focal.csv` from the latest evaluation logs, used by paper figures.
+- `tools/generate_seed_robustness_figure.py` produces Figure 4 (seed robustness strip+box plot) from the focal results CSV.
+- Full-state benchmark artifacts live under `logs/lsm_full_state/`.
 
 ### Key Metrics
 
 - **Delta%**: `(RL_price / LSM_price - 1) × 100` — RL improvement over LSM
 - **Average100**: Rolling average episodic return
 - **Action_variance_mean**: Policy exploration health
+- **Bang-Bangness (B)**: Fraction of exercises at maximum capacity (q = q_max). Measures how close the RL policy is to a bang-bang strategy. Decreases as convex cost exponent γ grows.
 
 ---
 
@@ -230,7 +254,7 @@ python run.py \
 | `3: Training Dashboard` | TensorBoard metrics analysis |
 | `4: Evaluation 1: RL vs LSM Analysis` | Statistical comparison |
 | `5: Convex Costs LSM vs RL` | **Main results analysis** |
-| `6: Convex costs 0.04 Analysis` | Detailed case study |
+| `6: Convex costs 0.04 Analysis` | Detailed case study; generates Figures 1–3 (HHK paths, main results, Bang-Bangness) |
 
 ---
 
@@ -253,13 +277,17 @@ DRL-Swing-Options/
 │   ├── agent.py                # D4PG agent implementation
 │   ├── swing_env.py            # Gymnasium environment
 │   ├── networks.py             # Actor/Critic/IQN networks
-│   ├── lsm_swing_pricer.py     # LSM benchmark
+│   ├── lsm_swing_pricer.py     # LSM_minimal and LSM_full benchmarks
 │   ├── simulate_hhk_spot.py    # HHK simulation
 │   └── replay_buffer.py        # PER and circular buffers
 ├── Jupyter Notebooks/          # Analysis and validation
 ├── tools/
-│   ├── build_latex.sh          # Local paper build script
-│   └── clean_latex.sh          # Paper artifact cleanup
+│   ├── build_latex.sh                    # Local paper build script
+│   ├── clean_latex.sh                    # Paper artifact cleanup
+│   ├── compare_lsm_state_modes.py        # Compare reduced-state vs full-state LSM outputs
+│   ├── update_convex_costs_results.py    # Refresh paper/notebook convex-cost result tables
+│   ├── rebuild_results_v7.py             # Regenerate Results 7 CSVs from evaluation logs
+│   └── generate_seed_robustness_figure.py # Generate Figure 4 (seed robustness strip+box plot)
 ├── logs/                       # Training outputs
 ├── runs/                       # Saved models
 └── HPT.md                      # Hyperparameter tuning history

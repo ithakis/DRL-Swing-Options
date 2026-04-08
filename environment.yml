@@ -1,0 +1,19 @@
+name: EP11
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - tqdm
+  - gymnasium
+  - tensorboard
+  - ipykernel
+  - numba
+  - pytorch
+  - torchvision
+  - torchaudio

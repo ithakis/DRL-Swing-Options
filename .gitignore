@@ -232,6 +232,7 @@ outputs/
 results/
 experiments/
 logs/
+profilelogs/
 old_logs/
 tensorboard_runs/
 runs/
@@ -245,3 +246,7 @@ Parquet Logs/
 _Longstaff-Schwartz Swing Options/
 .history/
 Presentation/
+
+# Additional generated artifacts and local search noise
+Paper/build/
+Jupyter Notebooks/.ipynb_checkpoints/
