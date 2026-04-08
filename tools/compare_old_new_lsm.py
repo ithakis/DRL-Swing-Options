@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Compare old (bang-bang) vs new (discretized-action) LSM values."""
-import csv, sys
+
+import csv
 
 old_file = "Jupyter Notebooks/Convex Costs Results 7.csv.bak"  # We'll need to save the old one first
 new_file = "Jupyter Notebooks/Convex Costs Results 7.csv"
@@ -54,9 +55,11 @@ with open(new_file) as f:
             if status == "FAIL":
                 all_ok = False
             improvements.append(pct)
-            print(f"{row['Configuration']:<40} {old_val:10.4f} {new_val:10.4f} {change:+8.4f} {pct:+7.2f}% {status:>8}")
+            print(
+                f"{row['Configuration']:<40} {old_val:10.4f} {new_val:10.4f} {change:+8.4f} {pct:+7.2f}% {status:>8}"
+            )
 
     print(f"\nAll LSM values ≥ old: {'YES' if all_ok else 'NO'}")
-    print(f"Mean improvement: {sum(improvements)/len(improvements):+.2f}%")
+    print(f"Mean improvement: {sum(improvements) / len(improvements):+.2f}%")
     print(f"Max improvement: {max(improvements):+.2f}%")
     print(f"Min improvement: {min(improvements):+.2f}%")

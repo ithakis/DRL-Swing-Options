@@ -12,7 +12,6 @@ Author: Senior AI RL Developer
 import argparse
 import csv
 import json
-import math
 import multiprocessing as mp
 import os
 import shutil
@@ -44,11 +43,10 @@ from src.lsm_swing_pricer import fit_lsm_estimators, price_swing_option_lsm_oos
 # Import LSM pricer for benchmarking
 from src.simulate_hhk_spot import no_seasonal_function, simulate_hhk_spot
 from src.swing_contract import SwingContract
-from src.swing_env import SwingOptionEnv, approximate_Q_T
+from src.swing_env import SwingOptionEnv
 
 # Suppress the macOS PyTorch profiling warning
 warnings.filterwarnings("ignore", message=".*record_context_cpp.*")
-
 
 
 class AsyncParquetWriter:
@@ -208,7 +206,10 @@ class ConfigManager:
             "--risk_free_rate", type=float, default=0.05, help="Risk-free rate for discounting, default = 0.05"
         )
         parser.add_argument(
-            "--min_refraction_periods", type=int, default=0, help="Minimum periods between exercises, default = 0"
+            "--min_refraction_periods",
+            type=int,
+            default=0,
+            help="Minimum periods between exercises, default = 0",
         )
         parser.add_argument(
             "--c_cost",
@@ -271,11 +272,33 @@ class ConfigManager:
         # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
         # PER hyperparameters
-        parser.add_argument("--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)")
-        parser.add_argument("--per_beta_start", type=float, default=0.4, help="PER: initial importance sampling weight beta_start (default: 0.4)")
-        parser.add_argument("--per_beta_frames", type=int, default=100000, help="PER: frames to anneal beta to 1.0 (default: 100000)")
-        parser.add_argument("--per_priority_floor", type=float, default=1e-6, help="Minimum PER priority to avoid zeros (default: 1e-6)")
-        parser.add_argument("--per_priority_clip_pct", type=float, default=0.0, help="Clip PER priorities to this percentile (0 disables, default: disabled)")
+        parser.add_argument(
+            "--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)"
+        )
+        parser.add_argument(
+            "--per_beta_start",
+            type=float,
+            default=0.4,
+            help="PER: initial importance sampling weight beta_start (default: 0.4)",
+        )
+        parser.add_argument(
+            "--per_beta_frames",
+            type=int,
+            default=100000,
+            help="PER: frames to anneal beta to 1.0 (default: 100000)",
+        )
+        parser.add_argument(
+            "--per_priority_floor",
+            type=float,
+            default=1e-6,
+            help="Minimum PER priority to avoid zeros (default: 1e-6)",
+        )
+        parser.add_argument(
+            "--per_priority_clip_pct",
+            type=float,
+            default=0.0,
+            help="Clip PER priorities to this percentile (0 disables, default: disabled)",
+        )
         parser.add_argument(
             "--per_priority_scheme",
             type=str,
@@ -289,11 +312,37 @@ class ConfigManager:
             default=1.0,
             help="PER: Huber threshold kappa for lap scheme (default: 1.0)",
         )
-        parser.add_argument("--per_alpha_final", type=float, default=None, help="Optional PER alpha target for scheduling (None disables)")
-        parser.add_argument("--per_alpha_ramp_start", type=int, default=0, help="Episode to start PER alpha ramp (0 disables if end<=start)")
-        parser.add_argument("--per_alpha_ramp_end", type=int, default=0, help="Episode to end PER alpha ramp (0 disables if end<=start)")
-        parser.add_argument("--per_beta_final", type=float, default=None, help="Optional PER beta target for scheduling (None keeps default beta behavior)")
-        parser.add_argument("--per_alpha_sigmoid", type=int, default=0, choices=[0, 1], help="Use sigmoid ramp for PER alpha/beta (default: 0 / linear)")
+        parser.add_argument(
+            "--per_alpha_final",
+            type=float,
+            default=None,
+            help="Optional PER alpha target for scheduling (None disables)",
+        )
+        parser.add_argument(
+            "--per_alpha_ramp_start",
+            type=int,
+            default=0,
+            help="Episode to start PER alpha ramp (0 disables if end<=start)",
+        )
+        parser.add_argument(
+            "--per_alpha_ramp_end",
+            type=int,
+            default=0,
+            help="Episode to end PER alpha ramp (0 disables if end<=start)",
+        )
+        parser.add_argument(
+            "--per_beta_final",
+            type=float,
+            default=None,
+            help="Optional PER beta target for scheduling (None keeps default beta behavior)",
+        )
+        parser.add_argument(
+            "--per_alpha_sigmoid",
+            type=int,
+            default=0,
+            choices=[0, 1],
+            help="Use sigmoid ramp for PER alpha/beta (default: 0 / linear)",
+        )
         parser.add_argument(
             "-per",
             type=int,
@@ -337,38 +386,38 @@ class ConfigManager:
             "--critic_warmup_episodes",
             type=int,
             default=0,
-            help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx)."
+            help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx).",
         )
         parser.add_argument(
             "--adaptive_noise_scale",
             type=float,
             default=0.0,
-            help="Scale factor for pre-activation noise relative to |u|. Default: 0.0 (off). Recommended: 0.5."
+            help="Scale factor for pre-activation noise relative to |u|. Default: 0.0 (off). Recommended: 0.5.",
         )
         # v60 parameters
         parser.add_argument(
             "--warmup_noise_fraction",
             type=float,
             default=1.0,
-            help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2"
+            help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2",
         )
         parser.add_argument(
             "--target_noise_decay_start",
             type=int,
             default=0,
-            help="v60: Episode to start decaying target policy noise (0 disables). Recommended: 15000"
+            help="v60: Episode to start decaying target policy noise (0 disables). Recommended: 15000",
         )
         parser.add_argument(
             "--target_noise_floor",
             type=float,
             default=0.02,
-            help="v60: Minimum target policy noise after decay. Default: 0.02"
+            help="v60: Minimum target policy noise after decay. Default: 0.02",
         )
         parser.add_argument(
             "--actor_output_activation",
             type=str,
             default="tanh01",
-            help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01"
+            help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01",
         )
 
         # Network and Learning Parameters
@@ -890,7 +939,6 @@ class LoggingManager:
         return lsm_file
 
 
-
 def generate_datasets(
     stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128
 ) -> Tuple[
@@ -1040,6 +1088,7 @@ class TrainingManager:
                         print("⚠️ Low performance detected, forcing memory cleanup...")
                         agent.cleanup_memory(force=True)
 
+
 def run_training(
     agent: Agent,
     train_env: SwingOptionEnv,
@@ -1089,7 +1138,9 @@ def run_training(
 
     # eval_every should not be 0, either -1 or >0
     if args.eval_every == 0:
-        raise ValueError("eval_every cannot be 0. Use -1 for end-only evaluation or positive value for periodic evaluation.")
+        raise ValueError(
+            "eval_every cannot be 0. Use -1 for end-only evaluation or positive value for periodic evaluation."
+        )
 
     # Initial evaluation of DRL agent without any training - if eval_every > 0
     if not args.eval_every == -1:
@@ -1110,7 +1161,7 @@ def run_training(
         # Fix 3: Update episode count in PER for proper beta annealing
         agent.update_episode_count(current_path)
         path_start_time = time.time()
-        
+
         # Use pre-generated training path for this episode (1:1 mapping, no cycling)
         path_idx = current_path - 1  # Direct mapping: episode i uses training path i
 
@@ -1187,11 +1238,15 @@ def run_training(
             tensorboard_writer.add_scalar("Exploration/Pre_Action_Noise", pre_noise_sigma, current_path)
         except Exception:
             pass
-        
+
         # Log learning rates for monitoring decay
         if agent.actor_scheduler is not None:
-            tensorboard_writer.add_scalar("Learning_Rate/Actor", agent.actor_optimizer.param_groups[0]['lr'], current_path)
-            tensorboard_writer.add_scalar("Learning_Rate/Critic", agent.critic_optimizer.param_groups[0]['lr'], current_path)
+            tensorboard_writer.add_scalar(
+                "Learning_Rate/Actor", agent.actor_optimizer.param_groups[0]["lr"], current_path
+            )
+            tensorboard_writer.add_scalar(
+                "Learning_Rate/Critic", agent.critic_optimizer.param_groups[0]["lr"], current_path
+            )
 
         last_price_display = f"{last_eval_price:.3f}" if last_eval_price is not None else "No Data"
         last_q_display = f"{last_avg_exercised:.3f}" if last_avg_exercised is not None else "No Data"
@@ -1305,19 +1360,21 @@ def main():
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype)
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype
+    )
     eval_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype)
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype
+    )
 
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
     if csv_logging_enabled:
-        exp_dir = os.path.join("logs", args.name) # experiment dir
-        shutil.rmtree(exp_dir, ignore_errors=True) # Remove old experiment directory if it exists
-        os.makedirs(exp_dir, exist_ok=True) # create new experiment directory
+        exp_dir = os.path.join("logs", args.name)  # experiment dir
+        shutil.rmtree(exp_dir, ignore_errors=True)  # Remove old experiment directory if it exists
+        os.makedirs(exp_dir, exist_ok=True)  # create new experiment directory
         # create "evaluations" subdirectory
         evaluations_dir = os.path.join(exp_dir, "evaluations")
-        os.makedirs(evaluations_dir, exist_ok=True) # create new /evaluations subdirectory
+        os.makedirs(evaluations_dir, exist_ok=True)  # create new /evaluations subdirectory
 
     # Price with Monte Carlo - LSM Benchmark
     # LSM benchmark uses float64 for stability; fit on in-sample, evaluate out-of-sample
@@ -1341,7 +1398,7 @@ def main():
         csv_path=lsm_parquet_path,
     )
     print(f"LSM Benchmark Price: {mean_lsm_price:.4f} (95% CI: [{th5q_price:.4f}, {th95q_price:.4f}])")
-    print('\n\n\n\n' + '=' * 60)
+    print("\n\n\n\n" + "=" * 60)
 
     ############################################################################################
     ############################################################################################
@@ -1353,7 +1410,7 @@ def main():
 
     # Initialize TensorBoard writer
     tensorboard_writer = SummaryWriter("runs/" + args.name)
-    
+
     # Initialize AsyncParquetWriter for non-blocking evaluation logging
     parquet_writer: Optional[AsyncParquetWriter] = None
     if csv_logging_enabled:
@@ -1365,10 +1422,10 @@ def main():
 
     try:
         # Get environment specs
-        action_high = train_env.action_space.high[0]        # pyright: ignore[reportAttributeAccessIssue]
-        action_low = train_env.action_space.low[0]          # pyright: ignore[reportAttributeAccessIssue]
-        state_size = train_env.observation_space.shape[0]   # pyright: ignore[reportOptionalSubscript]
-        action_size = train_env.action_space.shape[0]       # pyright: ignore[reportOptionalSubscript]
+        action_high = train_env.action_space.high[0]  # pyright: ignore[reportAttributeAccessIssue]
+        action_low = train_env.action_space.low[0]  # pyright: ignore[reportAttributeAccessIssue]
+        state_size = train_env.observation_space.shape[0]  # pyright: ignore[reportOptionalSubscript]
+        action_size = train_env.action_space.shape[0]  # pyright: ignore[reportOptionalSubscript]
 
         actor_hidden_size = args.actor_hidden_size or args.layer_size
         critic_hidden_size = args.critic_hidden_size or args.layer_size
@@ -1455,20 +1512,17 @@ def main():
         t0 = time.time()
 
         if args.saved_model is not None:
-            agent.actor_local.load_state_dict(torch.load(args.saved_model)) # type: ignore
+            agent.actor_local.load_state_dict(torch.load(args.saved_model))  # type: ignore
             print("WARNING: Pre-generated paths not available for saved model evaluation.")
         else:
-            # Warm up the actor using the first 2048 episodes (no training) 
+            # Warm up the actor using the first 2048 episodes (no training)
             # Iteratively optimize bias to maximize swing option price
-            # Warm up the actor using the first warmup_episodes (no training) 
+            # Warm up the actor using the first warmup_episodes (no training)
             # Iteratively optimize bias to maximize swing option price (Rprop)
             agent.calibrate_bias(
-                env=train_env, 
-                n_episodes=args.warmup_episodes, 
-                max_iterations=20, 
-                target_std=0.005
+                env=train_env, n_episodes=args.warmup_episodes, max_iterations=20, target_std=0.005
             )
-        
+
         if args.eval_benchmark:
             print("\nRunning standalone evaluation benchmark (evaluation only)...")
             benchmark_evaluation(
@@ -1512,27 +1566,27 @@ def main():
 
     finally:
         # Clean up environments
-        if 'eval_env' in locals():
+        if "eval_env" in locals():
             eval_env.close()
-        if 'train_env' in locals():
+        if "train_env" in locals():
             train_env.close()
-        
+
         # Stop the Parquet writer and wait for any pending writes
         if parquet_writer:
             parquet_writer.stop()
             print("✅ AsyncParquetWriter stopped - all Parquet files written")
 
         # Close TensorBoard writer
-        if 'tensorboard_writer' in locals():
+        if "tensorboard_writer" in locals():
             tensorboard_writer.close()
 
     # Save trained model (handle compiled models)
     try:
-        if hasattr(agent, '_actor_local_orig'):
+        if hasattr(agent, "_actor_local_orig"):
             # Use original uncompiled model if torch.compile was used
             torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
             print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
-        elif hasattr(agent.actor_local, 'state_dict'):
+        elif hasattr(agent.actor_local, "state_dict"):
             # No compilation was used, save the regular actor_local
             torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
             print(f"✅ Model saved to: runs/{args.name}.pth")

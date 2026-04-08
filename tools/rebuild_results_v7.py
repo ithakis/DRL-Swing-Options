@@ -266,6 +266,7 @@ def evaluate_lsm_on_test_set(
     # Compute actual LSM BangBangness from exercise decisions
     if csv_path and os.path.exists(csv_path):
         import pandas as pd
+
         df = pd.read_parquet(csv_path)
         exercised = df[df["q_t"] > 1e-6]
         qmax = contract.q_max
@@ -381,7 +382,9 @@ def main():
         contract = build_contract(params)
 
         # --- LSM Evaluation (once per config) ---
-        print(f"  Fitting & evaluating LSM (state_mode=full, degree=2, basis=chebyshev, n_actions={LSM_N_ACTIONS})...")
+        print(
+            f"  Fitting & evaluating LSM (state_mode=full, degree=2, basis=chebyshev, n_actions={LSM_N_ACTIONS})..."
+        )
         t0 = time.time()
         lsm_result = evaluate_lsm_on_test_set(
             contract=contract,

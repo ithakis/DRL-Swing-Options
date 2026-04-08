@@ -7,7 +7,11 @@ Tests:
 3. Linear cost sanity: M=5 ≈ M=2 when gamma=1 (bang-bang is optimal).
 4. Convex cost improvement: M=5 > M=2 when gamma ≥ 2.
 """
-import sys, os, time
+
+import os
+import sys
+import time
+
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -19,18 +23,33 @@ from src.swing_contract import SwingContract
 
 def make_contract(c_cost=0.04, gamma_cost=2.0):
     return SwingContract(
-        q_min=0.0, q_max=2.0, Q_min=0.0, Q_max=20.0,
-        strike=1.0, maturity=0.0833, n_rights=22, r=0.05,
-        min_refraction_periods=0, c_cost=c_cost, gamma_cost=gamma_cost,
+        q_min=0.0,
+        q_max=2.0,
+        Q_min=0.0,
+        Q_max=20.0,
+        strike=1.0,
+        maturity=0.0833,
+        n_rights=22,
+        r=0.05,
+        min_refraction_periods=0,
+        c_cost=c_cost,
+        gamma_cost=gamma_cost,
     )
 
 
 def make_dataset(n_paths, seed):
     contract = make_contract()
     hhk = {
-        "S0": 1.0, "T": contract.maturity, "n_steps": contract.n_rights - 1,
-        "alpha": 12.0, "sigma": 1.2, "beta": 150.0, "lam": 6.0, "mu_J": 0.3,
-        "f": no_seasonal_function, "dtype": np.float32,
+        "S0": 1.0,
+        "T": contract.maturity,
+        "n_steps": contract.n_rights - 1,
+        "alpha": 12.0,
+        "sigma": 1.2,
+        "beta": 150.0,
+        "lam": 6.0,
+        "mu_J": 0.3,
+        "f": no_seasonal_function,
+        "dtype": np.float32,
     }
     return simulate_hhk_spot(**hhk, n_paths=n_paths, seed=seed, stratify=True, batch_size=128)
 
@@ -40,15 +59,24 @@ def run_lsm(contract, train_ds, test_ds, n_actions=2, degree=2, basis="chebyshev
     test_f64 = tuple(np.asarray(a, dtype=np.float64) for a in test_ds)
     t0 = time.time()
     est = fit_lsm_estimators(
-        contract=contract, dataset=train_f64, poly_degree=degree,
-        basis_type=basis, state_mode="full", reg_type="none",
-        reg_alpha=1e-6, n_actions=n_actions,
+        contract=contract,
+        dataset=train_f64,
+        poly_degree=degree,
+        basis_type=basis,
+        state_mode="full",
+        reg_type="none",
+        reg_alpha=1e-6,
+        n_actions=n_actions,
     )
     fit_time = time.time() - t0
     t0 = time.time()
     price, (ci_lo, ci_hi) = price_swing_option_lsm_oos(
-        contract=contract, dataset=test_f64, estimators=est,
-        seed=1000, csv_path=None, _print_results=False,
+        contract=contract,
+        dataset=test_f64,
+        estimators=est,
+        seed=1000,
+        csv_path=None,
+        _print_results=False,
     )
     eval_time = time.time() - t0
     return price, ci_lo, ci_hi, fit_time, eval_time
@@ -76,7 +104,9 @@ def main():
         price, ci_lo, ci_hi, ft, et = run_lsm(contract, train_ds, test_ds, n_actions=2)
         diff_pct = 100 * (price - ref) / ref
         status = "PASS" if abs(diff_pct) < 2.0 else "FAIL"
-        print(f"  c={c}, γ={gamma}: new={price:.4f}, ref={ref:.4f}, diff={diff_pct:+.2f}%  [{status}]  (fit={ft:.1f}s, eval={et:.1f}s)")
+        print(
+            f"  c={c}, γ={gamma}: new={price:.4f}, ref={ref:.4f}, diff={diff_pct:+.2f}%  [{status}]  (fit={ft:.1f}s, eval={et:.1f}s)"
+        )
 
     print("\n" + "=" * 80)
     print("TEST 2: Monotonicity in M (c=0.04, γ=2)")

@@ -789,7 +789,7 @@ def fit_lsm_estimators(
                     break
                 q_m = action_grid[m]
                 payoff_gross = q_m * np.maximum(terminal_price - strike, 0.0)
-                payoff_net = payoff_gross - cost_coeff * (q_m ** cost_exp)
+                payoff_net = payoff_gross - cost_coeff * (q_m**cost_exp)
                 profitable = payoff_net > 0.0
                 best_val = np.where(profitable & (payoff_net > best_val), payoff_net, best_val)
             values[c, v] = best_val
@@ -825,7 +825,7 @@ def fit_lsm_estimators(
         for m in range(1, M):
             q_m = action_grid[m]
             pg = q_m * np.maximum(price - strike, 0.0)
-            pn = pg - cost_coeff * (q_m ** cost_exp)
+            pn = pg - cost_coeff * (q_m**cost_exp)
             payoffs_net[m - 1] = pn
             profitable[m - 1] = pn > 0.0
 
@@ -951,7 +951,7 @@ def price_swing_option_lsm_oos(
                     break
                 q_m = action_grid[m]
                 payoff_gross = q_m * np.maximum(terminal_price - strike, 0.0)
-                payoff_net = payoff_gross - cost_coeff * (q_m ** cost_exp)
+                payoff_net = payoff_gross - cost_coeff * (q_m**cost_exp)
                 profitable = payoff_net > 0.0
                 improve = profitable & (payoff_net > best_val)
                 best_val = np.where(improve, payoff_net, best_val)
@@ -966,12 +966,17 @@ def price_swing_option_lsm_oos(
         if estimators.basis_type == "chebyshev":
             params = estimators.chebyshev_params[j]
             X_poly, _ = _build_lsm_feature_matrix(
-                state_t, estimators.basis_type, estimators.poly_degree,
-                estimators.multi_indices, params,
+                state_t,
+                estimators.basis_type,
+                estimators.poly_degree,
+                estimators.multi_indices,
+                params,
             )
         else:
             X_poly, _ = _build_lsm_feature_matrix(
-                state_t, estimators.basis_type, estimators.poly_degree,
+                state_t,
+                estimators.basis_type,
+                estimators.poly_degree,
                 estimators.multi_indices,
             )
 
@@ -981,7 +986,7 @@ def price_swing_option_lsm_oos(
         for m in range(1, M):
             q_m = action_grid[m]
             pg = q_m * np.maximum(price - strike, 0.0)
-            pn = pg - cost_coeff * (q_m ** cost_exp)
+            pn = pg - cost_coeff * (q_m**cost_exp)
             payoffs_net[m - 1] = pn
             profitable[m - 1] = pn > 0.0
 
@@ -1029,7 +1034,7 @@ def price_swing_option_lsm_oos(
     records = [] if csv_path else None
     for j in range(n_steps):
         price = prices[:, j]
-        disc = df ** j
+        disc = df**j
         for i in range(n_paths):
             v = cap_used[i]
             c = cool_state[i]
@@ -1041,7 +1046,7 @@ def price_swing_option_lsm_oos(
                 remaining_cap = contract.Q_max - q_before
                 q = min(q_m, remaining_cap)
                 payoff_gross = q * max(price[i] - strike, 0.0)
-                pay_cost = cost_coeff * (q ** cost_exp)
+                pay_cost = cost_coeff * (q**cost_exp)
                 pay = payoff_gross - pay_cost
                 cap_used[i] += action_idx
                 path_payoffs[i] += disc * pay
@@ -1054,21 +1059,26 @@ def price_swing_option_lsm_oos(
                 if cool_state[i] > 0:
                     cool_state[i] -= 1
             if records is not None:
-                records.append({
-                    "path": i,
-                    "time_step": j,
-                    "spot": price[i],
-                    "q_exercised_so_far": q_before,
-                    "q_t": q,
-                    "payoff": pay,
-                    "payoff_gross": payoff_gross,
-                    "exercise_cost": pay_cost,
-                })
+                records.append(
+                    {
+                        "path": i,
+                        "time_step": j,
+                        "spot": price[i],
+                        "q_exercised_so_far": q_before,
+                        "q_t": q,
+                        "payoff": pay,
+                        "payoff_gross": payoff_gross,
+                        "exercise_cost": pay_cost,
+                    }
+                )
 
     if csv_path and records:
         pd.DataFrame(records).to_parquet(
-            csv_path, index=False, engine="pyarrow",
-            compression="zstd", compression_level=22,
+            csv_path,
+            index=False,
+            engine="pyarrow",
+            compression="zstd",
+            compression_level=22,
         )
 
     price_estimate = path_payoffs.mean()
