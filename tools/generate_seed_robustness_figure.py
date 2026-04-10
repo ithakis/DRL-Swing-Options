@@ -127,7 +127,7 @@ def main():
         linestyle="--",
         linewidth=2,
         zorder=4,
-        label=f"LSM baseline ({lsm_price:.4f})",
+        label=f"LSM-D baseline ({lsm_price:.4f})",
     )
 
     # RL mean line

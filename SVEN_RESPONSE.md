@@ -1,23 +1,38 @@
 ## Response to Sven
 
-### 1. Benchmark strength
-I strengthened the benchmark discussion in two ways. First, the manuscript now states clearly that the default comparator is still a bang-bang LSM benchmark, so it should not be read as a full continuous-control classical solution. Second, I added a full-state bang-bang rerun against the older reduced-state spot-only version. Across the 25 convex-cost configurations, the full-state regression is higher in 20 of 25 cases, with mean uplift `0.0065` and median uplift `0.0046`, so the paper now documents that conditioning on `(S, X, Y, Q)` improves the classical fit.
+### Overall status
+- Comment 1 on redundant state variables is mostly resolved at the manuscript level.
+- Comment 2 on benchmark strength is mostly resolved and substantially improved.
+- Comment 3 on the scope of the profitability gate is resolved.
+- Comment 4 on best-seed / best-checkpoint reporting bias is resolved.
 
-### 2. Main quantitative effect
-This only partially resolves the benchmark critique. The current LSM comparator still restricts actions to `{0, q_max}`, so it cannot represent the interior exercise quantities that matter most under convex costs. The revised manuscript now says this explicitly and avoids claiming that the current comparison isolates the value of continuous actions from the value of a richer state representation. A stronger follow-up benchmark would still be a discretized-action LSMC or randomized LSMC variant.
+### 1. Redundant state variables
+Status: Mostly resolved.
 
-### 3. State representation
-I rewrote the state-description paragraph to present the 9-feature state as a non-minimal engineering choice rather than a theoretically minimal basis. The manuscript now says that the redundant time and inventory features are retained for optimization stability, cites recent RL hedging literature only for that narrower engineering point, and leaves a minimal-state ablation as future work.
+The manuscript now presents the 9-feature RL state as an intentional non-minimal engineering representation rather than as a theoretically minimal basis. The revised paragraph explicitly says that the duplicated inventory and time features are retained because they improved optimization stability in practice, and it leaves a minimal-state ablation to future work.
 
-### 4. Profitability gate scope
-I kept the profitability-gate justification restricted to the regime actually studied in the experiments: optional exercise, no ramping, and no active refraction lag. The revised manuscript avoids suggesting that the same hard gate is already justified for richer path-coupled constraints.
+This addresses Sven's presentational concern, but it does not fully close the issue in the stronger experimental sense because the paper still does not include a minimal-state ablation. So the right claim is that the comment is answered in framing and scope, not by proving that the redundant features are necessary.
 
-### 5. Evaluation protocol — now resolved
-The reporting issue raised by Sven is now fully addressed. The manuscript now includes an explicit paragraph (orange-coloured in the draft) describing the evaluation protocol:
+### 2. Benchmark strength
+Status: Mostly resolved.
 
-- Each configuration is trained with seeds {11, 12, 13} for 32,768 episodes; **final-episode** actor weights are saved (no cherry-picking).
-- A single common test set of **N_test = 65,536 paths** is generated from a dedicated seed (s_test = 999) that was never used during training or hyperparameter selection.
-- Every saved actor **and** the LSM baseline are evaluated on this identical test set, so all reported prices are true out-of-sample estimates.
-- Table 5 reports the **cross-seed mean** and **standard deviation** of the three test-set prices; the ±CI column propagates the cross-seed uncertainty.
+This is the largest substantive improvement. The manuscript no longer compares RL only against the old reduced-state bang-bang LSM baseline. It now documents a discretized-action LSM baseline with $M=5$ exercise levels, explicit remaining-capacity bookkeeping, and continuation regressions on the HHK latent-factor state $(S, X, Y)$. It also reports that the older reduced-state spot-only variant was rerun and is modestly weaker than the fuller benchmark.
 
-This protocol is also reflected in Table 5's caption, which states it clearly. The "Convex Costs Results 7.csv" artifact was rebuilt from logs using `tools/rebuild_results_v7.py` using this same protocol, and the focal robustness study (Section 6.5) confirms low seed sensitivity (σ = 0.009, CV = 0.45%) across 15 independent seeds at c = 0.04, γ_c = 2.
+That materially addresses Sven's main criticism: the comparison is now against a much stronger classical baseline that can represent interior exercise quantities. The remaining caveat is that this is still a finite-grid LSM approximation, not an ultimate classical benchmark. In particular, the continuation approximation is still polynomial and the action grid is still finite, so there remains room for finer-grid or randomized LSMC follow-up work.
+
+### 3. Profitability gate scope
+Status: Resolved.
+
+The revised manuscript now explicitly restricts the hard profitability-gate justification to the regime actually studied in the experiments: optional exercise, an upper cumulative volume cap, no ramping constraint, and no active refraction lag. It also now states that under ramping, hard refraction, or related path-coupled constraints, the gate may need to be relaxed because a locally negative action can still be globally useful.
+
+That is the right limitation and directly answers Sven's objection.
+
+### 4. Evaluation protocol / reporting bias
+Status: Resolved.
+
+The manuscript now replaces the earlier best-seed / best-checkpoint framing with a publication-grade evaluation protocol. It states that each configuration is trained with seeds {11, 12, 13} for 32,768 episodes, the final-episode actor weights are saved, and every saved actor plus the LSM baseline is evaluated on one common untouched test set of 65,536 paths generated from seed 999. Table 5 is described as reporting the cross-seed mean and standard deviation on that common test set.
+
+This directly removes the maximization-bias issue Sven highlighted. Legacy audit columns such as best-seed fields may still exist in CSV artifacts, but they are no longer the basis of the manuscript's reported numbers.
+
+### Bottom line
+The current draft has fully resolved comments 3 and 4, and has substantially addressed comments 1 and 2. The remaining gaps are no longer about overclaiming or weak reporting. They are follow-on strengthening opportunities: a minimal-state ablation for comment 1 and an even stronger classical benchmark family for comment 2.

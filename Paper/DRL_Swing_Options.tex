@@ -67,7 +67,7 @@
 }
 
 \begin{abstract}
-    We study the valuation of electricity swing options under spot dynamics with seasonality, mean reversion, and spikes. Prices follow the Hambly--Howison--Kluge (HHK) model, and the contract is cast as a finite-horizon stochastic control problem with continuous exercise quantities, a cumulative volume cap, and convex exercise costs. We propose a deterministic actor--critic method whose profitability-gated actor clips candidate exercises to quantities with non-negative immediate payoff while preserving gradient flow via a straight-through estimator. The method avoids explicit state-space discretisation and works with a nine-dimensional Markov state that combines market factors with contract bookkeeping variables. \textcolor{revisionbrown}{Numerical experiments against a discretized-action least-squares Monte Carlo baseline show that the two methods produce comparable option values: the LSM baseline is generally competitive, while the actor--critic approach narrows the gap and occasionally prevails in configurations where strong cost convexity makes fine-grained exercise modulation most valuable.}
+    We study the valuation of electricity swing options under spot dynamics with seasonality, mean reversion, and spikes. Prices follow the Hambly--Howison--Kluge (HHK) model, and the contract is cast as a finite-horizon stochastic control problem with continuous exercise quantities, a cumulative volume cap, and convex exercise costs. We propose a deterministic actor--critic method whose profitability-gated actor clips candidate exercises to quantities with non-negative immediate payoff while preserving gradient flow via a straight-through estimator. The method avoids explicit state-space discretisation and works with a nine-dimensional Markov state that combines market factors with contract bookkeeping variables. \textcolor{revisionbrown}{Numerical experiments against a discretized-action least-squares Monte Carlo baseline (LSM-D) show that the two methods produce comparable option values: the LSM-D baseline is generally competitive, while the actor--critic approach narrows the gap and occasionally prevails in configurations where strong cost convexity makes fine-grained exercise modulation most valuable.}
 \end{abstract}
 
 \begin{keywords}
@@ -110,7 +110,7 @@ In this paper we formulate swing-option valuation under the HHK model as a finit
     \item a \textbf{profitability-gated actor} that clips proposed exercises to quantities with non-negative immediate payoff while preserving gradient flow through a straight-through estimator;
     \item a \textbf{nine-dimensional state representation} that combines HHK market factors with contract bookkeeping variables in a Markovian input to the policy and value networks;
     \item a \textbf{deterministic actor--critic training procedure} with prioritized replay, target smoothing, and pre-squash exploration noise tailored to continuous exercise decisions; and
-    \item a set of \textbf{numerical experiments} showing how the learned policy compares with a \textcolor{revisionbrown}{discretized-action} LSM baseline across a range of convex cost specifications.
+    \item a set of \textbf{numerical experiments} showing how the learned policy compares with a \textcolor{revisionbrown}{discretized-action LSM (LSM-D)} baseline across a range of convex cost specifications.
 \end{enumerate}
 
 The remainder of the paper is organised as follows. Section~\ref{sec:market_contract} introduces the HHK price model and the swing-contract specification used throughout the manuscript. Section~\ref{sec:classical_methods} summarises the classical dynamic-programming perspective that motivates the reinforcement-learning approach. Section~\ref{sec:rl_formulation} presents the Markov decision process, actor--critic architecture, and profitability gate. Section~\ref{sec:experiments} reports numerical results, and Section~\ref{sec:conclusion} concludes.
@@ -147,7 +147,7 @@ To ensure forward-curve consistency, $f$ must absorb a convexity correction aris
 % P2-7: Replace Sven's red comment with an explicit justification for flat seasonality.
 The choice $A = 0$ is motivated by the short contract maturity of approximately one month used in the numerical experiments.
 Over a horizon of $T \approx 0.083$ years ($\approx 22$ trading days), the deterministic seasonal component $A\cos(2\pi t)$ changes by at most $|A|\cdot 2\pi T \approx 0.5A$, which is negligible relative to the diffusive and jump volatility for realistic values of $A$.
-Setting $A = 0$ therefore isolates the contribution of the stochastic factors $(X,Y)$ without confounding seasonal trends, and keeps the pricing problem well-suited to comparing RL with LSM on a well-understood benchmark.
+Setting $A = 0$ therefore isolates the contribution of the stochastic factors $(X,Y)$ without confounding seasonal trends, and keeps the pricing problem well-suited to comparing RL with LSM-D on a well-understood benchmark.
 For longer-maturity contracts or seasonal calibration studies, $A > 0$ can be activated without modifying the algorithm.
 
 The HHK model provides an appealing compromise between realism and tractability. It captures the empirical features that matter most for electricity options, yet it already makes classical grid-based valuation demanding because the state space contains two latent factors and a jump component. This is precisely the regime in which simulation-based control methods become attractive.
@@ -635,7 +635,7 @@ Algorithm~\ref{alg:training} gives the training loop.
         \EndIf
         \EndFor
         \If{$e \bmod 1{,}024 = 0$}
-        \State Evaluate and log RL and LSM baseline values on held-out paths
+        \State Evaluate and log RL and LSM-D baseline values on held-out paths
         \EndIf
         \EndFor
     \end{algorithmic}
@@ -673,10 +673,10 @@ Algorithm~\ref{alg:training} gives the training loop.
     \end{adjustbox}
 \end{table}
 
-\subsection{\textcolor{revisionbrown}{Discretized-Action LSM Baseline}}
+\subsection{\textcolor{revisionbrown}{Discretized-Action LSM Baseline (LSM-D)}}
 \label{sec:lsm}
 
-\textcolor{revisionbrown}{For comparison we use a least-squares Monte Carlo baseline that discretizes the exercise decision into $M$ equally spaced actions $\{0, \Delta q, 2\Delta q, \ldots, q_{\max}\}$, where $\Delta q = q_{\max}/(M-1)$, and approximates continuation values via Longstaff--Schwartz backward regression~\cite{longstaff2001valuing}. With $M = 5$ and $q_{\max} = 2.0$, the action grid is $\{0, 0.5, 1.0, 1.5, 2.0\}$.}
+\textcolor{revisionbrown}{For comparison we use a least-squares Monte Carlo baseline that discretizes the exercise decision into $M$ equally spaced actions $\{0, \Delta q, 2\Delta q, \ldots, q_{\max}\}$, where $\Delta q = q_{\max}/(M-1)$, and approximates continuation values via Longstaff--Schwartz backward regression~\cite{longstaff2001valuing}. We denote this variant \emph{LSM-D} (discretized-action LSM) to distinguish it from the classical bang-bang Longstaff--Schwartz method, which restricts the action set to $\{0,q_{\max}\}$ (i.e.\ $M = 2$). With $M = 5$ and $q_{\max} = 2.0$, the LSM-D action grid is $\{0, 0.5, 1.0, 1.5, 2.0\}$.}
 
 \textcolor{revisionbrown}{Because the exercise quantity is no longer restricted to multiples of $q_{\max}$, the dynamic-programming state tracks the remaining cumulative capacity in multiples of $\Delta q$. That is, the number of inventory levels is $\lfloor Q_{\max}/\Delta q \rfloor + 1 = 41$ (for $Q_{\max} = 20$, $\Delta q = 0.5$). Together with the cooldown state, each time step requires $M - 1$ continuation-value regressions per inventory--cooldown pair for the non-zero actions, plus one for the hold action.}
 
@@ -684,9 +684,11 @@ Algorithm~\ref{alg:training} gives the training loop.
 \[
     m^* = \arg\max_{m}\; \Pi_i(q_m) + \widehat{C}_i^{(m)}(S_{t_i}),
 \]
-\textcolor{revisionbrown}{where $q_0 = 0$ denotes holding and $\widehat{C}_i^{(m)}$ is the fitted continuation value after exercising quantity $q_m$, subject to the constraint that $q_m$ does not exceed the remaining capacity. At the terminal date, exercise occurs only if the net payoff $\Pi_{n-1}(q_m)$ is positive. With $M = 2$ the algorithm reduces to the classical bang-bang case; with $M = 5$ it can select from five volume levels at each step, permitting graduated exercise under convex costs.}
+\textcolor{revisionbrown}{where $q_0 = 0$ denotes holding and $\widehat{C}_i^{(m)}$ is the fitted continuation value after exercising quantity $q_m$, subject to the constraint that $q_m$ does not exceed the remaining capacity. At the terminal date, exercise occurs only if the net payoff $\Pi_{n-1}(q_m)$ is positive. With $M = 2$ the algorithm reduces to the classical bang-bang LSM; with $M = 5$ (LSM-D) it can select from five volume levels at each step, permitting graduated exercise under convex costs.}
 
-\textcolor{purple}{We also tested a reduced-state variant that conditions only on the current spot price using a degree-$7$ Chebyshev basis. Across the 25 configurations in our experiment grid, the full-state regression yields on average approximately $0.4\%$ higher option values (20 of 25 cases positive), confirming that conditioning on the latent factors and inventory modestly improves continuation-value fits\textcolor{revisionbrown}{; this margin is smaller than the gap from $M = 2$ to $M = 5$, suggesting that action-space resolution is the more important lever for the LSM baseline}.}
+\textcolor{purple}{We also tested a reduced-state variant that conditions only on the current spot price using a degree-$7$ Chebyshev basis. Across the 25 configurations in our experiment grid, the full-state regression yields on average approximately $0.4\%$ higher option values (20 of 25 cases positive), confirming that conditioning on the latent factors and inventory modestly improves continuation-value fits\textcolor{revisionbrown}{; this margin is smaller than the gap from $M = 2$ to $M = 5$, suggesting that action-space resolution is the more important lever for the LSM-D baseline}.}
+
+\textcolor{revisionbrown}{The distinction between LSM-D and the classical bang-bang LSM ($M = 2$) is material under convex costs.  Because the $M = 2$ baseline can only choose between zero exercise and full-capacity exercise, it cannot represent the interior optima that arise when $\gamma_c > 1$.  Moving from $M = 2$ to $M = 5$ therefore produces large value gains in convex regimes---for example, from $1.8634$ to $1.9822$ at $(c, \gamma_c) = (0.04, 2)$, from $1.0357$ to $1.6749$ at $(0.05, 3)$, and from $0.6226$ to $1.0321$ at $(0.15, 2)$.  These improvements show that action-space resolution is a first-order issue for LSM under convex costs, and motivate the use of the stronger LSM-D baseline throughout this paper.}
 
 \textcolor{red}{\textbf{Sven:} The comparative analysis reliess on a weak baseline as we compare a 9-dimensional continuous DRL method against a 1-dimensional discrete LSMC. This makes it harder to disentangle the benefit of continuous actions under convex costs from the poor performance of the baseline (ignoring $X, Y, Q$). A full-state LSMC baseline with discretized actions ($q \in \{0, q_{\max}/4, q_{\max}/2, \dots, q_{\max}\}$) regressing on $(X, Y, Q)$ would provide a stronger and more convincing comparison. Of course, one might even look into randomized LSMC approaches as benchmark.}
 
@@ -756,11 +758,11 @@ We evaluate the actor--critic method across a grid of convex cost parameters. Ta
     \end{adjustbox}
 \end{table}
 
-\textcolor{revisionorange}{All reported experiments use optional exercise, no refraction lag, and no ramping constraint. Each configuration is trained with three seeds $\{11,12,13\}$ for $32{,}768$ episodes and the final-episode actor weights are saved. To eliminate maximisation bias, a single common test set of $N_{\mathrm{test}} = 65{,}536$ paths is generated with a dedicated seed ($s_{\mathrm{test}} = 999$) that was never used during training or hyperparameter selection. Every saved actor and the LSM baseline are evaluated on this identical test set, so the reported prices are true out-of-sample estimates. For each configuration the table reports the cross-seed mean and standard deviation of the three test-set prices.}
+\textcolor{revisionorange}{All reported experiments use optional exercise, no refraction lag, and no ramping constraint. Each configuration is trained with three seeds $\{11,12,13\}$ for $32{,}768$ episodes and the final-episode actor weights are saved. To eliminate maximisation bias, a single common test set of $N_{\mathrm{test}} = 65{,}536$ paths is generated with a dedicated seed ($s_{\mathrm{test}} = 999$) that was never used during training or hyperparameter selection. Every saved actor and the LSM-D baseline are evaluated on this identical test set, so the reported prices are true out-of-sample estimates. For each configuration the table reports the cross-seed mean and standard deviation of the three test-set prices.}
 
 \subsection{Results}
 
-\textcolor{revisionorange}{Table~\ref{tab:results} compares the actor--critic values with the \textcolor{revisionbrown}{full-state discretized-action ($M = 5$)} LSM baseline.
+\textcolor{revisionorange}{Table~\ref{tab:results} compares the actor--critic values with the \textcolor{revisionbrown}{full-state LSM-D ($M = 5$)} baseline.
     All reported values are discounted to time zero.
     Each actor--critic entry reports the cross-seed mean option value across seeds $\{11,12,13\}$
     evaluated on the common test set ($N_{\mathrm{test}} = 65{,}536$ paths, seed~999).
@@ -773,46 +775,46 @@ We evaluate the actor--critic method across a grid of convex cost parameters. Ta
             that was never used during training or model selection.
             The actor--critic column reports the cross-seed mean over seeds $\{11,12,13\}$;
             $\sigma$ is the inter-seed standard deviation.
-            $\Delta\%$ denotes the relative improvement over the \textcolor{revisionbrown}{full-state discretized-action ($M = 5$)} LSM baseline,
+            $\Delta\%$ denotes the relative improvement over the \textcolor{revisionbrown}{full-state LSM-D ($M = 5$)} baseline,
             with $\pm$ propagating the cross-seed uncertainty.}}
     \label{tab:results}
     \begin{adjustbox}{max width=\linewidth}
         \begin{tabular}{ccr>{\color{revisionorange}}r>{\color{revisionorange}}r>{\color{revisionorange}}r}
             \toprule
-            $c$  & $\gamma_c$ & \textcolor{revisionbrown}{LSM ($M\!=\!5$)} & Actor--critic & $\sigma$ & $\Delta\%$ ($\pm$ CI) \\
+            $c$  & $\gamma_c$ & \textcolor{revisionbrown}{LSM-D} & DRL & $\sigma$ & $\Delta\%$ ($\pm$ CI) \\
             \midrule
-            0.00 & 1.0        & \textcolor{revisionbrown}{2.6676}          & 2.6265        & ---      & $-1.54$               \\
-            0.01 & 1.0        & \textcolor{revisionbrown}{2.5549}          & 2.5339        & 0.0029   & $-0.82 \pm 0.11$      \\
-            0.01 & 1.5        & \textcolor{revisionbrown}{2.5131}          & 2.4905        & 0.0052   & $-0.90 \pm 0.21$      \\
-            0.01 & 2.0        & \textcolor{revisionbrown}{2.4609}          & 2.4324        & 0.0063   & $-1.16 \pm 0.26$      \\
-            0.01 & 3.0        & \textcolor{revisionbrown}{2.3289}          & 2.2989        & 0.0123   & $-1.29 \pm 0.53$      \\
+            0.00 & 1.0        & \textcolor{revisionbrown}{2.6676}            & 2.6265        & ---      & $-1.54$               \\
+            0.01 & 1.0        & \textcolor{revisionbrown}{2.5549}            & 2.5339        & 0.0029   & $-0.82 \pm 0.11$      \\
+            0.01 & 1.5        & \textcolor{revisionbrown}{2.5131}            & 2.4905        & 0.0052   & $-0.90 \pm 0.21$      \\
+            0.01 & 2.0        & \textcolor{revisionbrown}{2.4609}            & 2.4324        & 0.0063   & $-1.16 \pm 0.26$      \\
+            0.01 & 3.0        & \textcolor{revisionbrown}{2.3289}            & 2.2989        & 0.0123   & $-1.29 \pm 0.53$      \\
             \midrule
-            0.02 & 1.0        & \textcolor{revisionbrown}{2.4452}          & 2.4162        & 0.0062   & $-1.19 \pm 0.25$      \\
-            0.02 & 1.5        & \textcolor{revisionbrown}{2.3690}          & 2.3413        & 0.0122   & $-1.17 \pm 0.51$      \\
-            0.02 & 2.0        & \textcolor{revisionbrown}{2.2822}          & 2.2536        & 0.0042   & $-1.25 \pm 0.19$      \\
-            0.02 & 3.0        & \textcolor{revisionbrown}{2.1030}          & 2.0800        & 0.0023   & $-1.10 \pm 0.11$      \\
+            0.02 & 1.0        & \textcolor{revisionbrown}{2.4452}            & 2.4162        & 0.0062   & $-1.19 \pm 0.25$      \\
+            0.02 & 1.5        & \textcolor{revisionbrown}{2.3690}            & 2.3413        & 0.0122   & $-1.17 \pm 0.51$      \\
+            0.02 & 2.0        & \textcolor{revisionbrown}{2.2822}            & 2.2536        & 0.0042   & $-1.25 \pm 0.19$      \\
+            0.02 & 3.0        & \textcolor{revisionbrown}{2.1030}            & 2.0800        & 0.0023   & $-1.10 \pm 0.11$      \\
             \midrule
-            0.04 & 1.0        & \textcolor{revisionbrown}{2.2378}          & 2.2204        & 0.0033   & $-0.78 \pm 0.15$      \\
-            0.04 & 1.5        & \textcolor{revisionbrown}{2.1067}          & 2.0727        & 0.0177   & $-1.61 \pm 0.84$      \\
-            0.04 & 2.0        & \textcolor{revisionbrown}{1.9822}          & 1.9578        & 0.0088   & $-1.23 \pm 0.44$      \\
-            0.04 & 3.0        & \textcolor{revisionbrown}{1.7917}          & 1.7903        & 0.0041   & $-0.08 \pm 0.23$      \\
+            0.04 & 1.0        & \textcolor{revisionbrown}{2.2378}            & 2.2204        & 0.0033   & $-0.78 \pm 0.15$      \\
+            0.04 & 1.5        & \textcolor{revisionbrown}{2.1067}            & 2.0727        & 0.0177   & $-1.61 \pm 0.84$      \\
+            0.04 & 2.0        & \textcolor{revisionbrown}{1.9822}            & 1.9578        & 0.0088   & $-1.23 \pm 0.44$      \\
+            0.04 & 3.0        & \textcolor{revisionbrown}{1.7917}            & 1.7903        & 0.0041   & $-0.08 \pm 0.23$      \\
             \midrule
-            0.05 & 1.0        & \textcolor{revisionbrown}{2.1392}          & 2.1184        & 0.0066   & $-0.97 \pm 0.31$      \\
-            0.05 & 1.5        & \textcolor{revisionbrown}{1.9869}          & 1.9611        & 0.0149   & $-1.30 \pm 0.75$      \\
-            0.05 & 2.0        & \textcolor{revisionbrown}{1.8541}          & 1.8294        & 0.0058   & $-1.33 \pm 0.31$      \\
-            0.05 & 3.0        & \textcolor{revisionbrown}{1.6749}          & 1.6842        & 0.0045   & $+0.56 \pm 0.27$      \\
+            0.05 & 1.0        & \textcolor{revisionbrown}{2.1392}            & 2.1184        & 0.0066   & $-0.97 \pm 0.31$      \\
+            0.05 & 1.5        & \textcolor{revisionbrown}{1.9869}            & 1.9611        & 0.0149   & $-1.30 \pm 0.75$      \\
+            0.05 & 2.0        & \textcolor{revisionbrown}{1.8541}            & 1.8294        & 0.0058   & $-1.33 \pm 0.31$      \\
+            0.05 & 3.0        & \textcolor{revisionbrown}{1.6749}            & 1.6842        & 0.0045   & $+0.56 \pm 0.27$      \\
             \midrule
-            0.08 & 1.0        & \textcolor{revisionbrown}{1.8632}          & 1.8445        & 0.0005   & $-1.00 \pm 0.02$      \\
-            0.08 & 1.5        & \textcolor{revisionbrown}{1.6666}          & 1.6371        & 0.0107   & $-1.77 \pm 0.64$      \\
-            0.08 & 2.0        & \textcolor{revisionbrown}{1.5332}          & 1.5313        & 0.0047   & $-0.13 \pm 0.31$      \\
+            0.08 & 1.0        & \textcolor{revisionbrown}{1.8632}            & 1.8445        & 0.0005   & $-1.00 \pm 0.02$      \\
+            0.08 & 1.5        & \textcolor{revisionbrown}{1.6666}            & 1.6371        & 0.0107   & $-1.77 \pm 0.64$      \\
+            0.08 & 2.0        & \textcolor{revisionbrown}{1.5332}            & 1.5313        & 0.0047   & $-0.13 \pm 0.31$      \\
             \midrule
-            0.10 & 1.0        & \textcolor{revisionbrown}{1.6949}          & 1.6866        & 0.0019   & $-0.49 \pm 0.11$      \\
-            0.10 & 1.5        & \textcolor{revisionbrown}{1.4825}          & 1.4677        & 0.0090   & $-1.00 \pm 0.61$      \\
-            0.10 & 2.0        & \textcolor{revisionbrown}{1.3606}          & 1.3624        & 0.0076   & $+0.13 \pm 0.56$      \\
+            0.10 & 1.0        & \textcolor{revisionbrown}{1.6949}            & 1.6866        & 0.0019   & $-0.49 \pm 0.11$      \\
+            0.10 & 1.5        & \textcolor{revisionbrown}{1.4825}            & 1.4677        & 0.0090   & $-1.00 \pm 0.61$      \\
+            0.10 & 2.0        & \textcolor{revisionbrown}{1.3606}            & 1.3624        & 0.0076   & $+0.13 \pm 0.56$      \\
             \midrule
-            0.15 & 1.0        & \textcolor{revisionbrown}{1.3295}          & 1.3145        & 0.0022   & $-1.12 \pm 0.16$      \\
-            0.15 & 1.5        & \textcolor{revisionbrown}{1.1082}          & 1.0860        & 0.0037   & $-2.01 \pm 0.34$      \\
-            0.15 & 2.0        & \textcolor{revisionbrown}{1.0321}          & 1.0475        & 0.0044   & $+1.49 \pm 0.43$      \\
+            0.15 & 1.0        & \textcolor{revisionbrown}{1.3295}            & 1.3145        & 0.0022   & $-1.12 \pm 0.16$      \\
+            0.15 & 1.5        & \textcolor{revisionbrown}{1.1082}            & 1.0860        & 0.0037   & $-2.01 \pm 0.34$      \\
+            0.15 & 2.0        & \textcolor{revisionbrown}{1.0321}            & 1.0475        & 0.0044   & $+1.49 \pm 0.43$      \\
             \bottomrule
         \end{tabular}
     \end{adjustbox}
@@ -821,14 +823,14 @@ We evaluate the actor--critic method across a grid of convex cost parameters. Ta
 \begin{figure*}[!ht]
     \centering
     \includegraphics[width=\textwidth]{../figs/convex_costs_0p04/hist_exercise.pdf}
-    \caption{\textcolor{green}{Expected exercise quantity $\mathbb{E}[q_t]$ under the continuous DRL policy and the \textcolor{revisionbrown}{discretized-action ($M = 5$)} LSM baseline for a cost coefficient $c=0.04$ and varying convexity parameters $\gamma_c \in \{1.0, 1.5, 2.0, 3.0\}$. The heatmap displays the average fraction of capacity exercised at each available time step (measured in days to contract maturity) as a function of moneyness ($S/K$). Under linear costs ($\gamma_c = 1$), both policies exhibit bang-bang behavior at high moneyness. \textcolor{revisionbrown}{As convexity increases, both the actor--critic network and the LSM baseline transition to graduated exercise quantities, with the RL agent producing smoother intensity gradients across the moneyness--time surface.}}}
+    \caption{\textcolor{green}{Expected exercise quantity $\mathbb{E}[q_t]$ under the continuous DRL policy and the \textcolor{revisionbrown}{LSM-D ($M = 5$)} baseline for a cost coefficient $c=0.04$ and varying convexity parameters $\gamma_c \in \{1.0, 1.5, 2.0, 3.0\}$. The heatmap displays the average fraction of capacity exercised at each available time step (measured in days to contract maturity) as a function of moneyness ($S/K$). Under linear costs ($\gamma_c = 1$), both policies exhibit bang-bang behavior at high moneyness. \textcolor{revisionbrown}{As convexity increases, both the actor--critic network and the LSM-D baseline transition to graduated exercise quantities, with the RL agent producing smoother intensity gradients across the moneyness--time surface.}}}
     \label{fig:exercise_heatmap}
 \end{figure*}
 
 \begin{figure*}[!ht]
     \centering
     \includegraphics[width=\textwidth]{../figs/convex_costs_0p04/spot_income_pv_hist.png}
-    \caption{\textcolor{green}{Net exercise profit versus spot price (left column) and path-level PV exercise cost distribution (right column) for linear ($\gamma_c=1.0$) and convex ($\gamma_c \in \{1.5, 2.0\}$) costs at $c=0.04$. The left column scatters the non-discounted one-step net exercise profit, $q_t(S_t-K)^+ - c q_t^{\gamma_c}$, over the spot price for decisions where exercising full capacity is feasible, with the LSM points overlaid as blue outlines so both methods remain visible in the same region. Under linear costs, \textcolor{revisionbrown}{both the LSM and RL policies tightly track the same bang-bang boundary}. However, under convexity, \textcolor{revisionbrown}{both methods transition to graduated exercise; the continuous RL agent produces denser scatter below the bang-bang frontier, while the discretized-action ($M = 5$) LSM baseline selects from five volume levels}. The right column displays the distribution of total discounted exercise costs per path and tracks the Bang-Bangness metric $B$. \textcolor{revisionbrown}{As convexity grows, both methods reduce their Bang-Bangness and shift towards more distributed exercise strategies.}}}
+    \caption{\textcolor{green}{Net exercise profit versus spot price (left column) and path-level PV exercise cost distribution (right column) for linear ($\gamma_c=1.0$) and convex ($\gamma_c \in \{1.5, 2.0\}$) costs at $c=0.04$. The left column scatters the non-discounted one-step net exercise profit, $q_t(S_t-K)^+ - c q_t^{\gamma_c}$, over the spot price for decisions where exercising full capacity is feasible, with the LSM-D points overlaid as blue outlines so both methods remain visible in the same region. Under linear costs, \textcolor{revisionbrown}{both the LSM-D and RL policies tightly track the same bang-bang boundary}. However, under convexity, \textcolor{revisionbrown}{both methods transition to graduated exercise; the continuous RL agent produces denser scatter below the bang-bang frontier, while the LSM-D ($M = 5$) baseline selects from five volume levels}. The right column displays the distribution of total discounted exercise costs per path and tracks the Bang-Bangness metric $B$. \textcolor{revisionbrown}{As convexity grows, both methods reduce their Bang-Bangness and shift towards more distributed exercise strategies.}}}
     \label{fig:spot_income_pv_hist}
 \end{figure*}
 
@@ -844,30 +846,30 @@ We evaluate the actor--critic method across a grid of convex cost parameters. Ta
 \begin{figure}
     \centering
     \includegraphics[width=\columnwidth]{../figs/convex_costs_0p04/bang_bangness_rl.pdf}
-    \caption{\textcolor{green}{The Bang-Bangness metric $B$ across five representative cost regimes ($c \in \{0.01, 0.02, 0.04, 0.08, 0.15\}$) and convexities for the RL and LSM agents. \textcolor{revisionbrown}{Both methods systematically decrease the proportion of maximum-capacity exercises as the cost exponent ($\gamma$) grows, confirming that the learned policies adapt to convex penalties by distributing exercise across multiple quantities.}}}
+    \caption{\textcolor{green}{The Bang-Bangness metric $B$ across five representative cost regimes ($c \in \{0.01, 0.02, 0.04, 0.08, 0.15\}$) and convexities for the RL and LSM-D agents. \textcolor{revisionbrown}{Both methods systematically decrease the proportion of maximum-capacity exercises as the cost exponent ($\gamma$) grows, confirming that the learned policies adapt to convex penalties by distributing exercise across multiple quantities.}}}
     \label{fig:bang_bangness_trend}
 \end{figure}
 
-\textcolor{green}{Figure~\ref{fig:spot_income_pv_hist} provides a microscopic view of the exercise behavior \textcolor{revisionbrown}{under both methods}. The left column scatters the non-discounted one-step net exercise profit against the underlying spot price. When $c > 0$ and costs are linear ($\gamma_c=1.0$), \textcolor{revisionbrown}{both the RL agent and the discretized-action LSM baseline produce near-identical exercise boundaries, confirming that bang-bang exercise is optimal under linear costs}.}
+\textcolor{green}{Figure~\ref{fig:spot_income_pv_hist} provides a microscopic view of the exercise behavior \textcolor{revisionbrown}{under both methods}. The left column scatters the non-discounted one-step net exercise profit against the underlying spot price. When $c > 0$ and costs are linear ($\gamma_c=1.0$), \textcolor{revisionbrown}{both the RL agent and the LSM-D baseline produce near-identical exercise boundaries, confirming that bang-bang exercise is optimal under linear costs}.}
 
-\textcolor{green}{However, under convex costs ($\gamma_c \in \{1.5, 2.0\}$), a dense region of profitable partial exercise emerges beneath the strict bang-bang frontier. \textcolor{revisionbrown}{Both methods exploit this region: the LSM baseline selects from five discrete volume levels while the actor--critic agent continuously modulates its exercise quantity, producing a denser scatter of intermediate exercise decisions.}}
+\textcolor{green}{However, under convex costs ($\gamma_c \in \{1.5, 2.0\}$), a dense region of profitable partial exercise emerges beneath the strict bang-bang frontier. \textcolor{revisionbrown}{Both methods exploit this region: the LSM-D baseline selects from five discrete volume levels while the actor--critic agent continuously modulates its exercise quantity, producing a denser scatter of intermediate exercise decisions.}}
 
-\textcolor{green}{This behavioral shift is corroborated by the right column of Figure~\ref{fig:spot_income_pv_hist}, which depicts the distribution of the path-level present value of exercise costs. At $\gamma_c=1.0$, the RL agent exhibits high Bang-Bangness (\textcolor{revisionorange}{$B \approx 66\%$}) and its cost distribution closely tracks that of the LSM baseline. As the cost exponent increases to $\gamma_c = 2.0$, \textcolor{revisionbrown}{both methods show markedly reduced Bang-Bangness---the RL agent decays to $B \approx 21\%$ while the LSM baseline reaches a similar $B \approx 22\%$---reflecting their shared adaptation to convex penalties through graduated exercise}.}
+\textcolor{green}{This behavioral shift is corroborated by the right column of Figure~\ref{fig:spot_income_pv_hist}, which depicts the distribution of the path-level present value of exercise costs. At $\gamma_c=1.0$, the RL agent exhibits high Bang-Bangness (\textcolor{revisionorange}{$B \approx 66\%$}) and its cost distribution closely tracks that of the LSM-D baseline. As the cost exponent increases to $\gamma_c = 2.0$, \textcolor{revisionbrown}{both methods show markedly reduced Bang-Bangness---the RL agent decays to $B \approx 21\%$ while the LSM-D baseline reaches a similar $B \approx 22\%$---reflecting their shared adaptation to convex penalties through graduated exercise}.}
 
 \subsection{Discussion}
 
 \textcolor{revisionbrown}{Three qualitative patterns stand out in Table~\ref{tab:results} and Figures~\ref{fig:exercise_heatmap} and~\ref{fig:spot_income_pv_hist}.}
 \begin{enumerate}
-    \item \textcolor{revisionbrown}{\textbf{Baseline competitiveness.} Across most of the $(c, \gamma_c)$ grid, the discretized-action LSM baseline is competitive with or slightly exceeds the actor--critic method. The typical deficit is $1$--$2\%$, consistent with the remaining gap between a five-level action grid and a truly continuous policy.}
+    \item \textcolor{revisionbrown}{\textbf{Baseline competitiveness.} Across most of the $(c, \gamma_c)$ grid, the LSM-D baseline is competitive with or slightly exceeds the actor--critic method. The typical deficit is $1$--$2\%$, consistent with the remaining gap between a five-level action grid and a truly continuous policy.}
     \item \textcolor{revisionbrown}{\textbf{Near-parity under strong convexity.} For $\gamma_c \ge 2$ with moderate cost coefficients, the gap between the two methods narrows substantially. This is the regime where both methods benefit from interior exercise and neither has a decisive structural advantage.}
-    \item \textcolor{revisionbrown}{\textbf{RL advantage at extremes.} For the three configurations with both high cost coefficient and high convexity exponent ($c \ge 0.05$, $\gamma_c \ge 2$), the actor--critic method marginally outperforms the LSM baseline. The continuous action space may help in these highly non-linear regimes where five discrete levels provide coarser cost-quantity trade-offs.}
+    \item \textcolor{revisionbrown}{\textbf{RL advantage at extremes.} For the three configurations with both high cost coefficient and high convexity exponent ($c \ge 0.05$, $\gamma_c \ge 2$), the actor--critic method marginally outperforms the LSM-D baseline. The continuous action space may help in these highly non-linear regimes where five discrete levels provide coarser cost-quantity trade-offs.}
 \end{enumerate}
 
-\textcolor{revisionbrown}{These results support a nuanced interpretation: the discretized-action LSM baseline is a strong classical comparator that captures most of the value from interior exercise. The actor--critic approach does not systematically dominate but rather provides a complementary methodology whose main advantages lie in avoiding explicit state-space discretisation and scaling more naturally to complex contract features.}
+\textcolor{revisionbrown}{These results support a nuanced interpretation: the LSM-D baseline is a strong classical comparator that captures most of the value from interior exercise. The actor--critic approach does not systematically dominate but rather provides a complementary methodology whose main advantages lie in avoiding explicit state-space discretisation and scaling more naturally to complex contract features.}
 
 % P2-8: Address the weak-baseline critique explicitly.
 \paragraph{Caveat: comparator strength.}
-\textcolor{revisionbrown}{A crucial caveat is that the $M\!=\!5$ LSM baseline, while substantially stronger than the classical bang-bang ($M\!=\!2$) variant used in earlier drafts, is still limited by its finite action grid and polynomial continuation-value approximation. Two sources of residual suboptimality remain: (i)~the five-level grid cannot represent exercise quantities between grid points, and (ii)~the degree-$2$ Chebyshev basis may miss non-linear continuation-value features in extreme cost regimes. Conversely, the actor--critic method faces its own approximation limitations through finite training, seed sensitivity, and the implicit bias of neural-network function approximation.}
+\textcolor{revisionbrown}{A crucial caveat is that the $M\!=\!5$ LSM-D baseline, while substantially stronger than the classical bang-bang ($M\!=\!2$) variant used in earlier drafts, is still limited by its finite action grid and polynomial continuation-value approximation. Two sources of residual suboptimality remain: (i)~the five-level grid cannot represent exercise quantities between grid points, and (ii)~the degree-$2$ Chebyshev basis may miss non-linear continuation-value features in extreme cost regimes. Conversely, the actor--critic method faces its own approximation limitations through finite training, seed sensitivity, and the implicit bias of neural-network function approximation.}
 Additionally, the absence of an upper bound (e.g.\ a dual martingale bound in the spirit of \citealt{andersen2004primal}) means we cannot certify how close either method is to the true option value.
 
 \textcolor{green}{From a practical optimisation perspective, two engineering gaps remain. First, although the focal robustness study shows very low seed dispersion under the final evaluation protocol, the longer-term goal is a training procedure that is reliable enough that one seed is effectively sufficient in routine use, and for which additional training episodes improve the policy or at least do not degrade it. Second, the current CPU implementation is still far from production-grade throughput: substantial software and hardware optimisation, especially GPU-oriented batching and parallelisation, will be required before this approach can be deployed at much larger scale. Relative to earlier DRL derivatives work, however, the present pipeline is already materially more robust and more computationally disciplined; compare the stronger seed sensitivity and training inefficiency documented for American-option hedging in \citealt{tsoskounoglou2025higherorder}.}
@@ -884,11 +886,11 @@ Additionally, the absence of an upper bound (e.g.\ a dual martingale bound in th
     }{%
         \framebox[\columnwidth]{\parbox{0.9\columnwidth}{\centering\vspace{2em}\textit{Figure placeholder --- run focal training and generate figure.}\vspace{2em}}}%
     }
-    \caption{\textcolor{revisionorange}{Distribution of RL option values across 15 independent training seeds ($c = 0.04$, $\gamma_c = 2$). The vertical dashed line indicates the \textcolor{revisionbrown}{discretized-action ($M = 5$)} LSM baseline. \textcolor{revisionbrown}{The narrow spread confirms consistent training, although the distribution sits slightly below the LSM baseline for this configuration.}}}
+    \caption{\textcolor{revisionorange}{Distribution of RL option values across 15 independent training seeds ($c = 0.04$, $\gamma_c = 2$). The vertical dashed line indicates the \textcolor{revisionbrown}{LSM-D ($M = 5$)} baseline. \textcolor{revisionbrown}{The narrow spread confirms consistent training, although the distribution sits slightly below the LSM-D baseline for this configuration.}}}
     \label{fig:seed_robustness}
 \end{figure}
 
-\textcolor{revisionorange}{The inter-seed standard deviation is $0.009$ (coefficient of variation $0.45\%$), confirming that the training procedure yields consistent pricing estimates across random initialisations. \textcolor{revisionbrown}{For this configuration, all 15 seeds produce test-set values within $2\%$ of the discretized-action LSM baseline (range: $-2.0\%$ to $-0.4\%$). The tight clustering demonstrates that while the actor--critic method does not surpass the upgraded LSM baseline here, its cross-seed variability is small enough that the difference is economically modest.}}
+\textcolor{revisionorange}{The inter-seed standard deviation is $0.009$ (coefficient of variation $0.45\%$), confirming that the training procedure yields consistent pricing estimates across random initialisations. \textcolor{revisionbrown}{For this configuration, all 15 seeds produce test-set values within $2\%$ of the LSM-D baseline (range: $-2.0\%$ to $-0.4\%$). The tight clustering demonstrates that while the actor--critic method does not surpass the upgraded LSM-D baseline here, its cross-seed variability is small enough that the difference is economically modest.}}
 
 \subsection{Computational Efficiency}
 
@@ -899,9 +901,9 @@ Training for $32{,}768$ episodes requires approximately $2$--$3$ hours on a $4$-
 
 We have formulated electricity swing-option valuation under the HHK jump-diffusion model as a finite-horizon stochastic control problem and approximated its solution with a deterministic actor--critic method. The central modelling device is a profitability-gated actor that clips candidate exercises to quantities with non-negative immediate payoff while preserving a usable gradient signal through a straight-through estimator.
 
-\textcolor{revisionbrown}{The numerical results indicate that a discretized-action ($M = 5$) LSM baseline is a strong classical comparator: it generally matches or slightly exceeds the actor--critic method across the tested cost configurations. The actor--critic approach remains within $1$--$2\%$ of the LSM baseline in most cases and marginally outperforms it in a small number of configurations with high cost convexity, where the continuous action space may provide finer exercise resolution.} The present experiments focus on optional exercise with a cumulative cap and no active refraction lag.
+\textcolor{revisionbrown}{The numerical results indicate that LSM-D ($M = 5$) is a strong classical comparator: it generally matches or slightly exceeds the actor--critic method across the tested cost configurations. The actor--critic approach remains within $1$--$2\%$ of the LSM-D baseline in most cases and marginally outperforms it in a small number of configurations with high cost convexity, where the continuous action space may provide finer exercise resolution.} The present experiments focus on optional exercise with a cumulative cap and no active refraction lag.
 
-\textcolor{revisionbrown}{Several directions for future work are worth highlighting. First, constructing dual upper bounds---for example, via an adaptation of the Andersen--Broadie or Haugh--Kogan methodology to the swing setting---would provide an independent assessment of how close either method is to the true optimum. Second, extending the LSM baseline to a finer action grid or a randomised basis-selection scheme could further narrow the remaining gap. Third, extending the contract specification to include mandatory take obligations, non-trivial refraction lags, and calibration to observed forward and option data would broaden the practical relevance of both approaches.}
+\textcolor{revisionbrown}{Several directions for future work are worth highlighting. First, constructing dual upper bounds---for example, via an adaptation of the Andersen--Broadie or Haugh--Kogan methodology to the swing setting---would provide an independent assessment of how close either method is to the true optimum. Second, extending the LSM-D baseline to a finer action grid or a randomised basis-selection scheme could further narrow the remaining gap. Third, extending the contract specification to include mandatory take obligations, non-trivial refraction lags, and calibration to observed forward and option data would broaden the practical relevance of both approaches.}
 
 \section*{Acknowledgement}
 
