@@ -700,8 +700,11 @@ class ConfigManager:
                             help="Multiplicative loss weight for jump-event transitions (default 3.0).")
         # H8: Antithetic-pair averaged TD target
         parser.add_argument("--use_antithetic_target", type=int, choices=[0, 1], default=0,
-                            help="Use the HHK antithetic-path partner's next-state to average the TD target. "
-                            "Disables training-set stratification to preserve adjacent-index pairing.")
+                            help="Use the HHK antithetic-path partner's next-state to average the TD target.")
+        parser.add_argument("--antithetic_preserve_stratify", type=int, choices=[0, 1], default=1,
+                            help="If 1 (default), keep training-set stratification and track antithetic "
+                            "partner indices through the permutation. If 0, disable stratification "
+                            "(legacy H8 behaviour).")
 
         return parser
 
@@ -1006,23 +1009,45 @@ class LoggingManager:
 
 def generate_datasets(
     stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128,
-    stratify_train: bool = True,
-) -> Tuple[
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-]:
+    stratify_train: bool = True, return_partner_idx: bool = False,
+):
     """
     Generate training and evaluation datasets using antithetic variance reduction and QMC.
 
-    stratify_train: if False (used for H8 antithetic-target training), training paths
-    are NOT stratified so adjacent path indices (2i, 2i+1) remain antithetic partners.
+    stratify_train: if False (legacy H8 path), training paths are NOT stratified so
+        adjacent indices (2i, 2i+1) remain antithetic partners trivially.
+    return_partner_idx: if True, run with stratify=True but compute partner_idx (an
+        int array mapping each stratified index to its antithetic partner's new index).
+        Returns (train_ds, eval_ds, partner_idx_train).
     """
 
     print(f"🎲 Generating datasets: {n_paths} training + {n_paths_eval} eval paths...")
     pre_generation_start = time.time()
 
-    train_t, train_S, train_X, train_Y = simulate_hhk_spot(
-        **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=stratify_train, batch_size=batch_size
-    )
+    if return_partner_idx:
+        # Generate unstratified, then stratify manually with permutation tracking
+        train_t, train_S, train_X, train_Y = simulate_hhk_spot(
+            **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=False, batch_size=batch_size
+        )
+        from src.simulate_hhk_spot import _stratify  # noqa: F401
+        train_t, train_S, train_X, train_Y, new_order = _stratify(
+            train_t, train_S, train_X, train_Y, batch_size, return_perm=True
+        )
+        # Compute partner_idx (in the new stratified ordering)
+        # original index of new position i is new_order[i]
+        # antithetic partner's original index is new_order[i] ^ 1 (with bounds clipping)
+        # find its new position via inverse_perm
+        inverse_perm = np.argsort(new_order)
+        orig_indices = new_order.astype(np.int64)
+        partner_orig = orig_indices ^ 1
+        # Clip out-of-bounds partners (rare; happens if n_paths is odd)
+        partner_orig = np.minimum(partner_orig, n_paths - 1)
+        partner_idx = inverse_perm[partner_orig].astype(np.int64)
+    else:
+        train_t, train_S, train_X, train_Y = simulate_hhk_spot(
+            **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=stratify_train, batch_size=batch_size
+        )
+        partner_idx = None
     # print(f'>>>> shape of train_S: {train_S.shape}')
     # # Plot 200 sample paths and the mean
     # plt.figure(figsize=(12, 6))
@@ -1058,6 +1083,8 @@ def generate_datasets(
     total_storage_mb = (sum(arr.nbytes for arr in train_ds) + sum(arr.nbytes for arr in eval_ds)) / 1024**2
     print(f"✅ Datasets generated in {pre_generation_time:.2f}s ({total_storage_mb:.1f} MB)")
 
+    if return_partner_idx:
+        return train_ds, eval_ds, partner_idx
     return train_ds, eval_ds
 
 
@@ -1423,22 +1450,38 @@ def main():
     }
 
     # Generate training and evaluation datasets:
-    # H8: when antithetic-target training is on, disable stratification so adjacent
-    # path indices (2i, 2i+1) remain antithetic partners.
+    # H8: when antithetic-target training is on, either disable stratification
+    # (legacy) or preserve it and track the antithetic partner index through
+    # the permutation (preferred; --antithetic_preserve_stratify=1, default).
     _use_h8 = int(getattr(args, "use_antithetic_target", 0))
-    train_ds, eval_ds = generate_datasets(
-        stochastic_process_params=stochastic_process_params,
-        n_paths=args.n_paths,
-        n_paths_eval=args.n_paths_eval,
-        seed=seed,
-        batch_size=args.batch_size,
-        stratify_train=(not bool(_use_h8)),
-    )
+    _preserve_strat = int(getattr(args, "antithetic_preserve_stratify", 1))
+    train_partner_idx = None
+    if _use_h8 and _preserve_strat:
+        train_ds, eval_ds, train_partner_idx = generate_datasets(
+            stochastic_process_params=stochastic_process_params,
+            n_paths=args.n_paths,
+            n_paths_eval=args.n_paths_eval,
+            seed=seed,
+            batch_size=args.batch_size,
+            stratify_train=True,
+            return_partner_idx=True,
+        )
+        print(f"H8 stratify-preserved: partner_idx computed for {len(train_partner_idx)} paths")
+    else:
+        train_ds, eval_ds = generate_datasets(
+            stochastic_process_params=stochastic_process_params,
+            n_paths=args.n_paths,
+            n_paths_eval=args.n_paths_eval,
+            seed=seed,
+            batch_size=args.batch_size,
+            stratify_train=(not bool(_use_h8)),
+        )
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype,
         enable_antithetic=bool(_use_h8),
+        partner_idx_arr=train_partner_idx,
     )
     eval_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype,

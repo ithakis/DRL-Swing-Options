@@ -363,7 +363,8 @@ class SwingOptionEnv(gym.Env):
                  hhk_params: Dict,
                  dataset:Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
                  obs_dtype: Optional[np.dtype] = None,
-                 enable_antithetic: bool = False):
+                 enable_antithetic: bool = False,
+                 partner_idx_arr: Optional[np.ndarray] = None):
         """
         Initialize swing option environment
         
@@ -382,9 +383,14 @@ class SwingOptionEnv(gym.Env):
         self.t, self.S, self.X, self.Y = dataset
         self.max_episode_steps = self.contract.n_rights
         self.obs_dtype = np.dtype(obs_dtype) if obs_dtype is not None else np.float32
-        # H8: antithetic pairing. With stratify disabled the HHK simulator pairs
-        # paths 2i and 2i+1 as antithetic partners (same X path, opposite jump uniforms).
+        # H8: antithetic pairing.
+        # If partner_idx_arr is provided, use it (it correctly maps stratified
+        # indices to their antithetic partner's stratified index).
+        # Otherwise fall back to XOR pairing (only valid when stratify=False).
         self.enable_antithetic = bool(enable_antithetic)
+        self._partner_idx_arr = (
+            np.asarray(partner_idx_arr, dtype=np.int64) if partner_idx_arr is not None else None
+        )
         self._partner_path_idx = -1
         
         # Action space: normalized exercise quantity [0, 1]
@@ -622,10 +628,16 @@ class SwingOptionEnv(gym.Env):
         self.spot_path = self.S[path_idx]
         self.X_path = self.X[path_idx]
         self.Y_path = self.Y[path_idx]
-        # H8: identify antithetic partner path (only valid when paths weren't stratified)
+        # H8: identify antithetic partner path
         if self.enable_antithetic:
             n_paths = self.S.shape[0]
-            self._partner_path_idx = (path_idx ^ 1) if (path_idx ^ 1) < n_paths else path_idx
+            if self._partner_idx_arr is not None and path_idx < len(self._partner_idx_arr):
+                # Stratify-preserved partner mapping
+                cand = int(self._partner_idx_arr[path_idx])
+                self._partner_path_idx = cand if 0 <= cand < n_paths else path_idx
+            else:
+                # Legacy fallback: XOR pairing (valid only if stratify was off)
+                self._partner_path_idx = (path_idx ^ 1) if (path_idx ^ 1) < n_paths else path_idx
         else:
             self._partner_path_idx = -1
         

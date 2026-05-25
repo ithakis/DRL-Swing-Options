@@ -13,11 +13,15 @@ def _stratify(
     S: np.ndarray,
     X: np.ndarray,
     Y: np.ndarray,
-    batch_size: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    batch_size: int,
+    return_perm: bool = False,
+):
     """
     Reorder paths such that each chunk of size `batch_size` has a representative
     distribution of terminal spot prices (stratified sampling).
+
+    If return_perm=True, also returns the new_order permutation array
+    such that out_S[i] == in_S[new_order[i]].
 
     Method:
     1. Sort all paths by their terminal spot price S_T.
@@ -28,6 +32,8 @@ def _stratify(
     """
     n_paths = S.shape[0]
     if n_paths < batch_size:
+        if return_perm:
+            return t, S, X, Y, np.arange(n_paths, dtype=np.int64)
         return t, S, X, Y
 
     # 1. Sort indices by terminal spot price
@@ -54,6 +60,8 @@ def _stratify(
         current_idx += count
 
     # Apply reordering
+    if return_perm:
+        return t, S[new_order], X[new_order], Y[new_order], new_order
     return t, S[new_order], X[new_order], Y[new_order]
 
 
