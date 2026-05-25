@@ -27,6 +27,8 @@ SOURCES = [
     ("wide1", LOG_DIR / "sweep_results_n4096.csv", "focal", 4096),
     ("wide2", LOG_DIR / "sweep_results_n3072_wide2.csv", "focal", 3072),
     ("phase2", LOG_DIR / "sweep_h1_phase2.csv", None, None),  # contract/n_paths in row
+    ("phase3", LOG_DIR / "sweep_h1_phase3_n8192.csv", None, None),
+    ("h4", LOG_DIR / "sweep_h4_n4096.csv", None, None),
 ]
 
 
