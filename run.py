@@ -672,6 +672,9 @@ class ConfigManager:
         parser.add_argument("--warmstart_n_epochs", type=int, default=50,
                             help="Supervised MSE epochs over the synthetic samples.")
         parser.add_argument("--warmstart_batch_size", type=int, default=256)
+        parser.add_argument("--warmstart_copy_target", type=int, choices=[0, 1], default=1,
+                            help="If 1, copy warm-started critic_local to critic_target. "
+                            "If 0, target stays at its init - TD must catch up. Default 1.")
 
         return parser
 
@@ -1601,6 +1604,7 @@ def main():
                 n_actions=int(args.warmstart_n_actions),
                 seed=int(args.seed),
                 verbose=True,
+                copy_target=bool(int(args.warmstart_copy_target)),
             )
             V0 = grid_price_at_origin(warm_grid)
             print(f"[H4] Grid-implied initial price V(X=0, Y=0, Q_max, t=0) = {V0:.4f}")

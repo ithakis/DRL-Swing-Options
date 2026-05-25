@@ -483,6 +483,7 @@ def warm_start_critic(
     n_actions: int = 11,
     seed: int = 0,
     verbose: bool = True,
+    copy_target: bool = True,
 ) -> WarmStartGrid:
     """End-to-end: build V grid, sample (s, a) pairs, supervise critic.
 
@@ -539,10 +540,14 @@ def warm_start_critic(
         if verbose and (epoch < 5 or epoch == n_epochs - 1 or epoch % 10 == 0):
             print(f"[H4] supervised epoch {epoch}/{n_epochs}  MSE={avg:.4e}")
 
-    # Copy local -> target (so target network is also warm)
-    agent.critic_target.load_state_dict(agent.critic_local.state_dict())
+    if copy_target:
+        # Copy local -> target (so target network is also warm)
+        agent.critic_target.load_state_dict(agent.critic_local.state_dict())
+        target_msg = "target copied"
+    else:
+        target_msg = "target left untouched (TD must catch up)"
     if verbose:
-        print(f"[H4] critic warm-start complete; final MSE={losses[-1]:.4e}")
+        print(f"[H4] critic warm-start complete; final MSE={losses[-1]:.4e} ({target_msg})")
     return grid
 
 
