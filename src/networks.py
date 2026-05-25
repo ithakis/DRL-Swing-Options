@@ -768,6 +768,7 @@ class IQN(nn.Module):
         n_cos: int = 64,
         norm_type: str = "layernorm",
         init_method: str = "orthogonal",
+        input_preprocessor: "Optional[nn.Module]" = None,
     ) -> None:
         """Initialize the IQN network.
         
@@ -798,7 +799,8 @@ class IQN(nn.Module):
         self.dueling = dueling
         self.norm_type = norm_type.lower()
         self.init_method = _normalize_init_method(init_method)
-        
+        self.input_preprocessor = input_preprocessor
+
         # Precompute pi values for cosine embeddings
         self.register_buffer(
             'pis',
@@ -887,6 +889,10 @@ class IQN(nn.Module):
                 - tau_values: shape (batch_size, num_tau, 1)
         """
         batch_size = input_tensor.shape[0]
+
+        # Optional input preprocessing (e.g. Robust HHK normalization)
+        if self.input_preprocessor is not None:
+            input_tensor = self.input_preprocessor(input_tensor)
 
         # Concatenate state and action
         x = torch.cat((input_tensor, action), dim=1)

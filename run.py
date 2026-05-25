@@ -686,6 +686,8 @@ class ConfigManager:
                             help="Loss-mixing weight for the synthetic critic loss (default 1.0).")
         parser.add_argument("--dyna_actor_augment", type=int, choices=[0, 1], default=1,
                             help="If 1, also include synthetic states in the actor-policy gradient. Default 1.")
+        parser.add_argument("--iqn_N", type=int, default=32,
+                            help="Number of quantile samples in the IQN critic (default 32; smaller = faster).")
 
         return parser
 
@@ -1602,6 +1604,8 @@ def main():
             dyna_n_synthetic=(int(args.dyna_n_synthetic) if dyna_kernel is not None else 0),
             dyna_lambda=float(args.dyna_lambda),
             dyna_actor_augment=bool(int(args.dyna_actor_augment)),
+            # H6: IQN quantile count
+            iqn_N=int(args.iqn_N),
         )
         try:
             param_device = next(agent.actor_local.parameters()).device
