@@ -98,6 +98,12 @@ class Agent:
         strike: float = 100.0,
         expected_target_kernel=None,           # feat/semi-analytical-bootstrap (H1)
         expected_target_chunk_size: Optional[int] = None,
+        # H5: Dyna-style synthetic experience
+        dyna_kernel=None,
+        dyna_contract=None,
+        dyna_n_synthetic: int = 0,
+        dyna_lambda: float = 1.0,
+        dyna_actor_augment: bool = True,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -218,6 +224,13 @@ class Agent:
         if self.expected_target_kernel is not None and n_step != 1:
             print(f"Agent: expected_target_kernel set; forcing n_step=1 (was {n_step}).")
             self.n_step = 1
+        # ── H5: Dyna-style synthetic experience ──
+        self.dyna_kernel = dyna_kernel
+        self.dyna_contract = dyna_contract
+        self.dyna_n_synthetic = int(dyna_n_synthetic)
+        self.dyna_lambda = float(dyna_lambda)
+        self.dyna_actor_augment = bool(dyna_actor_augment)
+        self._dyna_rng = np.random.default_rng(random_seed) if dyna_kernel is not None else None
 
         # Configure Input Preprocessor if enabled
         input_preprocessor = None
@@ -763,17 +776,57 @@ class Agent:
         else:
             critic_loss = F.mse_loss(q_expected, q_target)
             priorities = None
+        # ── H5: Dyna-style synthetic experience augmentation ──
+        # Generate K fresh synthetic transitions and add MSE on Q*(s, a) to the
+        # critic loss. Uses H1's expected-target machinery for Q* (so this
+        # composes with H1).
+        dyna_states_t = None
+        if (
+            self.dyna_kernel is not None
+            and self.dyna_n_synthetic > 0
+            and not self.munchausen
+            and not self.distributional
+        ):
+            from .dyna_augment import generate_dyna_batch
+            from .transition_kernel import expected_critic_target
+            d_states, d_actions, d_rewards, d_next_states, d_dones = generate_dyna_batch(
+                self.dyna_n_synthetic, self.dyna_contract, rng=self._dyna_rng,
+                obs_dtype=np.float32,
+            )
+            d_states_t = torch.from_numpy(d_states).to(self.device)
+            d_actions_t = torch.from_numpy(d_actions).to(self.device)
+            d_next_states_t = torch.from_numpy(d_next_states).to(self.device)
+            d_rewards_t = torch.from_numpy(d_rewards.reshape(-1, 1)).to(self.device)
+            d_dones_t = torch.from_numpy(d_dones.reshape(-1, 1)).to(self.device)
+            with torch.no_grad():
+                q_next_dyna = expected_critic_target(
+                    self.critic_target, self.actor_target,
+                    states=d_states_t, next_states=d_next_states_t,
+                    kernel=self.dyna_kernel, strike=self._strike,
+                    target_policy_noise=float(current_target_noise or 0.0),
+                    chunk_size=self.expected_target_chunk_size,
+                )
+                q_target_dyna = d_rewards_t + (gamma ** self.n_step) * q_next_dyna * (1 - d_dones_t)
+            q_pred_dyna = self.critic_local(d_states_t, d_actions_t)
+            dyna_loss = (q_pred_dyna - q_target_dyna).pow(2).mean()
+            critic_loss = critic_loss + self.dyna_lambda * dyna_loss
+            dyna_states_t = d_states_t  # stash for actor augmentation
+
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         self.critic_optimizer.step()
 
         self.critic_optimizer.step()
-        
+
         actor_loss_val = 0.0
         # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
         if self._episode_count > self.critic_warmup_episodes:
-             actions_pred = self.actor_local(states)
-             q_val = self.critic_local(states, actions_pred)
+             if dyna_states_t is not None and self.dyna_actor_augment:
+                 all_states = torch.cat([states, dyna_states_t], dim=0)
+             else:
+                 all_states = states
+             actions_pred = self.actor_local(all_states)
+             q_val = self.critic_local(all_states, actions_pred)
              actor_loss = -q_val.mean()
              
              self.actor_optimizer.zero_grad(set_to_none=True)

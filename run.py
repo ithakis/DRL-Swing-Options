@@ -675,6 +675,17 @@ class ConfigManager:
         parser.add_argument("--warmstart_copy_target", type=int, choices=[0, 1], default=1,
                             help="If 1, copy warm-started critic_local to critic_target. "
                             "If 0, target stays at its init - TD must catch up. Default 1.")
+        # ── H5: Dyna-style synthetic experience augmentation ──
+        parser.add_argument("--use_dyna_augment", type=int, choices=[0, 1], default=0,
+                            help="At each critic update, generate K fresh synthetic (s, a) "
+                            "pairs and supervise critic_local on H1-style Q* targets. "
+                            "Composes with --use_expected_target.")
+        parser.add_argument("--dyna_n_synthetic", type=int, default=128,
+                            help="Synthetic transitions to generate per critic update (default 128).")
+        parser.add_argument("--dyna_lambda", type=float, default=1.0,
+                            help="Loss-mixing weight for the synthetic critic loss (default 1.0).")
+        parser.add_argument("--dyna_actor_augment", type=int, choices=[0, 1], default=1,
+                            help="If 1, also include synthetic states in the actor-policy gradient. Default 1.")
 
         return parser
 
@@ -1409,9 +1420,11 @@ def main():
     expected_target_kernel = None
     expected_target_chunk_size = None
     warmstart_kernel = None
+    dyna_kernel = None
     use_expected_target = int(getattr(args, "use_expected_target", 0))
     use_warmstart = int(getattr(args, "use_critic_warmstart", 0))
-    if use_expected_target or use_warmstart:
+    use_dyna = int(getattr(args, "use_dyna_augment", 0))
+    if use_expected_target or use_warmstart or use_dyna:
         from src.transition_kernel import KernelParams, precompute_kernel
         kparams = KernelParams(
             alpha=float(args.alpha),
@@ -1440,6 +1453,8 @@ def main():
                 args.nstep = 1
         if use_warmstart:
             warmstart_kernel = shared_kernel
+        if use_dyna:
+            dyna_kernel = shared_kernel
 
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
@@ -1581,6 +1596,12 @@ def main():
             # feat/semi-analytical-bootstrap
             expected_target_kernel=expected_target_kernel,
             expected_target_chunk_size=expected_target_chunk_size,
+            # H5: Dyna-style augmentation
+            dyna_kernel=dyna_kernel,
+            dyna_contract=(swing_contract if dyna_kernel is not None else None),
+            dyna_n_synthetic=(int(args.dyna_n_synthetic) if dyna_kernel is not None else 0),
+            dyna_lambda=float(args.dyna_lambda),
+            dyna_actor_augment=bool(int(args.dyna_actor_augment)),
         )
         try:
             param_device = next(agent.actor_local.parameters()).device
