@@ -658,6 +658,20 @@ class ConfigManager:
         parser.add_argument("--kernel_chunk_M", type=int, default=0,
                             help="If >0, evaluate the per-batch critic on chunks of this size in the M "
                             "axis to bound peak memory. 0 = no chunking.")
+        # ── H4: semi-analytical critic warm-start ──
+        parser.add_argument("--use_critic_warmstart", type=int, choices=[0, 1], default=0,
+                            help="Build a (X, Y, Q, t) value grid via backward induction with the "
+                            "transition kernel, then supervise critic_local on Q*(s,a) targets "
+                            "before D4PG training starts. Requires the kernel infrastructure but "
+                            "is independent of --use_expected_target.")
+        parser.add_argument("--warmstart_n_X", type=int, default=25)
+        parser.add_argument("--warmstart_n_Y", type=int, default=20)
+        parser.add_argument("--warmstart_n_actions", type=int, default=11)
+        parser.add_argument("--warmstart_n_samples", type=int, default=16384,
+                            help="Synthetic (s, a) pairs for supervised pre-training.")
+        parser.add_argument("--warmstart_n_epochs", type=int, default=50,
+                            help="Supervised MSE epochs over the synthetic samples.")
+        parser.add_argument("--warmstart_batch_size", type=int, default=256)
 
         return parser
 
@@ -1387,10 +1401,14 @@ def main():
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype
     )
 
-    # ── Optional: build the semi-analytical transition kernel (Phase 1: H1) ──
+    # ── Optional: build the semi-analytical transition kernel ──────────────
+    # Needed whenever --use_expected_target=1 (H1) OR --use_critic_warmstart=1 (H4).
     expected_target_kernel = None
     expected_target_chunk_size = None
-    if int(getattr(args, "use_expected_target", 0)):
+    warmstart_kernel = None
+    use_expected_target = int(getattr(args, "use_expected_target", 0))
+    use_warmstart = int(getattr(args, "use_critic_warmstart", 0))
+    if use_expected_target or use_warmstart:
         from src.transition_kernel import KernelParams, precompute_kernel
         kparams = KernelParams(
             alpha=float(args.alpha),
@@ -1404,17 +1422,21 @@ def main():
             M_per_k=int(args.kernel_M_per_k),
             f_id="no_seasonal",
         )
-        expected_target_kernel = precompute_kernel(
+        shared_kernel = precompute_kernel(
             kparams, swing_contract.n_rights, no_seasonal_function,
             maturity=float(swing_contract.maturity),
         )
-        expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
-        if int(args.nstep) != 1:
-            print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
-            args.nstep = 1
-        print(f"Built expected-target kernel: M={expected_target_kernel.M} "
-              f"(M_x={expected_target_kernel.M_x}, M_y={expected_target_kernel.M_y}), "
-              f"hash={expected_target_kernel.params_hash}")
+        print(f"Built kernel: M={shared_kernel.M} "
+              f"(M_x={shared_kernel.M_x}, M_y={shared_kernel.M_y}), "
+              f"hash={shared_kernel.params_hash}")
+        if use_expected_target:
+            expected_target_kernel = shared_kernel
+            expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
+            if int(args.nstep) != 1:
+                print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
+                args.nstep = 1
+        if use_warmstart:
+            warmstart_kernel = shared_kernel
 
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
@@ -1562,6 +1584,28 @@ def main():
         except StopIteration:
             param_device = torch.device("cpu")
         print(f"Sanity: model param device = {param_device}")
+
+        # ── H4: critic warm-start via backward induction on (X, Y, Q, t) ──
+        if warmstart_kernel is not None:
+            from src.critic_warmstart import warm_start_critic, grid_price_at_origin
+            print(f"\n[H4] Building backward-induction value grid + supervising critic_local ...")
+            warm_grid = warm_start_critic(
+                agent,
+                kernel=warmstart_kernel,
+                contract=swing_contract,
+                n_samples=int(args.warmstart_n_samples),
+                n_epochs=int(args.warmstart_n_epochs),
+                batch_size=int(args.warmstart_batch_size),
+                n_X=int(args.warmstart_n_X),
+                n_Y=int(args.warmstart_n_Y),
+                n_actions=int(args.warmstart_n_actions),
+                seed=int(args.seed),
+                verbose=True,
+            )
+            V0 = grid_price_at_origin(warm_grid)
+            print(f"[H4] Grid-implied initial price V(X=0, Y=0, Q_max, t=0) = {V0:.4f}")
+            print(f"[H4] LSM benchmark (for comparison)                       = {mean_lsm_price:.4f}\n")
+
         t0 = time.time()
 
         if args.saved_model is not None:
