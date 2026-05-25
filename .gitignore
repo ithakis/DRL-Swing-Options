@@ -250,3 +250,6 @@ Presentation/
 # Additional generated artifacts and local search noise
 Paper/build/
 Jupyter Notebooks/.ipynb_checkpoints/
+
+# Precomputed quadrature kernel meshes (reproducible from CLI args)
+cache/transition_kernel/

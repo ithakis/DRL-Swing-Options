@@ -637,6 +637,27 @@ class ConfigManager:
             default=0,
             help="Enable Robust HHK Normalization (Log-moneyness + Median/IQR scaling). Default: 0 (disabled).",
         )
+        # ── Semi-analytical / expected-target flags (feat/semi-analytical-bootstrap) ──
+        parser.add_argument(
+            "--use_expected_target",
+            type=int,
+            choices=[0, 1],
+            default=0,
+            help="If 1, replace the critic's single-sample bootstrap with a quadrature-"
+            "integrated expectation over the analytical HHK transition kernel. "
+            "Forces n_step=1. Default: 0 (off; bit-identical to v61).",
+        )
+        parser.add_argument("--kernel_M_x", type=int, default=4,
+                            help="Gauss-Hermite nodes on the OU X transition (default 4; "
+                            "M1-friendly. Bump to 6-8 for higher accuracy at ~2x cost).")
+        parser.add_argument("--kernel_M_per_k", type=int, default=4,
+                            help="QMC nodes per nonzero jump count in the Y mesh (default 4).")
+        parser.add_argument("--kernel_N_max", type=int, default=2,
+                            help="Truncate Poisson jump count at this many jumps (default 2; "
+                            "captures > 99.96% of mass at lambda*dt ~= 0.024).")
+        parser.add_argument("--kernel_chunk_M", type=int, default=0,
+                            help="If >0, evaluate the per-batch critic on chunks of this size in the M "
+                            "axis to bound peak memory. 0 = no chunking.")
 
         return parser
 
@@ -1366,6 +1387,35 @@ def main():
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype
     )
 
+    # ── Optional: build the semi-analytical transition kernel (Phase 1: H1) ──
+    expected_target_kernel = None
+    expected_target_chunk_size = None
+    if int(getattr(args, "use_expected_target", 0)):
+        from src.transition_kernel import KernelParams, precompute_kernel
+        kparams = KernelParams(
+            alpha=float(args.alpha),
+            sigma=float(args.sigma),
+            beta=float(args.beta),
+            lam=float(args.lam),
+            mu_J=float(args.mu_J),
+            dt=float(swing_contract.dt),
+            M_x=int(args.kernel_M_x),
+            N_max=int(args.kernel_N_max),
+            M_per_k=int(args.kernel_M_per_k),
+            f_id="no_seasonal",
+        )
+        expected_target_kernel = precompute_kernel(
+            kparams, swing_contract.n_rights, no_seasonal_function,
+            maturity=float(swing_contract.maturity),
+        )
+        expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
+        if int(args.nstep) != 1:
+            print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
+            args.nstep = 1
+        print(f"Built expected-target kernel: M={expected_target_kernel.M} "
+              f"(M_x={expected_target_kernel.M_x}, M_y={expected_target_kernel.M_y}), "
+              f"hash={expected_target_kernel.params_hash}")
+
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
     if csv_logging_enabled:
@@ -1503,6 +1553,9 @@ def main():
             # v62 parameters
             use_robust_normalization=bool(args.use_robust_normalization),
             strike=args.strike,
+            # feat/semi-analytical-bootstrap
+            expected_target_kernel=expected_target_kernel,
+            expected_target_chunk_size=expected_target_chunk_size,
         )
         try:
             param_device = next(agent.actor_local.parameters()).device

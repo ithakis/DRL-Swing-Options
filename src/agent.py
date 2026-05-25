@@ -96,6 +96,8 @@ class Agent:
         action_output: str = "tanh01",        # v60: actor output activation
         use_robust_normalization: bool = False, # v62: Robust HHK Normalization
         strike: float = 100.0,
+        expected_target_kernel=None,           # feat/semi-analytical-bootstrap (H1)
+        expected_target_chunk_size: Optional[int] = None,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -208,6 +210,14 @@ class Agent:
             actor_cls = FinanceInformedActor
         else:
             actor_cls = Actor
+
+        # ── Semi-analytical TD target (feat/semi-analytical-bootstrap, H1) ──
+        self._strike = float(strike)
+        self.expected_target_kernel = expected_target_kernel
+        self.expected_target_chunk_size = expected_target_chunk_size
+        if self.expected_target_kernel is not None and n_step != 1:
+            print(f"Agent: expected_target_kernel set; forcing n_step=1 (was {n_step}).")
+            self.n_step = 1
 
         # Configure Input Preprocessor if enabled
         input_preprocessor = None
@@ -691,26 +701,44 @@ class Agent:
             raise RuntimeError("Device mismatch: PER weights not on agent device")
 
         with torch.no_grad():
-            next_actions = self.actor_target(next_states)
             current_target_noise = self._get_target_policy_noise()
-            if current_target_noise and current_target_noise > 0:
-                # v60: Target policy noise decays late for cleaner Q-targets
-                noise = torch.randn_like(next_actions) * current_target_noise
-                next_actions = next_actions + noise
-                next_actions = torch.clamp(next_actions, 0.0, 1.0)
-                apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
-                if apply_gate is not None:
-                    next_actions = apply_gate(q_raw=next_actions, state=next_states)
-            q_next = self.critic_target(next_states, next_actions)
-            if not self.munchausen:
-                q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
-            else:
-                logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
-                tau_log_pi_next = q_next - self.entropy_tau * logsum
-                pi = F.softmax(q_next / self.entropy_tau, dim=1)
-                q_target = rewards + (self.GAMMA**self.n_step) * (
-                    pi * (q_next - tau_log_pi_next) * (1 - dones.float())
+            if (
+                self.expected_target_kernel is not None
+                and not self.munchausen
+            ):
+                # H1: variance-reduced bootstrap via the precomputed quadrature
+                # kernel. expected_critic_target handles target-policy-noise + gate
+                # internally so the synthetic next-states get consistent treatment.
+                from .transition_kernel import expected_critic_target
+                q_next = expected_critic_target(
+                    self.critic_target, self.actor_target,
+                    states=states, next_states=next_states,
+                    kernel=self.expected_target_kernel,
+                    strike=self._strike,
+                    target_policy_noise=float(current_target_noise or 0.0),
+                    chunk_size=self.expected_target_chunk_size,
                 )
+                q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
+            else:
+                next_actions = self.actor_target(next_states)
+                if current_target_noise and current_target_noise > 0:
+                    # v60: Target policy noise decays late for cleaner Q-targets
+                    noise = torch.randn_like(next_actions) * current_target_noise
+                    next_actions = next_actions + noise
+                    next_actions = torch.clamp(next_actions, 0.0, 1.0)
+                    apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
+                    if apply_gate is not None:
+                        next_actions = apply_gate(q_raw=next_actions, state=next_states)
+                q_next = self.critic_target(next_states, next_actions)
+                if not self.munchausen:
+                    q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
+                else:
+                    logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
+                    tau_log_pi_next = q_next - self.entropy_tau * logsum
+                    pi = F.softmax(q_next / self.entropy_tau, dim=1)
+                    q_target = rewards + (self.GAMMA**self.n_step) * (
+                        pi * (q_next - tau_log_pi_next) * (1 - dones.float())
+                    )
         q_expected = self.critic_local(states, actions)
         if self.per:
             td = q_target - q_expected
