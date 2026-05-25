@@ -692,6 +692,16 @@ class ConfigManager:
         parser.add_argument("--use_twin_critic", type=int, choices=[0, 1], default=0,
                             help="Enable TD3-style twin critics. The TD target is the min over both critics' "
                             "kernel-expected predictions. Reduces overestimation bias.")
+        # H9: Jump-event importance weighting
+        parser.add_argument("--use_jump_iw", type=int, choices=[0, 1], default=0,
+                            help="Detect Y-jump events between t and t+1, and upweight those transitions' "
+                            "critic loss. Compensates for rare-but-valuable jump-driven payoffs.")
+        parser.add_argument("--jump_iw_weight", type=float, default=3.0,
+                            help="Multiplicative loss weight for jump-event transitions (default 3.0).")
+        # H8: Antithetic-pair averaged TD target
+        parser.add_argument("--use_antithetic_target", type=int, choices=[0, 1], default=0,
+                            help="Use the HHK antithetic-path partner's next-state to average the TD target. "
+                            "Disables training-set stratification to preserve adjacent-index pairing.")
 
         return parser
 
@@ -995,19 +1005,23 @@ class LoggingManager:
 
 
 def generate_datasets(
-    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128
+    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128,
+    stratify_train: bool = True,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 ]:
     """
     Generate training and evaluation datasets using antithetic variance reduction and QMC.
+
+    stratify_train: if False (used for H8 antithetic-target training), training paths
+    are NOT stratified so adjacent path indices (2i, 2i+1) remain antithetic partners.
     """
 
     print(f"🎲 Generating datasets: {n_paths} training + {n_paths_eval} eval paths...")
     pre_generation_start = time.time()
 
     train_t, train_S, train_X, train_Y = simulate_hhk_spot(
-        **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=True, batch_size=batch_size
+        **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=stratify_train, batch_size=batch_size
     )
     # print(f'>>>> shape of train_S: {train_S.shape}')
     # # Plot 200 sample paths and the mean
@@ -1240,9 +1254,13 @@ def run_training(
 
             action = agent.act(np.expand_dims(state, axis=0))
             action_v = np.clip(action, action_low, action_high)
-            next_state, reward, terminated, truncated, _ = train_env.step(action_v[0])
+            next_state, reward, terminated, truncated, info_step = train_env.step(action_v[0])
             done = terminated or truncated
-            agent.step(state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer)
+            next_state_antithetic = info_step.get("next_state_antithetic") if isinstance(info_step, dict) else None
+            agent.step(
+                state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer,
+                next_state_antithetic=next_state_antithetic,
+            )
             actions_episode.append(action_v[0])
 
             state = next_state
@@ -1405,20 +1423,25 @@ def main():
     }
 
     # Generate training and evaluation datasets:
+    # H8: when antithetic-target training is on, disable stratification so adjacent
+    # path indices (2i, 2i+1) remain antithetic partners.
+    _use_h8 = int(getattr(args, "use_antithetic_target", 0))
     train_ds, eval_ds = generate_datasets(
         stochastic_process_params=stochastic_process_params,
         n_paths=args.n_paths,
         n_paths_eval=args.n_paths_eval,
         seed=seed,
         batch_size=args.batch_size,
+        stratify_train=(not bool(_use_h8)),
     )
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype,
+        enable_antithetic=bool(_use_h8),
     )
     eval_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype,
     )
 
     # ── Optional: build the semi-analytical transition kernel ──────────────
@@ -1612,6 +1635,13 @@ def main():
             iqn_N=int(args.iqn_N),
             # H7: TD3-style twin critics
             use_twin_critic=bool(int(args.use_twin_critic)),
+            # H9: Jump-event importance weighting
+            use_jump_iw=bool(int(args.use_jump_iw)),
+            jump_iw_weight=float(args.jump_iw_weight),
+            jump_iw_decay_Y=float(np.exp(-float(args.beta) * float(swing_contract.dt))),
+            jump_iw_threshold=1e-3,
+            # H8: Antithetic-pair averaged TD target
+            use_antithetic_target=bool(int(args.use_antithetic_target)),
         )
         try:
             param_device = next(agent.actor_local.parameters()).device

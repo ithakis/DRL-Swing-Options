@@ -108,6 +108,13 @@ class Agent:
         iqn_N: int = 32,
         # H7: TD3-style twin critics (only used when distributional=False)
         use_twin_critic: bool = False,
+        # H9: Jump-event importance weighting
+        use_jump_iw: bool = False,
+        jump_iw_weight: float = 3.0,
+        jump_iw_decay_Y: float = 0.0,        # exp(-beta*dt); 0 disables jump detection
+        jump_iw_threshold: float = 1e-3,     # Y' - decay_Y*Y > threshold => jump
+        # H8: Antithetic-pair averaged TD target
+        use_antithetic_target: bool = False,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -235,6 +242,17 @@ class Agent:
         self.dyna_lambda = float(dyna_lambda)
         self.dyna_actor_augment = bool(dyna_actor_augment)
         self._dyna_rng = np.random.default_rng(random_seed) if dyna_kernel is not None else None
+        # ── H9: Jump-event importance weighting ──
+        self.use_jump_iw = bool(use_jump_iw)
+        self.jump_iw_weight = float(jump_iw_weight)
+        self.jump_iw_decay_Y = float(jump_iw_decay_Y)
+        self.jump_iw_threshold = float(jump_iw_threshold)
+        # ── H8: Antithetic-pair averaged TD target ──
+        self.use_antithetic_target = bool(use_antithetic_target)
+        if self.use_antithetic_target:
+            self.antithetic_next_buf = np.zeros((BUFFER_SIZE, state_size), dtype=np.float32)
+        else:
+            self.antithetic_next_buf = None
 
         # Configure Input Preprocessor if enabled
         input_preprocessor = None
@@ -703,8 +721,18 @@ class Agent:
         np.clip(action, 0.0, 1.0, out=action)
         return action
 
-    def step(self, state, action, reward, next_state, done, timestamp, writer):
+    def step(self, state, action, reward, next_state, done, timestamp, writer,
+             *, next_state_antithetic=None):
         self.step_counter += 1
+        # H8: record antithetic next-state at the buffer's *upcoming* write position.
+        # CircularReplayBuffer exposes self.position; PrioritizedReplay exposes self.pos.
+        if (
+            self.use_antithetic_target and next_state_antithetic is not None
+            and self.antithetic_next_buf is not None
+        ):
+            pos = getattr(self.memory, "pos", getattr(self.memory, "position", None))
+            if pos is not None and 0 <= pos < self.antithetic_next_buf.shape[0]:
+                self.antithetic_next_buf[pos] = next_state_antithetic
         self.memory.add(state, action, reward, next_state, done)
         writer_available = writer is not None
         log_step = timestamp  # keep TB index aligned with true environment step count
@@ -779,6 +807,23 @@ class Agent:
                         chunk_size=self.expected_target_chunk_size,
                     )
                     q_next = torch.minimum(q_next, q_next_2)
+                # H8: antithetic-pair averaged target
+                if (
+                    self.use_antithetic_target and self.antithetic_next_buf is not None
+                    and idx is not None
+                ):
+                    anti_np = self.antithetic_next_buf[idx]
+                    if np.any(anti_np):  # skip if all-zero (early or disabled positions)
+                        anti_t = torch.from_numpy(anti_np).to(self.device)
+                        q_next_anti = expected_critic_target(
+                            self.critic_target, self.actor_target,
+                            states=states, next_states=anti_t,
+                            kernel=self.expected_target_kernel,
+                            strike=self._strike,
+                            target_policy_noise=float(current_target_noise or 0.0),
+                            chunk_size=self.expected_target_chunk_size,
+                        )
+                        q_next = 0.5 * (q_next + q_next_anti)
                 q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
             else:
                 next_actions = self.actor_target(next_states)
@@ -805,9 +850,23 @@ class Agent:
                         pi * (q_next - tau_log_pi_next) * (1 - dones.float())
                     )
         q_expected = self.critic_local(states, actions)
+        # ── H9: Jump-event importance weighting ──
+        # If a jump fired in (t, t+1], Y_{t+1} - decay_Y * Y_t exceeds threshold.
+        # Upweight those transitions in the critic loss to amplify learning on
+        # the high-payoff rare events. Multiplicative on top of PER weights.
+        if self.use_jump_iw and self.jump_iw_decay_Y > 0.0:
+            Y_t = states[:, 7].unsqueeze(-1) if states.dim() == 2 else states[..., 7:8]
+            Y_tp1 = next_states[:, 7].unsqueeze(-1) if next_states.dim() == 2 else next_states[..., 7:8]
+            jump_mask = (Y_tp1 - self.jump_iw_decay_Y * Y_t > self.jump_iw_threshold).float()
+            jump_w = 1.0 + (self.jump_iw_weight - 1.0) * jump_mask
+        else:
+            jump_w = None
         if self.per:
             td = q_target - q_expected
-            critic_loss = (td.pow(2) * weights).mean()
+            sq = td.pow(2) * weights
+            if jump_w is not None:
+                sq = sq * jump_w
+            critic_loss = sq.mean()
             if self.step_counter % self.td_quantile_interval == 0:
                 with torch.no_grad():
                     abs_td = td.detach().abs().flatten()
@@ -826,7 +885,10 @@ class Agent:
                 huber_kappa=self.per_huber_kappa,
             )
         else:
-            critic_loss = F.mse_loss(q_expected, q_target)
+            sq = (q_expected - q_target).pow(2)
+            if jump_w is not None:
+                sq = sq * jump_w
+            critic_loss = sq.mean()
             priorities = None
         # ── H5: Dyna-style synthetic experience augmentation ──
         # Generate K fresh synthetic transitions and add MSE on Q*(s, a) to the
