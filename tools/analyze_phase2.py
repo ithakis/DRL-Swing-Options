@@ -29,6 +29,8 @@ SOURCES = [
     ("phase2", LOG_DIR / "sweep_h1_phase2.csv", None, None),  # contract/n_paths in row
     ("phase3", LOG_DIR / "sweep_h1_phase3_n8192.csv", None, None),
     ("h4", LOG_DIR / "sweep_h4_n4096.csv", None, None),
+    ("h4v2", LOG_DIR / "sweep_h4_v2_n4096.csv", None, None),
+    ("h6", LOG_DIR / "sweep_h6_n2048.csv", None, None),
 ]
 
 
