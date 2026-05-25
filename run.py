@@ -688,6 +688,10 @@ class ConfigManager:
                             help="If 1, also include synthetic states in the actor-policy gradient. Default 1.")
         parser.add_argument("--iqn_N", type=int, default=32,
                             help="Number of quantile samples in the IQN critic (default 32; smaller = faster).")
+        # H7: Twin critics (TD3-style)
+        parser.add_argument("--use_twin_critic", type=int, choices=[0, 1], default=0,
+                            help="Enable TD3-style twin critics. The TD target is the min over both critics' "
+                            "kernel-expected predictions. Reduces overestimation bias.")
 
         return parser
 
@@ -1606,6 +1610,8 @@ def main():
             dyna_actor_augment=bool(int(args.dyna_actor_augment)),
             # H6: IQN quantile count
             iqn_N=int(args.iqn_N),
+            # H7: TD3-style twin critics
+            use_twin_critic=bool(int(args.use_twin_critic)),
         )
         try:
             param_device = next(agent.actor_local.parameters()).device

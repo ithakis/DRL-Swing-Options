@@ -106,6 +106,8 @@ class Agent:
         dyna_actor_augment: bool = True,
         # H6: IQN quantile count (was hardcoded 32)
         iqn_N: int = 32,
+        # H7: TD3-style twin critics (only used when distributional=False)
+        use_twin_critic: bool = False,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -359,6 +361,39 @@ class Agent:
             weight_decay=weight_decay_critic,
             betas=self.critic_betas,
         )
+
+        # ── H7: Twin critics (TD3-style) ──
+        # Initialise critic_local_2 with a different random seed so it
+        # disagrees with critic_local initially.  The min-of-twins target
+        # then provides an under-bias to counter the standard
+        # overestimation bias of single-critic TD targets.
+        self.use_twin_critic = bool(use_twin_critic) and not bool(distributional)
+        self.critic_local_2 = None
+        self.critic_target_2 = None
+        self.critic_optimizer_2 = None
+        if self.use_twin_critic:
+            self.critic_local_2 = Critic(
+                state_size, action_size, random_seed + 17,
+                hidden_size=critic_hidden_size, n_layers=critic_layers,
+                activation=self.activation, norm_type=self.norm_type,
+                init_method=self.init_method, input_preprocessor=input_preprocessor,
+            )
+            self.critic_target_2 = Critic(
+                state_size, action_size, random_seed + 17,
+                hidden_size=critic_hidden_size, n_layers=critic_layers,
+                activation=self.activation, norm_type=self.norm_type,
+                init_method=self.init_method, input_preprocessor=input_preprocessor,
+            )
+            self.critic_target_2.load_state_dict(self.critic_local_2.state_dict())
+            self.critic_optimizer_2 = self._build_optimizer(
+                model=self.critic_local_2, optim_cls=optim_cls,
+                lr=LR_CRITIC, weight_decay=weight_decay_critic,
+                betas=self.critic_betas,
+            )
+            self._critic_target_2_params = list(self.critic_target_2.parameters())
+            self._critic_target_2_data = [p.data for p in self._critic_target_2_params]
+            self._critic_local_2_params = list(self.critic_local_2.parameters())
+
         self.critic_ema_decay = critic_ema_decay
         self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
 
@@ -733,6 +768,17 @@ class Agent:
                     target_policy_noise=float(current_target_noise or 0.0),
                     chunk_size=self.expected_target_chunk_size,
                 )
+                # H7: twin critic -> use min over both kernel-expected targets
+                if self.use_twin_critic and self.critic_target_2 is not None:
+                    q_next_2 = expected_critic_target(
+                        self.critic_target_2, self.actor_target,
+                        states=states, next_states=next_states,
+                        kernel=self.expected_target_kernel,
+                        strike=self._strike,
+                        target_policy_noise=float(current_target_noise or 0.0),
+                        chunk_size=self.expected_target_chunk_size,
+                    )
+                    q_next = torch.minimum(q_next, q_next_2)
                 q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
             else:
                 next_actions = self.actor_target(next_states)
@@ -745,6 +791,10 @@ class Agent:
                     if apply_gate is not None:
                         next_actions = apply_gate(q_raw=next_actions, state=next_states)
                 q_next = self.critic_target(next_states, next_actions)
+                # H7: twin critic min target without kernel
+                if self.use_twin_critic and self.critic_target_2 is not None and not self.munchausen:
+                    q_next_2 = self.critic_target_2(next_states, next_actions)
+                    q_next = torch.minimum(q_next, q_next_2)
                 if not self.munchausen:
                     q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
                 else:
@@ -820,6 +870,18 @@ class Agent:
 
         self.critic_optimizer.step()
 
+        # ── H7: Twin critic - train critic_local_2 on the SAME min-target ──
+        if self.use_twin_critic and self.critic_local_2 is not None:
+            q_expected_2 = self.critic_local_2(states, actions)
+            if self.per:
+                td_2 = q_target - q_expected_2
+                critic_loss_2 = (td_2.pow(2) * weights).mean()
+            else:
+                critic_loss_2 = F.mse_loss(q_expected_2, q_target)
+            self.critic_optimizer_2.zero_grad(set_to_none=True)
+            critic_loss_2.backward()
+            self.critic_optimizer_2.step()
+
         actor_loss_val = 0.0
         # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
         if self._episode_count > self.critic_warmup_episodes:
@@ -830,19 +892,21 @@ class Agent:
              actions_pred = self.actor_local(all_states)
              q_val = self.critic_local(all_states, actions_pred)
              actor_loss = -q_val.mean()
-             
+
              self.actor_optimizer.zero_grad(set_to_none=True)
              actor_loss.backward()
              self.actor_optimizer.step()
              actor_loss_val = actor_loss.item()
              self.soft_update(self.actor_local, self.actor_target)
-             
+
         self._updates_done += 1
         if self.step_counter % 200 == 0:
             with torch.no_grad():
                 tgt_q = self.critic_target(states, self.actor_target(states))
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
+        if self.use_twin_critic and self.critic_local_2 is not None:
+            self.soft_update(self.critic_local_2, self.critic_target_2)
         self._update_ema_buffers()
         if self._per_update_priorities and priorities is not None:
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
