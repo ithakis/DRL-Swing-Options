@@ -258,20 +258,25 @@ def precompute_kernel(
     """
     path = _cache_path(params, cache_dir)
     if (not force_rebuild) and os.path.exists(path):
-        npz = np.load(path)
-        if int(npz["n_rights"]) == n_rights:
-            return TransitionKernel(
-                decay_X=float(npz["decay_X"]),
-                sigma_X=float(npz["sigma_X"]),
-                decay_Y=float(npz["decay_Y"]),
-                z_X=npz["z_X"].copy(),
-                w_X=npz["w_X"].copy(),
-                delta_Y=npz["delta_Y"].copy(),
-                w_Y=npz["w_Y"].copy(),
-                exp_f_grid=npz["exp_f_grid"].copy(),
-                n_rights=int(npz["n_rights"]),
-                params_hash=params.hash(),
-            )
+        try:
+            npz = np.load(path)
+            if int(npz["n_rights"]) == n_rights:
+                return TransitionKernel(
+                    decay_X=float(npz["decay_X"]),
+                    sigma_X=float(npz["sigma_X"]),
+                    decay_Y=float(npz["decay_Y"]),
+                    z_X=npz["z_X"].copy(),
+                    w_X=npz["w_X"].copy(),
+                    delta_Y=npz["delta_Y"].copy(),
+                    w_Y=npz["w_Y"].copy(),
+                    exp_f_grid=npz["exp_f_grid"].copy(),
+                    n_rights=int(npz["n_rights"]),
+                    params_hash=params.hash(),
+                )
+        except (EOFError, ValueError, OSError, KeyError) as e:
+            # Cache file is corrupt or being written by another worker.
+            # Fall through to recompute and overwrite atomically.
+            print(f"[kernel cache] ignoring corrupt cache at {path}: {e}")
 
     decay_X = math.exp(-params.alpha * params.dt)
     var_X = (params.sigma ** 2) * (1.0 - decay_X ** 2) / (2.0 * params.alpha)
@@ -302,12 +307,26 @@ def precompute_kernel(
         params_hash=params.hash(),
     )
 
-    np.savez_compressed(
-        path,
-        decay_X=kernel.decay_X, sigma_X=kernel.sigma_X, decay_Y=kernel.decay_Y,
-        z_X=kernel.z_X, w_X=kernel.w_X, delta_Y=kernel.delta_Y, w_Y=kernel.w_Y,
-        exp_f_grid=kernel.exp_f_grid, n_rights=kernel.n_rights,
-    )
+    # Atomic write: save to tmp file then rename, so concurrent workers
+    # never observe a partial cache file.
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        np.savez_compressed(
+            tmp_path,
+            decay_X=kernel.decay_X, sigma_X=kernel.sigma_X, decay_Y=kernel.decay_Y,
+            z_X=kernel.z_X, w_X=kernel.w_X, delta_Y=kernel.delta_Y, w_Y=kernel.w_Y,
+            exp_f_grid=kernel.exp_f_grid, n_rights=kernel.n_rights,
+        )
+        # POSIX rename is atomic.  numpy savez_compressed writes "{tmp_path}.npz".
+        full_tmp = tmp_path + ".npz" if not tmp_path.endswith(".npz") else tmp_path
+        actual_tmp = full_tmp if os.path.exists(full_tmp) else tmp_path
+        os.replace(actual_tmp, path)
+    except Exception as e:
+        print(f"[kernel cache] failed to save cache at {path}: {e}")
+        # Best-effort cleanup
+        for candidate in (tmp_path, tmp_path + ".npz"):
+            try: os.remove(candidate)
+            except Exception: pass
     return kernel
 
 
