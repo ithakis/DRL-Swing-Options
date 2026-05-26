@@ -33,6 +33,25 @@ The paper results use **v61 hyperparameters** with IQN disabled (`-iqn=0`) and a
 - 2x64 SiLU MLPs with LayerNorm, orthogonal init
 - Convex cost sweep: c in {0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15} x gamma in {1, 1.5, 2, 3}
 
+## Semi-Analytical Kernel (feat/semi-analytical-bootstrap)
+
+Optional opt-in mechanism that replaces the critic's single-sample TD bootstrap with an analytical expectation over the HHK transition kernel.  **Bit-identical to v61 when off** (default).  Recommended for kernel-on training:
+
+```bash
+--use_expected_target=1
+--kernel_M_x=3 --kernel_M_per_k=3 --kernel_N_max=2   # M=21, sweet spot
+--critic_warmup_episodes=0                            # not needed with kernel
+```
+
+Headline result (focal c=0.04, gamma=2, 4096 ep, 3 seeds):
+- Kernel on  (`H1_only`):   Delta% = +0.474 +/- 0.204 pp
+- Kernel off (`B0_baseline`):Delta% = -2.051 +/- 0.440 pp
+- Gap = +2.525 pp, t = +9.02, p = 0.004 (Welch's two-sample)
+
+At 8192 ep the kernel-on seed std collapses to 0.022 pp (10x reduction).  No-cost regression: kernel +5.2 pp better than baseline.  Wall-clock cost: ~2x baseline per episode at M=36, ~1.5x at M=21.
+
+See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for a self-contained tour with statistics and parameter-selection recipe.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics, H8 antithetic, H9 jump-IW) either did not help or actively hurt — see notebook for the full negative-results catalog.
+
 ## Architecture
 
 ### Data Flow
