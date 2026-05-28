@@ -209,11 +209,14 @@ for r in phase_b:
 
 ref_b = pb_groups.get((1, 1), [])
 s4_data = []
+s4_raw_welch_b: List[float] = []
 for (mpk, nmax) in sorted(pb_groups):
     d = pb_groups[(mpk, nmax)]
     m_total = 2 * (1 + nmax * mpk)
     s = summarize(d)
     wp = welch_p(d, ref_b) if (mpk, nmax) != (1, 1) else None
+    if wp is not None:
+        s4_raw_welch_b.append(wp)
     rows_l = pb_rows_map.get((mpk, nmax), [])
     s4_data.append({
         "Mpk": mpk, "Nmax": nmax, "M_total": m_total,
@@ -221,10 +224,7 @@ for (mpk, nmax) in sorted(pb_groups):
         "welch_p_vs_ref": fmt_p(wp),
         "wall_mean": wall_mean(rows_l),
     })
-s4_welch_min = min(
-    (r["welch_p_vs_ref"] for r in s4_data if r["welch_p_vs_ref"] not in ("n/a", None)),
-    default="n/a"
-)
+s4_welch_min = fmt_p(min(s4_raw_welch_b)) if s4_raw_welch_b else "n/a"
 s4_conclusion = (
     f"All seven $(M_{{pk}}, N_{{\\max}})$ variants at $M_x=2$ are statistically indistinguishable "
     f"from the reference $(1,1)$ — minimum Welch $p = {s4_welch_min}$; "

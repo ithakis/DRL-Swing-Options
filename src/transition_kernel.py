@@ -46,6 +46,13 @@ try:
 
     _NJIT = nb.njit(cache=True, fastmath=True, parallel=False)
 except Exception:  # pragma: no cover - numba is in environment.yml
+    import warnings
+    warnings.warn(
+        "numba not available — transition_kernel will run in pure Python (~100x slower). "
+        "Install numba or activate the EP11 conda environment.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     nb = None
 
     def _NJIT(fn):
