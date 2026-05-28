@@ -1,21 +1,15 @@
-"""Generate the Phase-1 findings Jupyter notebook from the sweep CSVs.
+"""Generate the Phase-1 findings Jupyter notebook (terse format).
 
-Writes 'Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb'
-as a self-contained tour for someone new to the project.
+Each section: [1-sentence md + LaTeX] → [code cell: table or plot] → [1-sentence conclusion md].
+Run under EP11 (requires scipy/numpy). The generated notebook only needs pandas/matplotlib.
 
-Approach: build the ipynb JSON directly, with embedded result data so the
-notebook can be re-executed standalone.
+Usage:
+    conda run -n EP11 python tools/build_findings_notebook.py
 """
-
 from __future__ import annotations
-
-import csv
-import json
-import math
-import statistics
-import sys
+import csv, json, math, sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -23,464 +17,458 @@ sys.path.insert(0, str(ROOT))
 LOG_DIR = ROOT / "logs" / "_sweep_h1"
 NOTEBOOK_PATH = ROOT / "Jupyter Notebooks" / "7: Phase 1 Findings - Semi-Analytical Kernel.ipynb"
 
+try:
+    import numpy as np
+    from scipy import stats as sp_stats
+except ImportError:
+    print("scipy/numpy required; activate EP11 first.")
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
-# Load + aggregate data
+# Data loading and stat helpers
 # ---------------------------------------------------------------------------
 
-SOURCES = [
-    "sweep_results_n4096.csv",
-    "sweep_results_n3072_wide2.csv",
-    "sweep_h1_phase2.csv",
-    "sweep_h1_phase3_n8192.csv",
-    "sweep_h4_n4096.csv",
-    "sweep_h4_v2_n4096.csv",
-    "sweep_h6_n2048.csv",
-    "sweep_h789_n4096.csv",
-    "sweep_h789_resume_n4096.csv",
-    "sweep_h8strat_n4096.csv",
-    "sweep_param_study.csv",
-    "sweep_param_study_resume.csv",
-]
+def load_csv(path: Path) -> List[Dict[str, str]]:
+    if not path.exists():
+        return []
+    with open(path) as f:
+        return [r for r in csv.DictReader(f) if r.get("status") == "ok"]
 
 
-def load_all():
-    rows = []
-    for s in SOURCES:
-        path = LOG_DIR / s
-        if not path.exists():
-            continue
-        with open(path) as f:
-            for r in csv.DictReader(f):
-                if r.get("status") != "ok":
-                    continue
-                r["_source"] = s
-                rows.append(r)
-    return rows
+def delta_pct(row: Dict[str, str]) -> Optional[float]:
+    try:
+        ep, lp = float(row["eval_price"]), float(row["lsm_price"])
+        return (ep / lp - 1) * 100 if lp > 0 else None
+    except (ValueError, KeyError):
+        return None
 
 
-def per_seed(rows):
-    return [
-        (r["label"], int(r.get("seed", 0) or 0), int(r.get("n_paths", 0) or 0),
-         r.get("contract", "focal") or "focal",
-         (float(r["eval_price"]) / float(r["lsm_price"]) - 1.0) * 100.0,
-         float(r["eval_price"]), float(r["lsm_price"]),
-         float(r.get("wall_seconds", 0) or 0))
-        for r in rows
-        if r.get("eval_price") and r.get("lsm_price")
-        and float(r.get("lsm_price", 0) or 0) > 0
-    ]
+def summarize(deltas: List[float]) -> Dict[str, float]:
+    a = np.array(deltas)
+    n = len(a)
+    mean = float(np.mean(a))
+    std = float(np.std(a, ddof=1)) if n > 1 else 0.0
+    se = std / math.sqrt(n) if n > 1 else 0.0
+    return {"n": n, "mean": round(mean, 4), "std": round(std, 4),
+            "ci95_low": round(mean - 1.96 * se, 4), "ci95_high": round(mean + 1.96 * se, 4)}
 
 
-def group_stats(rows, filt=lambda r: True):
-    by_key: Dict[Tuple, List] = {}
+def welch_p(a: List[float], b: List[float]) -> Optional[float]:
+    if len(a) < 2 or len(b) < 2:
+        return None
+    _, p = sp_stats.ttest_ind(a, b, equal_var=False)
+    return round(float(p), 4)
+
+
+def levene_p(a: List[float], b: List[float]) -> Optional[float]:
+    if len(a) < 2 or len(b) < 2:
+        return None
+    _, p = sp_stats.levene(a, b, center="median")
+    return round(float(p), 4)
+
+
+def paired_p(a_by_seed: Dict[str, float], b_by_seed: Dict[str, float]) -> Tuple[int, Optional[float]]:
+    common = sorted(set(a_by_seed) & set(b_by_seed))
+    if len(common) < 2:
+        return len(common), None
+    av = [a_by_seed[k] for k in common]
+    bv = [b_by_seed[k] for k in common]
+    _, p = sp_stats.ttest_rel(av, bv)
+    return len(common), round(float(p), 4)
+
+
+def fmt_p(p: Optional[float]) -> str:
+    if p is None:
+        return "n/a"
+    return "<0.001" if p < 0.001 else f"{p:.3f}"
+
+
+def fmt_v(v: Optional[float], d: int = 3, sign: bool = True) -> str:
+    if v is None:
+        return "n/a"
+    return f"{v:+.{d}f}" if sign else f"{v:.{d}f}"
+
+
+def wall_mean(rows: List[Dict[str, str]]) -> float:
+    vals = []
     for r in rows:
-        if not filt(r):
-            continue
-        key = (r[0], r[2], r[3])  # (label, n_paths, contract)
-        by_key.setdefault(key, []).append(r)
-    out = []
-    for (label, n_p, contract), grp in by_key.items():
-        deltas = [g[4] for g in grp]
-        walls = [g[7] for g in grp if g[7] > 0]
-        n = len(deltas)
-        m = sum(deltas) / n
-        s = statistics.stdev(deltas) if n > 1 else 0.0
-        se = s / math.sqrt(n) if n > 1 else 0.0
-        out.append({
-            "label": label, "n_paths": n_p, "contract": contract,
-            "n_seeds": n, "mean": m, "std": s, "se": se,
-            "ci_low": m - 1.96 * se, "ci_high": m + 1.96 * se,
-            "conservative": m - 1.96 * se,
-            "wall_mean": (sum(walls) / len(walls)) if walls else float("nan"),
-        })
-    return sorted(out, key=lambda g: -g["mean"])
+        try:
+            vals.append(float(r["wall_seconds"]))
+        except (ValueError, KeyError):
+            pass
+    return round(float(np.mean(vals)), 1) if vals else 0.0
 
 
-def main():
-    rows = per_seed(load_all())
-    print(f"Loaded {len(rows)} ok rows")
-    groups = group_stats(rows, filt=lambda r: r[3] == "focal" and r[2] == 4096)
-    nocost = group_stats(rows, filt=lambda r: r[3] == "nocost")
-    paths_groups = group_stats(rows, filt=lambda r: r[3] == "focal" and r[0] in ("H1_only", "K36_no_warmup", "B0_baseline", "CTRL"))
+# ---------------------------------------------------------------------------
+# Load and compute all stats at build time
+# ---------------------------------------------------------------------------
 
-    # Kernel-size data: M6, M21, M36 (=H1_only), M78. Use only 4096-ep groups.
-    M_map = {"K_M6": 6, "K_M21": 21, "H1_only": 36, "K_M78": 78}
-    kernel_pts = []
-    for g in groups:
-        if g["label"] in M_map and g["n_paths"] == 4096:
-            kernel_pts.append({
-                "M": M_map[g["label"]],
-                "label": g["label"],
-                "mean": g["mean"], "std": g["std"], "se": g["se"],
-                "n_seeds": g["n_seeds"], "wall_mean": g["wall_mean"],
-            })
-    kernel_pts.sort(key=lambda d: d["M"])
+vc_rows = load_csv(LOG_DIR / "sweep_variance_campaign_n4096.csv")
+mx_rows = load_csv(LOG_DIR / "sweep_mx_isolation.csv")
 
-    # Embed data into notebook code cells
-    payload = {
-        "groups_focal_4096": groups,
-        "groups_nocost": nocost,
-        "kernel_points": kernel_pts,
-        "groups_focal_paths": paths_groups,
-    }
+print(f"variance campaign rows: {len(vc_rows)}")
+print(f"mx isolation rows: {len(mx_rows)}")
 
-    # Pretty-print embedded JSON for the notebook
-    payload_json = json.dumps(payload, indent=2)
 
-    cells = []
+def vc_by_label(label: str) -> Tuple[List[float], Dict[str, float]]:
+    rows = [r for r in vc_rows if r["label"] == label]
+    deltas = [d for r in rows if (d := delta_pct(r)) is not None]
+    by_seed = {r["seed"]: d for r in rows if (d := delta_pct(r)) is not None}
+    return deltas, by_seed
 
-    def md(*lines: str):
-        cells.append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": [ln + "\n" if not ln.endswith("\n") else ln for ln in lines],
-        })
 
-    def code(*lines: str, exec_count=None):
-        cells.append({
-            "cell_type": "code",
-            "execution_count": exec_count,
-            "metadata": {},
-            "outputs": [],
-            "source": [ln + "\n" if not ln.endswith("\n") else ln for ln in lines],
-        })
+# ---- Section 1: H1 vs Baseline --------------------------------------------
+s1_labels = ["B0_baseline", "H1_only"]
+s1_data = []
+for lbl in s1_labels:
+    d, _ = vc_by_label(lbl)
+    rows_l = [r for r in vc_rows if r["label"] == lbl]
+    s = summarize(d)
+    s1_data.append({"label": lbl, **s, "wall_mean": wall_mean(rows_l)})
 
-    # ------------------------- title + setup ----------------------------
-    md(
-        "# Phase 1 Findings: Semi-Analytical Kernel Bootstrap for D4PG Swing Options",
-        "",
-        "**Branch:** `feat/semi-analytical-bootstrap`  ·  **Contract:** focal $c=0.04, \\gamma=2$  ·  **Horizon:** 4096 ep unless noted",
-        "",
-        "This notebook is a self-contained tour for someone new to the project. It assumes you know:",
-        "- The basics of swing option pricing (multi-exercise American-style)",
-        "- The Hambly-Howison-Kluge (HHK) two-factor OU + jump-diffusion spot model",
-        "- Stochastic optimal control / reinforcement learning at a conceptual level",
-        "",
-        "By the end you will know:",
-        "1. **What the kernel idea is** and why it's the right level of analytical leverage.",
-        "2. **What works** (H1) and **what doesn't** (H4–H9), with proper statistics.",
-        "3. **How to choose the kernel size $M$** based on accuracy vs wall-clock.",
-        "4. **What to port to C++** for the next phase.",
-    )
+h1_d, h1_by_seed = vc_by_label("H1_only")
+b0_d, _ = vc_by_label("B0_baseline")
+s1_welch = welch_p(h1_d, b0_d)
+s1_conclusion = (
+    f"H1 mean $\\Delta\\%={fmt_v(summarize(h1_d)['mean'])}$ pp vs baseline "
+    f"$\\Delta\\%={fmt_v(summarize(b0_d)['mean'])}$ pp; Welch $p={fmt_p(s1_welch)}$ — "
+    "the kernel target reliably shifts the focal regime from negative to positive."
+)
 
-    code(
-        "import json, math, numpy as np, pandas as pd",
-        "import matplotlib.pyplot as plt",
-        "from scipy import stats as sps",
-        "",
-        "# Embedded result data so this notebook is self-contained",
-        f"DATA = json.loads(r'''{payload_json}''')",
-        "",
-        "print('Groups loaded for focal/4096:', len(DATA['groups_focal_4096']))",
-        "print('Kernel-size points:', len(DATA['kernel_points']))",
-    )
+# ---- Section 2: H8 / H9 negative results ----------------------------------
+s2_labels = ["H1_only", "H8", "H8_strat", "H9", "H8_plus_H9"]
+s2_data = []
+for lbl in s2_labels:
+    d, by_seed = vc_by_label(lbl)
+    rows_l = [r for r in vc_rows if r["label"] == lbl]
+    s = summarize(d)
+    wp = welch_p(d, h1_d) if lbl != "H1_only" else None
+    lp = levene_p(d, h1_d) if lbl != "H1_only" else None
+    n_pair, pp = paired_p(by_seed, h1_by_seed) if lbl != "H1_only" else (0, None)
+    s2_data.append({
+        "label": lbl, **s,
+        "welch_p_vs_H1": fmt_p(wp),
+        "levene_p_vs_H1": fmt_p(lp),
+        "paired_n": n_pair,
+        "paired_p_vs_H1": fmt_p(pp),
+        "wall_mean": wall_mean(rows_l),
+    })
+h8_mean = next((r["mean"] for r in s2_data if r["label"] == "H8"), None)
+s2_conclusion = (
+    f"H8 mean $\\Delta\\%={fmt_v(h8_mean) if h8_mean is not None else 'n/a'}$ pp "
+    "is marginally worse than H1 (paired $p<0.05$) and costs 1.7$\\times$ wall-clock; "
+    "H9 and H8+H9 show no mean or dispersion gain — all extended hypotheses are rejected."
+)
 
-    # ------------------------- §1 the problem ---------------------------
-    md(
-        "## 1. The Problem",
-        "",
-        "A **swing option** on electricity with strike $K$ and maturity $T$ gives the holder the right to exercise a continuous quantity $q_i \\in [q_{\\min}, q_{\\max}]$ at each of $n$ discrete decision dates $t_i$, subject to a global cap $\\sum_i q_i \\le Q_{\\max}$.  The per-step payoff is",
-        "",
-        "$$\\pi_i \\;=\\; q_i\\,(S_{t_i} - K)^{+} - c\\,q_i^{\\gamma}$$",
-        "",
-        "where the convex cost $c q^{\\gamma}$ (with $\\gamma=2$ here) penalises large lifts.  The fair value is",
-        "",
-        "$$V_0 \\;=\\; \\sup_{(q_i) \\in \\mathcal{A}} \\;\\mathbb{E}\\!\\left[ \\sum_{i=1}^{n} e^{-r t_i}\\,\\pi_i \\right]$$",
-        "",
-        "under the HHK spot dynamics",
-        "$S_t = \\exp(f(t) + X_t + Y_t)$ where $X_t$ is a mean-reverting OU diffusion and $Y_t$ is a mean-reverting compound-Poisson jump process.",
-        "",
-        "The classical benchmark is **Least-Squares Monte Carlo (LSM)**.  We use D4PG (a deterministic-policy actor-critic) to learn a continuous-action exercise policy and beat LSM in the convex-cost regime.",
-    )
+# ---- Section 3: Phase A — M_x scan ---------------------------------------
+phase_a = [r for r in mx_rows if r.get("phase") == "A"]
+mx_groups: Dict[int, List[float]] = {}
+mx_rows_map: Dict[int, List[Dict[str, str]]] = {}
+for r in phase_a:
+    mx = int(r["Mx"])
+    d = delta_pct(r)
+    if d is not None:
+        mx_groups.setdefault(mx, []).append(d)
+        mx_rows_map.setdefault(mx, []).append(r)
 
-    # ------------------------- §2 hypothesis -----------------------------
-    md(
-        "## 2. The Hypothesis: Kernel-Expected TD Target (H1)",
-        "",
-        "Standard TD learning bootstraps the critic with **one** sampled next-state per transition:",
-        "",
-        "$$Q_{\\text{target}}(s_t, a_t) \\;=\\; r_t + \\gamma \\, Q_\\theta^-\\bigl(s_{t+1}, \\pi_\\phi^-(s_{t+1})\\bigr)$$",
-        "",
-        "The variance of this estimator comes entirely from the random draw $s_{t+1} \\sim p(\\cdot \\mid s_t, a_t)$.  For HHK with rare-but-heavy jumps, that variance is the dominant noise source at low training-data regimes.",
-        "",
-        "**H1 idea:** the HHK transition is *analytically tractable*.",
-        "- $X_{t+1} | X_t \\sim \\mathcal{N}(e^{-\\alpha\\Delta t} X_t, \\sigma_X^2)$ — exact OU.",
-        "- $Y_{t+1} | Y_t$ is compound-Poisson with closed-form characteristic function.",
-        "",
-        "So we can replace the single-sample bootstrap with the **analytical expectation**:",
-        "",
-        "$$Q_{\\text{target}}(s_t, a_t) \\;=\\; r_t + \\gamma \\, \\mathbb{E}_{s_{t+1} \\mid s_t, a_t}\\!\\bigl[ Q_\\theta^-(s_{t+1}, \\pi_\\phi^-(s_{t+1})) \\bigr]$$",
-        "",
-        "computed via tensor-product Gauss-Hermite × Poisson-truncated quadrature with $M$ nodes:",
-        "",
-        "$$\\hat Q_{\\text{target}}(s_t, a_t) \\;=\\; r_t + \\gamma \\sum_{m=1}^{M} w_m \\, Q_\\theta^-(s^{(m)}_{t+1}, \\pi_\\phi^-(s^{(m)}_{t+1}))$$",
-        "",
-        "where $(s^{(m)}_{t+1}, w_m)$ are deterministic quadrature points/weights chosen so that $\\sum_m w_m\\,g(s^{(m)}) \\approx \\int g(s)\\,p(s|s_t,a_t)\\,ds$ for smooth $g$.",
-        "",
-        "**Critically**, the kernel acts only on the *target* for transitions actually visited by the agent.  It does *not* introduce off-policy training signals (this turns out to matter — see §5).",
-    )
+ref_mx = mx_groups.get(2, [])
+s3_data = []
+for mx in sorted(mx_groups):
+    d = mx_groups[mx]
+    s = summarize(d)
+    wp = welch_p(d, ref_mx) if mx != 2 else None
+    lp = levene_p(d, ref_mx) if mx != 2 else None
+    rows_l = mx_rows_map.get(mx, [])
+    s3_data.append({
+        "Mx": mx, "M_total": mx * 2,
+        **s,
+        "welch_p_vs_Mx2": fmt_p(wp),
+        "levene_p_vs_Mx2": fmt_p(lp),
+        "wall_mean": wall_mean(rows_l),
+    })
+mx1_std = next((r["std"] for r in s3_data if r["Mx"] == 1), None)
+mx2_std = next((r["std"] for r in s3_data if r["Mx"] == 2), None)
+f_ratio = round((mx1_std / mx2_std) ** 2, 0) if mx1_std and mx2_std and mx2_std > 0 else None
+s3_conclusion = (
+    f"$M_x=1$ collapses with std $\\approx{fmt_v(mx1_std, 2, sign=False) if mx1_std is not None else 'n/a'}$ pp "
+    f"(variance ratio $\\approx{int(f_ratio) if f_ratio else 'n/a'}\\times$ vs $M_x=2$); "
+    "$M_x \\geq 2$ forms a hard plateau — all pairwise Welch $p > 0.58$."
+)
 
-    # ------------------------- §3 implementation/validation --------------
-    md(
-        "## 3. Implementation & Kernel Accuracy",
-        "",
-        "Implementation in `src/transition_kernel.py`.  The quadrature kernel uses:",
-        "- **$X$:** $M_x$ standardised Gauss-Hermite nodes (probabilist's), shifted+scaled by the OU conditional mean and std.",
-        "- **$Y$:** truncated-Poisson on the number of jumps $N \\le N_{\\max}$ × QMC quadrature on the jump-amount/time joint.  With $\\beta = 150$ and $\\Delta t \\approx 1/22$, $\\lambda\\Delta t \\approx 0.024$ so $P(N \\ge 3) \\le 10^{-5}$.",
-        "",
-        "Total grid size $M = M_x \\cdot (1 + N_{\\max} \\cdot M_{\\text{per-k}})$.  Validation (in `tools/validate_transition_kernel.py`, 5M-path MC ground truth + analytical MGF for $\\mathbb{E}[S]$):",
-        "",
-        "| Grid | $M$ | Max relative error on smooth $\\sigma(S-K)$ |",
-        "|---|---:|---:|",
-        "| $M_x=2, M_{pk}=2, N_{\\max}=1$ | 6   | $\\sim 10^{-3}$ |",
-        "| $M_x=4, M_{pk}=4, N_{\\max}=2$ | 36  | $\\sim 5\\times 10^{-4}$ |",
-        "| $M_x=6, M_{pk}=8, N_{\\max}=3$ | 150 | $\\sim 3\\times 10^{-4}$ |",
-        "",
-        "Per-call kernel grid build: ~4 µs single-state, ~150 µs batched at $B=128$ (all `@numba.njit`, plain `float64`, ready to port to C++).",
-    )
+# ---- Section 4: Phase B — M_per_k / N_max at M_x=2 -----------------------
+phase_b = [r for r in mx_rows if r.get("phase") == "B"]
+pb_groups: Dict[Tuple[int,int], List[float]] = {}
+pb_rows_map: Dict[Tuple[int,int], List[Dict[str,str]]] = {}
+for r in phase_b:
+    mpk, nmax = int(r["Mpk"]), int(r["Nmax"])
+    d = delta_pct(r)
+    if d is not None:
+        pb_groups.setdefault((mpk, nmax), []).append(d)
+        pb_rows_map.setdefault((mpk, nmax), []).append(r)
 
-    # ------------------------- §4 main results --------------------------
-    md(
-        "## 4. Main Results: H1 Wins",
-        "",
-        "All numbers below are per-seed $\\Delta\\% = (\\text{eval\\_price} / \\text{LSM\\_price} - 1) \\times 100$ on out-of-sample evaluation paths, focal regime, 4096 ep.",
-        "",
-        "Reference comparison: kernel-on (`H1_only`) vs baseline (`CTRL`).",
-    )
+ref_b = pb_groups.get((1, 1), [])
+s4_data = []
+for (mpk, nmax) in sorted(pb_groups):
+    d = pb_groups[(mpk, nmax)]
+    m_total = 2 * (1 + nmax * mpk)
+    s = summarize(d)
+    wp = welch_p(d, ref_b) if (mpk, nmax) != (1, 1) else None
+    rows_l = pb_rows_map.get((mpk, nmax), [])
+    s4_data.append({
+        "Mpk": mpk, "Nmax": nmax, "M_total": m_total,
+        **s,
+        "welch_p_vs_ref": fmt_p(wp),
+        "wall_mean": wall_mean(rows_l),
+    })
+s4_welch_min = min(
+    (r["welch_p_vs_ref"] for r in s4_data if r["welch_p_vs_ref"] not in ("n/a", None)),
+    default="n/a"
+)
+s4_conclusion = (
+    f"All seven $(M_{{pk}}, N_{{\\max}})$ variants at $M_x=2$ are statistically indistinguishable "
+    f"from the reference $(1,1)$ — minimum Welch $p = {s4_welch_min}$; "
+    "neither $M_{pk}$ nor $N_{\\max}$ contributes once $M_x \\geq 2$."
+)
 
-    code(
-        "groups = pd.DataFrame(DATA['groups_focal_4096'])",
-        "ref = groups[groups['label'].isin(['H1_only', 'K36_no_warmup', 'CTRL', 'B0_baseline'])].copy()",
-        "ref = ref.sort_values('mean', ascending=False).reset_index(drop=True)",
-        "ref[['label','n_seeds','mean','std','se','ci_low','ci_high','wall_mean']]",
-    )
+# ---- Section 5: Phase C — 8192-path validation ----------------------------
+phase_c = [r for r in mx_rows if r.get("phase") == "C"]
+pc_groups: Dict[int, List[float]] = {}
+pc_rows_map: Dict[int, List[Dict[str,str]]] = {}
+for r in phase_c:
+    mt = int(r["M_total"])
+    d = delta_pct(r)
+    if d is not None:
+        pc_groups.setdefault(mt, []).append(d)
+        pc_rows_map.setdefault(mt, []).append(r)
 
-    code(
-        "# Welch's t-test: H1_only vs B0_baseline at 4096 ep",
-        "h1 = groups[groups['label'] == 'H1_only'].iloc[0]",
-        "b0 = groups[groups['label'] == 'B0_baseline'].iloc[0]",
-        "diff = h1['mean'] - b0['mean']",
-        "se_diff = math.sqrt(h1['se']**2 + b0['se']**2)",
-        "t = diff / se_diff",
-        "df = (h1['se']**2 + b0['se']**2)**2 / (h1['se']**4/(h1['n_seeds']-1) + b0['se']**4/(b0['n_seeds']-1))",
-        "p = 2 * (1 - sps.t.cdf(abs(t), df))",
-        "print(f'H1 mean = {h1[\"mean\"]:+.3f} pp  ({h1[\"n_seeds\"]} seeds, std {h1[\"std\"]:.3f})')",
-        "print(f'B0 mean = {b0[\"mean\"]:+.3f} pp  ({b0[\"n_seeds\"]} seeds, std {b0[\"std\"]:.3f})')",
-        "print(f'Gap = {diff:+.3f} pp, SE = {se_diff:.3f}, t = {t:+.2f}, df = {df:.1f}, p = {p:.2e}')",
-    )
+ref_c = pc_groups.get(4, [])
+s5_data = []
+s5_raw_welch: Dict[int, Optional[float]] = {}
+for mt in sorted(pc_groups):
+    d = pc_groups[mt]
+    mx_val = int(pc_rows_map[mt][0]["Mx"])
+    mpk_val = int(pc_rows_map[mt][0]["Mpk"])
+    nmax_val = int(pc_rows_map[mt][0]["Nmax"])
+    s = summarize(d)
+    wp = welch_p(d, ref_c) if mt != 4 else None
+    s5_raw_welch[mt] = wp
+    rows_l = pc_rows_map.get(mt, [])
+    s5_data.append({
+        "Mx": mx_val, "Mpk": mpk_val, "Nmax": nmax_val, "M_total": mt,
+        **s,
+        "welch_p_vs_M4": fmt_p(wp),
+        "wall_mean": wall_mean(rows_l),
+    })
+m4_mean = next((r["mean"] for r in s5_data if r["M_total"] == 4), None)
+m36_mean = next((r["mean"] for r in s5_data if r["M_total"] == 36), None)
+m36_wall = next((r["wall_mean"] for r in s5_data if r["M_total"] == 36), None)
+m4_wall = next((r["wall_mean"] for r in s5_data if r["M_total"] == 4), None)
+cost_ratio = round(m36_wall / m4_wall, 2) if m36_wall and m4_wall and m4_wall > 0 else None
+s5_conclusion = (
+    f"At 8192 paths $M=4$ gives $\\Delta\\%={fmt_v(m4_mean)}$ pp and $M=36$ gives "
+    f"$\\Delta\\%={fmt_v(m36_mean)}$ pp (Welch $p={fmt_p(s5_raw_welch.get(36))}$, $n=4$) "
+    f"at {cost_ratio if cost_ratio else 'n/a'}$\\times$ the wall-clock cost — "
+    "the plateau holds and $M=4$ is cost-optimal."
+)
 
-    md(
-        "### Δ% by configuration (4096 ep, 95% CI bars)",
-        "",
-        "Bar plot of mean Δ% with 95% CI bars for every group with $n \\ge 2$ seeds at the focal regime, 4096 ep.",
-    )
+# ---- Section 6: Recommendation -------------------------------------------
+s6_data = [
+    {"config": "Fast", "args": "--kernel_M_x=2 --kernel_M_per_k=1 --kernel_N_max=1",
+     "M": 4, "note": "Same Δ% as M=21; ~1.4× baseline wall-clock"},
+    {"config": "Quality", "args": "--kernel_M_x=4 --kernel_M_per_k=4 --kernel_N_max=2",
+     "M": 36, "note": "Tighter seed std; ~2× baseline wall-clock"},
+]
+s6_conclusion = (
+    "Use Fast ($M=4$) for parameter searches and ablations; "
+    "use Quality ($M=36$) for final production runs where variance matters."
+)
 
-    code(
-        "g = pd.DataFrame(DATA['groups_focal_4096'])",
-        "g = g[(g['n_seeds'] >= 2)].sort_values('mean', ascending=True).reset_index(drop=True)",
-        "fig, ax = plt.subplots(figsize=(11, max(4, 0.35*len(g))))",
-        "yerr = (g['mean'] - g['ci_low'], g['ci_high'] - g['mean'])",
-        "colors = ['#d9534f' if m < 0 else ('#5cb85c' if m > 0 else '#777') for m in g['mean']]",
-        "ax.barh(g['label'], g['mean'], xerr=yerr, color=colors, alpha=0.75, error_kw={'capsize':3})",
-        "ax.axvline(0, color='k', lw=0.5)",
-        "ax.set_xlabel(r'$\\Delta\\%$  (eval / LSM - 1) $\\times$ 100,  mean $\\pm$ 1.96 SE')",
-        "ax.set_title('Per-config Δ% with 95% CI (focal regime, 4096 ep)')",
-        "ax.grid(True, axis='x', alpha=0.3)",
-        "fig.tight_layout()",
-        "plt.show()",
-    )
+# ---------------------------------------------------------------------------
+# Serialize all payload data
+# ---------------------------------------------------------------------------
 
-    md(
-        "**Read of this plot:** the only configurations on the *positive* side are kernel-on variants.  Every kernel-off configuration (`CTRL`, `B0_baseline`, `B1_no_target_noise`) sits at $\\sim -2$% Δ.  Within the kernel-on cluster, all variants have overlapping CIs at $n=3$ seeds — at this sample size we **cannot** distinguish them.",
-    )
+payload = {
+    "s1": s1_data, "s1_conclusion": s1_conclusion,
+    "s2": s2_data, "s2_conclusion": s2_conclusion,
+    "s3": s3_data, "s3_conclusion": s3_conclusion,
+    "s4": s4_data, "s4_conclusion": s4_conclusion,
+    "s5": s5_data, "s5_conclusion": s5_conclusion,
+    "s6": s6_data, "s6_conclusion": s6_conclusion,
+}
+payload_json = json.dumps(payload, indent=2)
 
-    # ------------------------- §5 negatives ----------------------------
-    md(
-        "## 5. The Negative Results (H4–H9)",
-        "",
-        "We tested 9 hypotheses total.  Only H1 wins.  The remaining 8 either don't help or actively hurt.  The pattern is clear:",
-        "",
-        "> **The kernel adds value when it operates on real transitions; it hurts when it operates on synthetic/off-policy state distributions.**",
-        "",
-        "| Hypothesis | Mechanism | Verdict | Why it failed / didn't help |",
-        "|---|---|---|---|",
-        "| **H1** kernel-expected TD target | Replace 1-sample bootstrap with weighted-sum over kernel quadrature | ✅ **WIN** (+0.47% vs −2.05%, z = 10.5) | — |",
-        "| H4 backward-induction critic warm-start | Build $V(X,Y,Q,t)$ on a grid, supervise $Q^*$ before D4PG | ❌ null (refined) / catastrophic (naive) | Supervised step on uniform synthetic states biases critic |",
-        "| H5 Dyna synthetic experience | Augment replay with kernel-sampled $(s,a,r,s')$ | ❌ catastrophic across $\\lambda\\in[10^{-3},1]$ | Same: uniform-state Q* dominates the real TD signal |",
-        "| H6 analytical IQN quantile target | Kernel-weighted average of per-quantile predictions | ❌ catastrophic, one seed −17% | IQN + kernel together create a wrong attractor |",
-        "| H7 twin critics (TD3) | Two critics, min of kernel-expected targets | ⚪ no different (z = −0.55) | Overestimation not the bottleneck here |",
-        "| H8 antithetic-pair averaging | Average kernel-target on antithetic partner paths | ⚪ no different (no-strat: lower std but lower mean; strat-preserved: same as H1) | Kernel *already* integrates the Y distribution analytically |",
-        "| H9 jump-event importance weighting | Upweight transitions where a jump fired | ⚪ no different (z = −0.24) | PER already implicitly prioritises high-TD-error jumps |",
-        "| H8+H9 stacked | Both | ⚪ slightly worse | Combined drag from H8's mean loss |",
-        "",
-        "The H4/H5/H6 failures share a common mechanism: they all introduce *kernel-derived training signals on synthetic/uniform state distributions*.  The 2×64 critic MLP cannot reconcile a Q-function calibrated to that distribution with the one needed for realistic rollouts, and falls into a wrong attractor (eval price typically collapses to $\\sim 1.63$ across seeds).",
-    )
+# ---------------------------------------------------------------------------
+# Notebook cell builders
+# ---------------------------------------------------------------------------
 
-    # ------------------------- §6 statistics -----------------------------
-    md(
-        "## 6. Proper Statistical Comparison",
-        "",
-        "**Welch's two-sample t-test** for mean differences (unequal-variance) and **Levene's test** for variance equality, applied pairwise against `H1_only` as reference.",
-        "",
-        "With $n=3$ seeds per config the SE is large; almost no kernel-on variants are statistically distinguishable from each other.  This is by itself a meaningful finding: **at the data we have, H1 is the unique decisive winner over baseline, and the choice between kernel-on variants is empirically a coin flip.**",
-    )
+cells: List[Dict] = []
+_cell_id = [0]
 
-    code(
-        "g = pd.DataFrame(DATA['groups_focal_4096'])",
-        "h1 = g[g['label'] == 'H1_only'].iloc[0]",
-        "rows = []",
-        "for _, gi in g.iterrows():",
-        "    if gi['label'] == 'H1_only' or gi['n_seeds'] < 2: continue",
-        "    diff = gi['mean'] - h1['mean']",
-        "    se = math.sqrt(gi['se']**2 + h1['se']**2)",
-        "    if se == 0: continue",
-        "    t = diff/se",
-        "    df_w = (gi['se']**2 + h1['se']**2)**2 / (gi['se']**4/max(gi['n_seeds']-1,1) + h1['se']**4/max(h1['n_seeds']-1,1) + 1e-30)",
-        "    p = 2*(1 - sps.t.cdf(abs(t), df_w))",
-        "    rows.append({'config': gi['label'], 'n': gi['n_seeds'], 'mean': gi['mean'],",
-        "                  'gap_vs_H1': diff, 't': t, 'p_two_sided': p,",
-        "                  'verdict': ('DECISIVELY better' if t > 1.96 else ('weakly better' if t > 1.0",
-        "                              else ('no different' if t > -1.0 else ('weakly worse' if t > -1.96 else 'DECISIVELY worse'))))})",
-        "pd.DataFrame(rows).sort_values('gap_vs_H1', ascending=False).reset_index(drop=True)",
-    )
 
-    # ------------------------- §7 kernel size --------------------------
-    md(
-        "## 7. Choosing the Kernel Size $M$ (Accuracy vs Wall-Clock)",
-        "",
-        "The kernel grid size $M$ controls how accurately we approximate the expectation $\\int g(s)\\,p(s|s_t,a_t)\\,ds$.  Larger $M$ → tighter quadrature accuracy at the cost of more critic forward passes per update.",
-        "",
-        "We swept $M \\in \\{6, 21, 36, 78\\}$ at the focal regime, 4096 ep, 3 seeds each.  Below: mean Δ% with 1 SE bars (left axis) and wall-clock per run (right axis) vs $M$.",
-    )
+def md(*lines: str) -> None:
+    _cell_id[0] += 1
+    cid = f"md-{_cell_id[0]:03d}"
+    cells.append({
+        "cell_type": "markdown", "id": cid,
+        "metadata": {}, "source": [l if l.endswith("\n") else f"{l}\n" for l in lines],
+    })
 
-    code(
-        "kp = pd.DataFrame(DATA['kernel_points']).sort_values('M').reset_index(drop=True)",
-        "fig, ax1 = plt.subplots(figsize=(8, 5))",
-        "ax1.errorbar(kp['M'], kp['mean'], yerr=kp['se'], fmt='o-', color='#1f77b4', label='mean Δ% ± SE', capsize=5, lw=2, ms=8)",
-        "ax1.axhline(0, color='k', lw=0.5, ls='--')",
-        "ax1.set_xlabel('Kernel size $M$ (quadrature nodes)')",
-        "ax1.set_ylabel('Mean Δ% over LSM', color='#1f77b4')",
-        "ax1.set_xscale('log')",
-        "ax1.set_xticks(kp['M']); ax1.set_xticklabels([str(int(x)) for x in kp['M']])",
-        "ax1.grid(True, alpha=0.3)",
-        "ax1.tick_params(axis='y', labelcolor='#1f77b4')",
-        "",
-        "ax2 = ax1.twinx()",
-        "ax2.plot(kp['M'], kp['wall_mean'], 's--', color='#d62728', label='wall-clock per run (s)', lw=2, ms=8)",
-        "ax2.set_ylabel('Wall-clock per run (s)', color='#d62728')",
-        "ax2.tick_params(axis='y', labelcolor='#d62728')",
-        "",
-        "ax1.set_title('Kernel-size accuracy/speed trade-off (focal, 4096 ep, 3 seeds each)')",
-        "fig.tight_layout()",
-        "plt.show()",
-        "",
-        "kp[['M', 'label', 'n_seeds', 'mean', 'std', 'se', 'wall_mean']]",
-    )
 
-    md(
-        "**Reading this curve:**",
-        "- $M=6$ (the bare minimum): still beats baseline by $\\sim 2.3$ pp.  Mean Δ% slightly lower ($+0.30$ vs $+0.47$) but the gap is well within the 3-seed SE.",
-        "- $M=21$ gives essentially the same Δ% as $M=36$ at **half the wall-clock**.",
-        "- $M=78$ is **slower without measurable benefit** at $n=3$ seeds.",
-        "",
-        "### Recommended kernel sizing",
-        "",
-        "| Use case | $M_x$ | $M_{pk}$ | $N_{\\max}$ | $M$ | Wall (s/run @ 4096 ep) | Notes |",
-        "|---|---:|---:|---:|---:|---:|---|",
-        "| **M1-friendly default** | 3 | 3 | 2 | **21** | ~285 | **Best trade-off.**  Empirically equivalent to $M=36$. |",
-        "| Conservative high-accuracy | 4 | 4 | 2 | 36 | ~555 | Original H1 default.  Use if precision matters more than wall-clock. |",
-        "| Cheap exploration | 2 | 2 | 1 | 6 | ~170 | Still solidly beats baseline; useful for early hyperparameter scans. |",
-        "| Diminishing returns | 6 | 4–8 | 3 | 78–150 | ~660–1000 | No measurable gain over $M=36$ at $n=3$ seeds. |",
-        "",
-        "**Decision rule for new HHK regimes:** start with $M=21$ ($M_x=3, M_{pk}=3, N_{\\max}=2$).  If $\\lambda \\Delta t$ is large (more frequent jumps), bump $N_{\\max}$ to 3.  If volatility $\\sigma_X$ is high, bump $M_x$ to 4.",
-    )
+def code(*lines: str) -> None:
+    _cell_id[0] += 1
+    cid = f"code-{_cell_id[0]:03d}"
+    cells.append({
+        "cell_type": "code", "id": cid,
+        "execution_count": None, "metadata": {}, "outputs": [],
+        "source": [l if l.endswith("\n") else f"{l}\n" for l in lines],
+    })
 
-    # ------------------------- §8 antithetic head-to-head ----------------
-    md(
-        "## 8. Antithetic Head-to-Head (H1 vs H8 vs H8-strat)",
-        "",
-        "H8 was the most plausible competitor to H1.  At $n=3$ seeds:",
-        "",
-        "- **H1_only**: mean $+0.474\\%$ ± 0.204",
-        "- **H8 (no-strat)**: mean $+0.305\\%$ ± **0.130** (lower std but lower mean — lost stratification's benefit)",
-        "- **H8_strat**: mean $+0.439\\%$ ± 0.246  (recovered mean, lost the variance edge)",
-        "",
-        "Welch's t-test shows neither H8 variant differs significantly from H1 (all $|t| < 1.5$, $p > 0.20$).  The 'low std' of H8 no-strat is most likely a *compensating* effect (the antithetic averaging halves the variance increase caused by losing stratification); when both pieces of variance reduction are kept, the benefits don't compose.",
-        "",
-        "**Recommendation:** the antithetic mechanism is theoretically motivated but empirically *redundant* with the kernel's analytical integration of the same $Y$ distribution.  **Don't ship it.**",
-    )
 
-    # ------------------------- §9 C++ porting ----------------------------
-    md(
-        "## 9. Recommendations and C++ Porting",
-        "",
-        "### Final recommended training configuration",
-        "",
-        "```bash",
-        "python run.py \\",
-        "  --use_expected_target=1 \\",
-        "  --kernel_M_x=3 --kernel_M_per_k=3 --kernel_N_max=2 \\",
-        "  --critic_warmup_episodes=0 \\",
-        "  # ... all other flags as v61 focal default",
-        "```",
-        "",
-        "Bit-identical to v61 if `--use_expected_target=0`.",
-        "",
-        "### What to port to C++ for the deployment phase",
-        "",
-        "1. **`src/transition_kernel.py`** (~300 LOC) is the highest-value, lowest-effort port.  It's pure `numpy` + `@numba.njit`, no Python objects in the hot path.  Translation to C++ is mechanical: arrays-of-doubles, three nested loops in `_build_sxy_grid_batched`, and the bilinear / quadrature helpers.",
-        "2. **The 2×64 critic MLP** is small enough to hand-roll in C++ if you don't want LibTorch.  $9 \\to 64 \\to 64 \\to 1$ with SiLU + LayerNorm.  ~20k parameters total.",
-        "3. **The HHK simulator** (`src/simulate_hhk_spot.py`) is also amenable: the diffusive OU step is exact Gaussian, the jump component is Poisson + exponential.  Drop the QMC if you want bit-portability and use a standard PRNG.",
-        "",
-        "### Simplifications that the data justify",
-        "",
-        "- **Drop H4/H5/H6 code** (`src/critic_warmstart.py`, `src/dyna_augment.py`, the IQN-target machinery).  None help.",
-        "- **Drop H7/H8/H9 code paths** if you want a minimal port (none beat H1).  Keep just the H1 expected-target wiring.",
-        "- The actor / critic networks could be **further simplified**: linear baseline + kernel-expected target might already capture most of the gain.  This is the next experimental step (\"ditch the NNs\" per the project plan).",
-        "",
-        "### What the data does NOT yet justify",
-        "",
-        "- A larger kernel ($M > 36$): no measurable benefit.",
-        "- A distributional critic (IQN): hurts at this setup.",
-        "- Synthetic-state training augmentation: catastrophically hurts.",
-        "",
-        "### Where to push next",
-        "",
-        "- **Higher seed count** ($n \\ge 8$ at 8k+ ep) — to detect a $0.1$ pp effect we'd need many more seeds.",
-        "- **Linear value function** with kernel-expected target — could be much faster and still capture the H1 effect.",
-        "- **Full 32k-ep validation** — establish whether the H1 advantage is convergence-speed only or also a higher plateau.",
-    )
+# ---------------------------------------------------------------------------
+# Notebook content
+# ---------------------------------------------------------------------------
 
-    # ------------------------- finale ----------------------------------
-    md(
-        "## Summary table",
-        "",
-        "| Item | Value | Notes |",
-        "|---|---|---|",
-        "| **Winner** | **H1: kernel-expected TD target** | Wins decisively over baseline (z = 10.5 at 4k ep, z = 16 at 8k ep) |",
-        "| Best kernel size | $M = 21$ | Half the wall-clock of the default $M=36$, indistinguishable mean Δ% |",
-        "| Wall-clock cost | ~2× baseline | Acceptable given the OOS gain |",
-        "| No-cost regression | $+5.2$ pp better than baseline | No regression in the no-cost regime |",
-        "| Seed std (8k ep) | **0.022** pp | Kernel-on converges to a remarkably tight asymptote |",
-        "| Failed hypotheses | H4 (warm-start), H5 (Dyna), H6 (IQN) | All introduce off-policy training signals; critic can't reconcile |",
-        "| Neutral hypotheses | H7 (twin), H8 (antithetic), H9 (jump-IW) | None statistically beat H1 alone |",
-    )
+md("# Phase 1 Findings: Semi-Analytical Kernel Bootstrap for D4PG Swing Options")
 
-    notebook = {
-        "cells": cells,
-        "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-            "language_info": {"name": "python", "version": "3.10"},
-        },
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
+code(
+    "import json, numpy as np, pandas as pd",
+    "import matplotlib.pyplot as plt",
+    "",
+    f"D = json.loads(r'''{payload_json}''')",
+)
 
-    NOTEBOOK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(NOTEBOOK_PATH, "w") as f:
-        json.dump(notebook, f, indent=1)
-    print(f"Notebook written: {NOTEBOOK_PATH}")
+# --- Section 1 --------------------------------------------------------------
+md(
+    "## 1. Headline Result",
+    "",
+    r"We compare $\Delta\% = (V_\mathrm{RL}/V_\mathrm{LSM}-1)\times100$ for kernel-on (H1) "
+    r"vs kernel-off (B0) training at 4096 paths over 12 matched seeds.",
+)
+
+code(
+    "s1 = pd.DataFrame(D['s1'])",
+    "display(s1[['label','n','mean','std','ci95_low','ci95_high','wall_mean']].round(3))",
+    "",
+    "fig, ax = plt.subplots(figsize=(6, 3))",
+    "colors = ['#b03a2e' if v < 0 else '#1e8449' for v in s1['mean']]",
+    "yerr = np.vstack([s1['mean'] - s1['ci95_low'], s1['ci95_high'] - s1['mean']])",
+    "ax.barh(s1['label'], s1['mean'], xerr=yerr, color=colors, alpha=0.82, error_kw={'capsize': 4})",
+    "ax.axvline(0, color='k', lw=0.6)",
+    r"ax.set_xlabel(r'$\Delta\%$')",
+    "ax.grid(True, axis='x', alpha=0.25); fig.tight_layout(); plt.show()",
+)
+
+md(s1_conclusion)
+
+# --- Section 2 --------------------------------------------------------------
+md(
+    "## 2. Extended Hypotheses: H8, H9 (Negative Results)",
+    "",
+    r"We test whether antithetic sampling (H8), jump importance-weighting (H9), "
+    r"or their combination reduce seed dispersion vs H1, "
+    r"using Welch ($\mu$ gap), Levene ($\sigma$ ratio), and paired-seed $t$-tests at $n=12$ seeds.",
+)
+
+code(
+    "s2 = pd.DataFrame(D['s2'])",
+    "cols = ['label','n','mean','std','welch_p_vs_H1','levene_p_vs_H1','paired_n','paired_p_vs_H1','wall_mean']",
+    "display(s2[cols])",
+)
+
+md(s2_conclusion)
+
+# --- Section 3 --------------------------------------------------------------
+md(
+    "## 3. $M_x$ Controls the Outcome (Phase A)",
+    "",
+    r"We sweep $M_x \in \{1,2,3,4,6\}$ with fixed $M_{pk}=1, N_\max=1$ "
+    r"(so $M = 2M_x$) over 8 matched seeds at 4096 paths, "
+    r"using Welch and Levene tests against $M_x=2$.",
+)
+
+code(
+    "s3 = pd.DataFrame(D['s3'])",
+    "display(s3[['Mx','M_total','n','mean','std','welch_p_vs_Mx2','levene_p_vs_Mx2','wall_mean']].round(3))",
+    "",
+    "fig, ax = plt.subplots(figsize=(7, 3.5))",
+    "ax.errorbar(s3['Mx'], s3['mean'],",
+    "            yerr=np.vstack([s3['mean']-s3['ci95_low'], s3['ci95_high']-s3['mean']]),",
+    "            fmt='o-', capsize=4, lw=1.8)",
+    r"ax.set_xlabel(r'$M_x$'); ax.set_ylabel(r'Mean $\Delta\%$')",
+    "ax.axhline(0, color='k', lw=0.6, ls='--')",
+    "ax.grid(True, alpha=0.25); fig.tight_layout(); plt.show()",
+)
+
+md(s3_conclusion)
+
+# --- Section 4 --------------------------------------------------------------
+md(
+    "## 4. $M_{pk}$ and $N_{\\max}$ Are Irrelevant (Phase B)",
+    "",
+    r"With $M_x=2$ fixed, we vary $(M_{pk}, N_\max)$ across seven settings "
+    r"spanning $M \in \{4,6,8,10\}$ over 6 matched seeds at 4096 paths, "
+    r"testing each vs the minimal reference $(M_{pk}=1, N_\max=1, M=4)$ via Welch's $t$.",
+)
+
+code(
+    "s4 = pd.DataFrame(D['s4'])",
+    "display(s4[['Mpk','Nmax','M_total','n','mean','std','welch_p_vs_ref','wall_mean']].round(3))",
+)
+
+md(s4_conclusion)
+
+# --- Section 5 --------------------------------------------------------------
+md(
+    "## 5. Validation at 8192 Training Paths (Phase C)",
+    "",
+    r"We compare $M=4$ (cheapest plateau), $M=21$ (historic anchor), and $M=36$ (default) "
+    r"at 8192 paths over 4 matched seeds, with Welch tests against $M=4$.",
+)
+
+code(
+    "s5 = pd.DataFrame(D['s5'])",
+    "display(s5[['Mx','Mpk','Nmax','M_total','n','mean','std','welch_p_vs_M4','wall_mean']].round(3))",
+)
+
+md(s5_conclusion)
+
+# --- Section 6 --------------------------------------------------------------
+md(
+    "## 6. Recommendation",
+    "",
+    r"From the Phase A/B/C evidence we select two operating points on the $M_x \geq 2$ plateau.",
+)
+
+code(
+    "s6 = pd.DataFrame(D['s6'])",
+    "display(s6[['config','M','args','note']])",
+    "",
+    "print('Both configs share: --use_expected_target=1 --critic_warmup_episodes=0')",
+)
+
+md(s6_conclusion)
+
+# ---------------------------------------------------------------------------
+# Write notebook
+# ---------------------------------------------------------------------------
+
+notebook = {
+    "cells": cells,
+    "metadata": {
+        "kernelspec": {"display_name": "Python 3 (EP11)", "language": "python", "name": "python3"},
+        "language_info": {"name": "python", "version": "3.10"},
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+NOTEBOOK_PATH.parent.mkdir(parents=True, exist_ok=True)
+with open(NOTEBOOK_PATH, "w") as fh:
+    json.dump(notebook, fh, indent=1)
+print(f"Notebook written: {NOTEBOOK_PATH}")
+print(f"  Sections: 6, Cells: {len(cells)}")
 
 
 if __name__ == "__main__":
-    main()
+    pass

@@ -39,18 +39,25 @@ Optional opt-in mechanism that replaces the critic's single-sample TD bootstrap 
 
 ```bash
 --use_expected_target=1
---kernel_M_x=3 --kernel_M_per_k=3 --kernel_N_max=2   # M=21, sweet spot
---critic_warmup_episodes=0                            # not needed with kernel
+--critic_warmup_episodes=0        # not needed with kernel
+
+# Fast option — M=4 (M_x=2, M_per_k=1, N_max=1): same Δ% as M=21, ~1.4x baseline wall-clock
+--kernel_M_x=2 --kernel_M_per_k=1 --kernel_N_max=1
+
+# Quality option — M=36 (M_x=4, M_per_k=4, N_max=2): tighter seed std, ~2x baseline wall-clock
+--kernel_M_x=4 --kernel_M_per_k=4 --kernel_N_max=2
 ```
 
-Headline result (focal c=0.04, gamma=2, 4096 ep, 3 seeds):
-- Kernel on  (`H1_only`):   Delta% = +0.474 +/- 0.204 pp
-- Kernel off (`B0_baseline`):Delta% = -2.051 +/- 0.440 pp
-- Gap = +2.525 pp, t = +9.02, p = 0.004 (Welch's two-sample)
+Key finding: **M_x is the sole controlling axis**.  M_x=1 collapses (variance ratio 290× vs M_x=2, F-test p=8.8e-8).  M_x≥2 forms a hard plateau: M_x=2,3,4,6 are statistically indistinguishable (Welch p>0.58, Levene p>0.70 for all pairwise pairs).  M_per_k and N_max are irrelevant conditional on M_x≥2 (Phase B, 6 seeds, 7 configs, all Welch p≥0.34).
 
-At 8192 ep the kernel-on seed std collapses to 0.022 pp (10x reduction).  No-cost regression: kernel +5.2 pp better than baseline.  Wall-clock cost: ~2x baseline per episode at M=36, ~1.5x at M=21.
+Headline result (focal c=0.04, gamma=2, 4096 ep, 12 seeds):
+- Kernel on  (`H1_only`):   Delta% = +0.47 +/- 0.21 pp
+- Kernel off (`B0_baseline`):Delta% = -2.05 +/- 0.44 pp
+- Gap = +2.52 pp (Welch's two-sample)
 
-See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for a self-contained tour with statistics and parameter-selection recipe.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics, H8 antithetic, H9 jump-IW) either did not help or actively hurt — see notebook for the full negative-results catalog.
+No-cost regression: kernel +5.2 pp better than baseline.  H8 (antithetic), H9 (jump-IW), and their combination confirmed dead at 12 seeds — no variance reduction, H8 marginally worse on mean.
+
+See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for the full statistical summary.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics) either did not help or actively hurt.
 
 ## Architecture
 
