@@ -1,4 +1,3 @@
-import copy
 import math
 import random
 from typing import Optional, Tuple
@@ -9,19 +8,19 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 try:
-    from .networks import IQN, Actor, Critic, HHKInputLayer
+    from .networks import Actor, Critic, HHKInputLayer
     from .replay_buffer import CircularReplayBuffer, PrioritizedReplay
 except ImportError:
-    from networks import IQN, Actor, Critic, HHKInputLayer
+    from networks import Actor, Critic, HHKInputLayer
     from replay_buffer import CircularReplayBuffer, PrioritizedReplay
 
 
 class Agent:
     """
     Stable Agent implementation with diagnostics and lightweight defaults (2×64 MLPs).
-    Defaults: single-step TD targets, IQN and Munchausen are opt-in (off by default),
-    gradient clipping is disabled unless thresholds are provided, actor/critic weight
-    decay defaults to 5e-5/1e-4, and target updates use a smoother tau=0.002.
+    Defaults: single-step TD targets, gradient clipping is disabled unless thresholds
+    are provided, actor/critic weight decay defaults to 5e-5/1e-4, and target updates
+    use a smoother tau=0.002.
     """
 
     def __init__(
@@ -30,8 +29,6 @@ class Agent:
         action_size,
         n_step,
         per,
-        munchausen,
-        distributional,
         random_seed,
         hidden_size: int = 64,
         actor_hidden_size: Optional[int] = None,
@@ -78,7 +75,6 @@ class Agent:
         noise_sigma0: float = 1.0,
         noise_floor: float = 0.05,
         noise_plateau: int = 0,
-        critic_ema_decay: float = 0.0,
         target_policy_noise: float = 0.1,
         target_policy_clip: float = 0.25,
         activation: str = "silu",
@@ -96,25 +92,8 @@ class Agent:
         action_output: str = "tanh01",        # v60: actor output activation
         use_robust_normalization: bool = False, # v62: Robust HHK Normalization
         strike: float = 100.0,
-        expected_target_kernel=None,           # feat/semi-analytical-bootstrap (H1)
+        expected_target_kernel=None,           # feat/semi-analytical-bootstrap
         expected_target_chunk_size: Optional[int] = None,
-        # H5: Dyna-style synthetic experience
-        dyna_kernel=None,
-        dyna_contract=None,
-        dyna_n_synthetic: int = 0,
-        dyna_lambda: float = 1.0,
-        dyna_actor_augment: bool = True,
-        # H6: IQN quantile count (was hardcoded 32)
-        iqn_N: int = 32,
-        # H7: TD3-style twin critics (only used when distributional=False)
-        use_twin_critic: bool = False,
-        # H9: Jump-event importance weighting
-        use_jump_iw: bool = False,
-        jump_iw_weight: float = 3.0,
-        jump_iw_decay_Y: float = 0.0,        # exp(-beta*dt); 0 disables jump detection
-        jump_iw_threshold: float = 1e-3,     # Y' - decay_Y*Y > threshold => jump
-        # H8: Antithetic-pair averaged TD target
-        use_antithetic_target: bool = False,
         # Approximator injection: drop-in replacements for Actor/Critic. When
         # provided they must honor the same call signature (see BasisActor/
         # BasisCritic). Default None keeps the NN path bit-identical.
@@ -132,8 +111,6 @@ class Agent:
         self.state_size = state_size
         self.action_size = action_size
         self.per = per
-        self.munchausen = munchausen
-        self.distributional = distributional
         self.GAMMA = GAMMA
         self.t = t
         self.n_step = n_step
@@ -158,7 +135,7 @@ class Agent:
         critic_hidden_size = critic_hidden_size or hidden_size
         if actor_layers < 1:
             raise ValueError(f"actor_layers must be >= 1, got {actor_layers}")
-        if critic_layers < 2 and not distributional:
+        if critic_layers < 2:
             raise ValueError("critic_layers must be >= 2 when using the standard critic")
 
         self.activation = (activation or "silu").lower()
@@ -243,24 +220,6 @@ class Agent:
         if self.expected_target_kernel is not None and n_step != 1:
             print(f"Agent: expected_target_kernel set; forcing n_step=1 (was {n_step}).")
             self.n_step = 1
-        # ── H5: Dyna-style synthetic experience ──
-        self.dyna_kernel = dyna_kernel
-        self.dyna_contract = dyna_contract
-        self.dyna_n_synthetic = int(dyna_n_synthetic)
-        self.dyna_lambda = float(dyna_lambda)
-        self.dyna_actor_augment = bool(dyna_actor_augment)
-        self._dyna_rng = np.random.default_rng(random_seed) if dyna_kernel is not None else None
-        # ── H9: Jump-event importance weighting ──
-        self.use_jump_iw = bool(use_jump_iw)
-        self.jump_iw_weight = float(jump_iw_weight)
-        self.jump_iw_decay_Y = float(jump_iw_decay_Y)
-        self.jump_iw_threshold = float(jump_iw_threshold)
-        # ── H8: Antithetic-pair averaged TD target ──
-        self.use_antithetic_target = bool(use_antithetic_target)
-        if self.use_antithetic_target:
-            self.antithetic_next_buf = np.zeros((BUFFER_SIZE, state_size), dtype=np.float32)
-        else:
-            self.antithetic_next_buf = None
 
         # Configure Input Preprocessor if enabled
         input_preprocessor = None
@@ -322,55 +281,29 @@ class Agent:
             betas=self.actor_betas,
         )
 
-        if distributional:
-            self.N = int(iqn_N)
-            self.critic_local = IQN(
-                state_size,
-                action_size,
-                layer_size=critic_hidden_size,
-                seed=random_seed,
-                dueling=False,
-                N=self.N,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            ).to(self.device)
-            self.critic_target = IQN(
-                state_size,
-                action_size,
-                layer_size=critic_hidden_size,
-                seed=random_seed,
-                dueling=False,
-                N=self.N,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            ).to(self.device)
-            self.critic_target.load_state_dict(self.critic_local.state_dict())
-        else:
-            self.critic_local = critic_cls(
-                state_size,
-                action_size,
-                random_seed,
-                hidden_size=critic_hidden_size,
-                n_layers=critic_layers,
-                activation=self.activation,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            )
-            self.critic_target = critic_cls(
-                state_size,
-                action_size,
-                random_seed,
-                hidden_size=critic_hidden_size,
-                n_layers=critic_layers,
-                activation=self.activation,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            )
-            self.critic_target.load_state_dict(self.critic_local.state_dict())
+        self.critic_local = critic_cls(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=critic_hidden_size,
+            n_layers=critic_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+            init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        self.critic_target = critic_cls(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=critic_hidden_size,
+            n_layers=critic_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+            init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        self.critic_target.load_state_dict(self.critic_local.state_dict())
 
         if self.use_compile and hasattr(torch, "compile"):
             try:
@@ -387,41 +320,6 @@ class Agent:
             weight_decay=weight_decay_critic,
             betas=self.critic_betas,
         )
-
-        # ── H7: Twin critics (TD3-style) ──
-        # Initialise critic_local_2 with a different random seed so it
-        # disagrees with critic_local initially.  The min-of-twins target
-        # then provides an under-bias to counter the standard
-        # overestimation bias of single-critic TD targets.
-        self.use_twin_critic = bool(use_twin_critic) and not bool(distributional)
-        self.critic_local_2 = None
-        self.critic_target_2 = None
-        self.critic_optimizer_2 = None
-        if self.use_twin_critic:
-            self.critic_local_2 = Critic(
-                state_size, action_size, random_seed + 17,
-                hidden_size=critic_hidden_size, n_layers=critic_layers,
-                activation=self.activation, norm_type=self.norm_type,
-                init_method=self.init_method, input_preprocessor=input_preprocessor,
-            )
-            self.critic_target_2 = Critic(
-                state_size, action_size, random_seed + 17,
-                hidden_size=critic_hidden_size, n_layers=critic_layers,
-                activation=self.activation, norm_type=self.norm_type,
-                init_method=self.init_method, input_preprocessor=input_preprocessor,
-            )
-            self.critic_target_2.load_state_dict(self.critic_local_2.state_dict())
-            self.critic_optimizer_2 = self._build_optimizer(
-                model=self.critic_local_2, optim_cls=optim_cls,
-                lr=LR_CRITIC, weight_decay=weight_decay_critic,
-                betas=self.critic_betas,
-            )
-            self._critic_target_2_params = list(self.critic_target_2.parameters())
-            self._critic_target_2_data = [p.data for p in self._critic_target_2_params]
-            self._critic_local_2_params = list(self.critic_local_2.parameters())
-
-        self.critic_ema_decay = critic_ema_decay
-        self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
 
         # Cache parameter lists and data views to reduce per-step iteration overhead
         self._actor_params = list(self.actor_local.parameters())
@@ -445,12 +343,8 @@ class Agent:
             f"Actor params: {actor_params:,} | hidden_size={actor_hidden_size} | layers={actor_layers} | activation={self.activation}"
         )
         print(
-            f"Critic params: {critic_params:,} | hidden_size={critic_hidden_size} | layers={'IQN' if distributional else critic_layers} | activation={self.activation if not distributional else 'relu'}"
+            f"Critic params: {critic_params:,} | hidden_size={critic_hidden_size} | layers={critic_layers} | activation={self.activation}"
         )
-
-        self.entropy_tau = 0.03
-        self.lo = -1.0
-        self.alpha = 0.9
 
         if per:
             self.memory = PrioritizedReplay(
@@ -538,11 +432,10 @@ class Agent:
             self.actor_scheduler = None
             self.critic_scheduler = None
 
-        self.learn = self.learn_distribution if distributional else self.learn_
+        self.learn = self.learn_
         self.step_counter = 0
         self._last_td_percentiles = None
         self._last_target_drift = None
-        self._last_iqn_spread = None
         self._episode_count = 0
 
     def _build_optimizer(
@@ -729,18 +622,8 @@ class Agent:
         np.clip(action, 0.0, 1.0, out=action)
         return action
 
-    def step(self, state, action, reward, next_state, done, timestamp, writer,
-             *, next_state_antithetic=None):
+    def step(self, state, action, reward, next_state, done, timestamp, writer):
         self.step_counter += 1
-        # H8: record antithetic next-state at the buffer's *upcoming* write position.
-        # CircularReplayBuffer exposes self.position; PrioritizedReplay exposes self.pos.
-        if (
-            self.use_antithetic_target and next_state_antithetic is not None
-            and self.antithetic_next_buf is not None
-        ):
-            pos = getattr(self.memory, "pos", getattr(self.memory, "position", None))
-            if pos is not None and 0 <= pos < self.antithetic_next_buf.shape[0]:
-                self.antithetic_next_buf[pos] = next_state_antithetic
         self.memory.add(state, action, reward, next_state, done)
         writer_available = writer is not None
         log_step = timestamp  # keep TB index aligned with true environment step count
@@ -788,11 +671,8 @@ class Agent:
 
         with torch.no_grad():
             current_target_noise = self._get_target_policy_noise()
-            if (
-                self.expected_target_kernel is not None
-                and not self.munchausen
-            ):
-                # H1: variance-reduced bootstrap via the precomputed quadrature
+            if self.expected_target_kernel is not None:
+                # Variance-reduced bootstrap via the precomputed quadrature
                 # kernel. expected_critic_target handles target-policy-noise + gate
                 # internally so the synthetic next-states get consistent treatment.
                 from .transition_kernel import expected_critic_target
@@ -804,34 +684,6 @@ class Agent:
                     target_policy_noise=float(current_target_noise or 0.0),
                     chunk_size=self.expected_target_chunk_size,
                 )
-                # H7: twin critic -> use min over both kernel-expected targets
-                if self.use_twin_critic and self.critic_target_2 is not None:
-                    q_next_2 = expected_critic_target(
-                        self.critic_target_2, self.actor_target,
-                        states=states, next_states=next_states,
-                        kernel=self.expected_target_kernel,
-                        strike=self._strike,
-                        target_policy_noise=float(current_target_noise or 0.0),
-                        chunk_size=self.expected_target_chunk_size,
-                    )
-                    q_next = torch.minimum(q_next, q_next_2)
-                # H8: antithetic-pair averaged target
-                if (
-                    self.use_antithetic_target and self.antithetic_next_buf is not None
-                    and idx is not None
-                ):
-                    anti_np = self.antithetic_next_buf[idx]
-                    if np.any(anti_np):  # skip if all-zero (early or disabled positions)
-                        anti_t = torch.from_numpy(anti_np).to(self.device)
-                        q_next_anti = expected_critic_target(
-                            self.critic_target, self.actor_target,
-                            states=states, next_states=anti_t,
-                            kernel=self.expected_target_kernel,
-                            strike=self._strike,
-                            target_policy_noise=float(current_target_noise or 0.0),
-                            chunk_size=self.expected_target_chunk_size,
-                        )
-                        q_next = 0.5 * (q_next + q_next_anti)
                 q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
             else:
                 next_actions = self.actor_target(next_states)
@@ -844,37 +696,11 @@ class Agent:
                     if apply_gate is not None:
                         next_actions = apply_gate(q_raw=next_actions, state=next_states)
                 q_next = self.critic_target(next_states, next_actions)
-                # H7: twin critic min target without kernel
-                if self.use_twin_critic and self.critic_target_2 is not None and not self.munchausen:
-                    q_next_2 = self.critic_target_2(next_states, next_actions)
-                    q_next = torch.minimum(q_next, q_next_2)
-                if not self.munchausen:
-                    q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
-                else:
-                    logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
-                    tau_log_pi_next = q_next - self.entropy_tau * logsum
-                    pi = F.softmax(q_next / self.entropy_tau, dim=1)
-                    q_target = rewards + (self.GAMMA**self.n_step) * (
-                        pi * (q_next - tau_log_pi_next) * (1 - dones.float())
-                    )
+                q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
         q_expected = self.critic_local(states, actions)
-        # ── H9: Jump-event importance weighting ──
-        # If a jump fired in (t, t+1], Y_{t+1} - decay_Y * Y_t exceeds threshold.
-        # Upweight those transitions in the critic loss to amplify learning on
-        # the high-payoff rare events. Multiplicative on top of PER weights.
-        if self.use_jump_iw and self.jump_iw_decay_Y > 0.0:
-            Y_t = states[:, 7].unsqueeze(-1) if states.dim() == 2 else states[..., 7:8]
-            Y_tp1 = next_states[:, 7].unsqueeze(-1) if next_states.dim() == 2 else next_states[..., 7:8]
-            jump_mask = (Y_tp1 - self.jump_iw_decay_Y * Y_t > self.jump_iw_threshold).float()
-            jump_w = 1.0 + (self.jump_iw_weight - 1.0) * jump_mask
-        else:
-            jump_w = None
         if self.per:
             td = q_target - q_expected
-            sq = td.pow(2) * weights
-            if jump_w is not None:
-                sq = sq * jump_w
-            critic_loss = sq.mean()
+            critic_loss = (td.pow(2) * weights).mean()
             if self.step_counter % self.td_quantile_interval == 0:
                 with torch.no_grad():
                     abs_td = td.detach().abs().flatten()
@@ -893,46 +719,8 @@ class Agent:
                 huber_kappa=self.per_huber_kappa,
             )
         else:
-            sq = (q_expected - q_target).pow(2)
-            if jump_w is not None:
-                sq = sq * jump_w
-            critic_loss = sq.mean()
+            critic_loss = (q_expected - q_target).pow(2).mean()
             priorities = None
-        # ── H5: Dyna-style synthetic experience augmentation ──
-        # Generate K fresh synthetic transitions and add MSE on Q*(s, a) to the
-        # critic loss. Uses H1's expected-target machinery for Q* (so this
-        # composes with H1).
-        dyna_states_t = None
-        if (
-            self.dyna_kernel is not None
-            and self.dyna_n_synthetic > 0
-            and not self.munchausen
-            and not self.distributional
-        ):
-            from .dyna_augment import generate_dyna_batch
-            from .transition_kernel import expected_critic_target
-            d_states, d_actions, d_rewards, d_next_states, d_dones = generate_dyna_batch(
-                self.dyna_n_synthetic, self.dyna_contract, rng=self._dyna_rng,
-                obs_dtype=np.float32,
-            )
-            d_states_t = torch.from_numpy(d_states).to(self.device)
-            d_actions_t = torch.from_numpy(d_actions).to(self.device)
-            d_next_states_t = torch.from_numpy(d_next_states).to(self.device)
-            d_rewards_t = torch.from_numpy(d_rewards.reshape(-1, 1)).to(self.device)
-            d_dones_t = torch.from_numpy(d_dones.reshape(-1, 1)).to(self.device)
-            with torch.no_grad():
-                q_next_dyna = expected_critic_target(
-                    self.critic_target, self.actor_target,
-                    states=d_states_t, next_states=d_next_states_t,
-                    kernel=self.dyna_kernel, strike=self._strike,
-                    target_policy_noise=float(current_target_noise or 0.0),
-                    chunk_size=self.expected_target_chunk_size,
-                )
-                q_target_dyna = d_rewards_t + (gamma ** self.n_step) * q_next_dyna * (1 - d_dones_t)
-            q_pred_dyna = self.critic_local(d_states_t, d_actions_t)
-            dyna_loss = (q_pred_dyna - q_target_dyna).pow(2).mean()
-            critic_loss = critic_loss + self.dyna_lambda * dyna_loss
-            dyna_states_t = d_states_t  # stash for actor augmentation
 
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
@@ -940,27 +728,11 @@ class Agent:
 
         self.critic_optimizer.step()
 
-        # ── H7: Twin critic - train critic_local_2 on the SAME min-target ──
-        if self.use_twin_critic and self.critic_local_2 is not None:
-            q_expected_2 = self.critic_local_2(states, actions)
-            if self.per:
-                td_2 = q_target - q_expected_2
-                critic_loss_2 = (td_2.pow(2) * weights).mean()
-            else:
-                critic_loss_2 = F.mse_loss(q_expected_2, q_target)
-            self.critic_optimizer_2.zero_grad(set_to_none=True)
-            critic_loss_2.backward()
-            self.critic_optimizer_2.step()
-
         actor_loss_val = 0.0
-        # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
+        # Critic warmup: skip actor updates until the critic is stable.
         if self._episode_count > self.critic_warmup_episodes:
-             if dyna_states_t is not None and self.dyna_actor_augment:
-                 all_states = torch.cat([states, dyna_states_t], dim=0)
-             else:
-                 all_states = states
-             actions_pred = self.actor_local(all_states)
-             q_val = self.critic_local(all_states, actions_pred)
+             actions_pred = self.actor_local(states)
+             q_val = self.critic_local(states, actions_pred)
              actor_loss = -q_val.mean()
 
              self.actor_optimizer.zero_grad(set_to_none=True)
@@ -975,136 +747,8 @@ class Agent:
                 tgt_q = self.critic_target(states, self.actor_target(states))
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
-        if self.use_twin_critic and self.critic_local_2 is not None:
-            self.soft_update(self.critic_local_2, self.critic_target_2)
-        self._update_ema_buffers()
         if self._per_update_priorities and priorities is not None:
             self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        return critic_loss.item(), actor_loss_val
-
-    def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
-        self._maybe_init_profitability_params()
-        states, actions, rewards, next_states, dones, idx, weights = experiences
-        if states.device.type != self.device.type or actions.device.type != self.device.type:
-            raise RuntimeError(
-                f"Device mismatch: batch on {states.device}/{actions.device}, agent on {self.device}"
-            )
-        if (
-            rewards.device.type != self.device.type
-            or next_states.device.type != self.device.type
-            or dones.device.type != self.device.type
-        ):
-            raise RuntimeError("Device mismatch: replay buffer returned CPU tensors for a non-CPU agent")
-        if weights is not None and weights.device.type != self.device.type:
-            raise RuntimeError("Device mismatch: PER weights not on agent device")
-
-        with torch.no_grad():
-            current_target_noise = self._get_target_policy_noise()
-            # ── H6: kernel-expected IQN target ──
-            if self.expected_target_kernel is not None and not self.munchausen:
-                from .transition_kernel import expected_iqn_target
-                qt_next_exp = expected_iqn_target(
-                    self.critic_target, self.actor_target,
-                    states=states, next_states=next_states,
-                    kernel=self.expected_target_kernel,
-                    N=self.N, strike=self._strike,
-                    target_policy_noise=float(current_target_noise or 0.0),
-                    chunk_size=self.expected_target_chunk_size,
-                )  # (B, N)
-                # q_targets shape: (B, N, 1) to mirror non-expected path
-                qt_next = qt_next_exp.unsqueeze(-1)
-                q_targets = rewards.unsqueeze(-1) + (self.GAMMA ** self.n_step) * qt_next * (
-                    1 - dones.float().unsqueeze(-1)
-                )
-            else:
-                next_actions = self.actor_target(next_states)
-                if current_target_noise and current_target_noise > 0:
-                    # v60: Target policy noise decays late for cleaner Q-targets
-                    noise = torch.randn_like(next_actions) * current_target_noise
-                    next_actions = next_actions + noise
-                    next_actions = torch.clamp(next_actions, 0.0, 1.0)
-                    apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
-                    if apply_gate is not None:
-                        next_actions = apply_gate(q_raw=next_actions, state=next_states)
-                qt_next, _ = self.critic_target(next_states, next_actions, self.N)
-                qt_next = qt_next.transpose(1, 2)
-                if not self.munchausen:
-                    q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * qt_next * (
-                        1 - dones.float().unsqueeze(-1)
-                    )
-                else:
-                    q_mean = qt_next.mean(-1)
-                    logsum = torch.logsumexp(q_mean / self.entropy_tau, dim=1, keepdim=True)
-                    tau_log_pi_next = (q_mean - self.entropy_tau * logsum).unsqueeze(1)
-                    pi_target = F.softmax(q_mean / self.entropy_tau, dim=1).unsqueeze(1)
-                    q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * (
-                        pi_target * (qt_next - tau_log_pi_next) * (1 - dones.float().unsqueeze(-1))
-                    )
-        q_expected, taus = self.critic_local(states, actions, self.N)
-        td_error = q_targets - q_expected
-        huber = calculate_huber_loss(td_error, 1.0)
-        quantile_loss = (torch.abs(taus - (td_error.detach() < 0).float()) * huber).sum(dim=1).mean(dim=1)
-        if self.per:
-            critic_loss = (quantile_loss.unsqueeze(1) * weights).mean()
-        else:
-            critic_loss = quantile_loss.mean()
-        self.critic_optimizer.zero_grad(set_to_none=True)
-        critic_loss.backward()
-        self.critic_optimizer.step()
-
-        self.critic_optimizer.step()
-        
-        actor_loss_val = 0.0
-        if self._episode_count > self.critic_warmup_episodes:
-             actions_pred = self.actor_local(states)
-             q_pred, _ = self.critic_local(states, actions_pred, self.N)
-             actor_loss = -q_pred.mean()
-                 
-             self.actor_optimizer.zero_grad(set_to_none=True)
-             actor_loss.backward()
-             self.actor_optimizer.step()
-             actor_loss_val = actor_loss.item()
-             self.soft_update(self.actor_local, self.actor_target)
-             
-        self._updates_done += 1
-        if self._per_update_priorities:
-            floor = float(getattr(self.memory, "min_priority", 1e-6))
-            if self.per_priority_scheme == "lap":
-                huber_pr = calculate_huber_loss(td_error, k=self.per_huber_kappa)
-                quantile_pr = (
-                    torch.abs(taus - (td_error.detach() < 0).float()) * huber_pr
-                ).sum(dim=1).mean(dim=1)
-                priorities = self._compute_base_priorities(
-                    quantile_pr,
-                    floor=floor,
-                    clip_pct=self.per_priority_clip_pct,
-                    scheme=self.per_priority_scheme,
-                    huber_kappa=self.per_huber_kappa,
-                    is_loss=True,
-                )
-            else:
-                td_proxy = td_error.mean(dim=(1, 2))
-                priorities = self._compute_base_priorities(
-                    td_proxy,
-                    floor=floor,
-                    clip_pct=self.per_priority_clip_pct,
-                    scheme=self.per_priority_scheme,
-                    huber_kappa=self.per_huber_kappa,
-                )
-            self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        if self.step_counter % self.td_quantile_interval == 0:
-            with torch.no_grad():
-                flat = q_targets.view(q_targets.size(0), -1)
-                q10 = torch.quantile(flat, 0.1, dim=1).mean().item()
-                q50 = torch.quantile(flat, 0.5, dim=1).mean().item()
-                q90 = torch.quantile(flat, 0.9, dim=1).mean().item()
-                self._last_iqn_spread = (q10, q50, q90, (q90 - q10))
-        if self.step_counter % self.diagnostics_interval == 0:
-            with torch.no_grad():
-                tgt_q, _ = self.critic_target(states, self.actor_target(states), self.N)
-                self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
-        self.soft_update(self.critic_local, self.critic_target)
-        self._update_ema_buffers()
         return critic_loss.item(), actor_loss_val
 
     @property
@@ -1133,16 +777,6 @@ class Agent:
 
     def _compute_tau(self) -> float:
         return self.t
-
-    def _update_ema_buffers(self):
-        if self.critic_ema_decay <= 0 or self.critic_ema_state is None:
-            return
-        with torch.no_grad():
-            for name, param in self.critic_local.named_parameters():
-                if name in self.critic_ema_state:
-                    self.critic_ema_state[name].mul_(self.critic_ema_decay).add_(
-                        param.data, alpha=1.0 - self.critic_ema_decay
-                    )
 
     def _maybe_update_per_schedule(self):
         """Dynamically adjust PER alpha/beta to mimic uniform early and ramp later."""
@@ -1248,8 +882,8 @@ class Agent:
         self._profitability_params_initialized = True
 
     def get_critic_eval_state(self):
-        """Return EMA-smoothed critic parameters for evaluation if available."""
-        return self.critic_ema_state if self.critic_ema_state is not None else self.critic_local.state_dict()
+        """Return critic parameters for evaluation."""
+        return self.critic_local.state_dict()
 
     def _log_batch_diagnostics(self, batch, ts, writer):
         if ts % self.diagnostics_interval != 0:
@@ -1284,12 +918,6 @@ class Agent:
             writer.add_scalar("TD_Error/p99", p99, ts)
         if self._last_target_drift and self.step_counter % 200 == 0:
             writer.add_scalar("Stability/Target_drift", self._last_target_drift, ts)
-        if self.distributional and self._last_iqn_spread and self.step_counter % 200 == 0:
-            q10, q50, q90, spread = self._last_iqn_spread
-            writer.add_scalar("IQN/q10", q10, ts)
-            writer.add_scalar("IQN/q50", q50, ts)
-            writer.add_scalar("IQN/q90", q90, ts)
-            writer.add_scalar("IQN/q90_minus_q10", spread, ts)
 
     def calibrate_bias(
         self,

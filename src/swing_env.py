@@ -362,9 +362,7 @@ class SwingOptionEnv(gym.Env):
                  contract: SwingContract,
                  hhk_params: Dict,
                  dataset:Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-                 obs_dtype: Optional[np.dtype] = None,
-                 enable_antithetic: bool = False,
-                 partner_idx_arr: Optional[np.ndarray] = None):
+                 obs_dtype: Optional[np.dtype] = None):
         """
         Initialize swing option environment
         
@@ -383,16 +381,7 @@ class SwingOptionEnv(gym.Env):
         self.t, self.S, self.X, self.Y = dataset
         self.max_episode_steps = self.contract.n_rights
         self.obs_dtype = np.dtype(obs_dtype) if obs_dtype is not None else np.float32
-        # H8: antithetic pairing.
-        # If partner_idx_arr is provided, use it (it correctly maps stratified
-        # indices to their antithetic partner's stratified index).
-        # Otherwise fall back to XOR pairing (only valid when stratify=False).
-        self.enable_antithetic = bool(enable_antithetic)
-        self._partner_idx_arr = (
-            np.asarray(partner_idx_arr, dtype=np.int64) if partner_idx_arr is not None else None
-        )
-        self._partner_path_idx = -1
-        
+
         # Action space: normalized exercise quantity [0, 1]
         self.action_space = Box(
             low=0.0, 
@@ -487,33 +476,8 @@ class SwingOptionEnv(gym.Env):
         }
 
         next_obs = self._get_observation()
-        # H8: also expose the antithetic partner's next-state if enabled
-        if self.enable_antithetic and self._partner_path_idx >= 0:
-            info["next_state_antithetic"] = self._get_partner_observation(next_obs)
         return next_obs, total_reward, terminated, truncated, info
 
-    def _get_partner_observation(self, base_obs: np.ndarray) -> np.ndarray:
-        """Build the antithetic partner's observation at self.current_step.
-
-        Everything except (S - K, S, X, Y) is identical to the base obs because
-        the contract-level state (Q exercised, time, days since exercise) is
-        deterministic given (action, history) and unchanged by the jump-component
-        antithetic pairing. We just swap in the partner's S, X, Y values.
-        """
-        partner = base_obs.copy()
-        idx = int(self._partner_path_idx)
-        step = int(self.current_step)
-        if step >= self.S.shape[1]:
-            step = self.S.shape[1] - 1
-        S_partner = float(self.S[idx, step])
-        X_partner = float(self.X[idx, step])
-        Y_partner = float(self.Y[idx, step])
-        partner[0] = S_partner - self.contract.strike
-        partner[5] = S_partner
-        partner[6] = X_partner
-        partner[7] = Y_partner
-        return partner
-    
     def _get_feasible_action(self, q_proposed: float) -> float:
         """
         Ensure action satisfies all constraints
@@ -628,19 +592,7 @@ class SwingOptionEnv(gym.Env):
         self.spot_path = self.S[path_idx]
         self.X_path = self.X[path_idx]
         self.Y_path = self.Y[path_idx]
-        # H8: identify antithetic partner path
-        if self.enable_antithetic:
-            n_paths = self.S.shape[0]
-            if self._partner_idx_arr is not None and path_idx < len(self._partner_idx_arr):
-                # Stratify-preserved partner mapping
-                cand = int(self._partner_idx_arr[path_idx])
-                self._partner_path_idx = cand if 0 <= cand < n_paths else path_idx
-            else:
-                # Legacy fallback: XOR pairing (valid only if stratify was off)
-                self._partner_path_idx = (path_idx ^ 1) if (path_idx ^ 1) < n_paths else path_idx
-        else:
-            self._partner_path_idx = -1
-        
+
         # Initialize episode state
         self.current_step = 0
         self.q_exercised = 0.0

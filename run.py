@@ -351,20 +351,6 @@ class ConfigManager:
             help="Adding Prioritized Experience Replay to the agent if set to 1, default = 1",
         )
         parser.add_argument(
-            "-munchausen",
-            type=int,
-            default=0,
-            choices=[0, 1],
-            help="Adding Munchausen RL to the agent if set to 1 (default: 0 / off)",
-        )
-        parser.add_argument(
-            "-iqn",
-            type=int,
-            choices=[0, 1],
-            default=0,
-            help="Use distributional IQN Critic if set to 1, default = 0 (no IQN)",
-        )
-        parser.add_argument(
             "-noise_sigma0",
             type=float,
             default=1.0,
@@ -479,14 +465,14 @@ class ConfigManager:
             type=str,
             default="layernorm",
             choices=["layernorm", "rmsnorm", "none"],
-            help="Normalization layer in actor/critic/IQN MLPs (default: layernorm)",
+            help="Normalization layer in actor/critic MLPs (default: layernorm)",
         )
         parser.add_argument(
             "--init_method",
             type=str,
             default="orthogonal",
             choices=["orthogonal", "he", "kaiming"],
-            help="Weight initialization for actor/critic/IQN MLPs (default: orthogonal)",
+            help="Weight initialization for actor/critic MLPs (default: orthogonal)",
         )
         parser.add_argument(
             "--final_lr_fraction",
@@ -588,12 +574,6 @@ class ConfigManager:
             help="Decoupled weight decay applied to the critic optimizer (default: 1e-4)",
         )
         parser.add_argument(
-            "--critic_ema_decay",
-            type=float,
-            default=0.0,
-            help="EMA decay for critic eval smoothing (0 disables, default: 0.0)",
-        )
-        parser.add_argument(
             "--target_policy_noise",
             type=float,
             default=0.1,
@@ -658,53 +638,6 @@ class ConfigManager:
         parser.add_argument("--kernel_chunk_M", type=int, default=0,
                             help="If >0, evaluate the per-batch critic on chunks of this size in the M "
                             "axis to bound peak memory. 0 = no chunking.")
-        # ── H4: semi-analytical critic warm-start ──
-        parser.add_argument("--use_critic_warmstart", type=int, choices=[0, 1], default=0,
-                            help="Build a (X, Y, Q, t) value grid via backward induction with the "
-                            "transition kernel, then supervise critic_local on Q*(s,a) targets "
-                            "before D4PG training starts. Requires the kernel infrastructure but "
-                            "is independent of --use_expected_target.")
-        parser.add_argument("--warmstart_n_X", type=int, default=25)
-        parser.add_argument("--warmstart_n_Y", type=int, default=20)
-        parser.add_argument("--warmstart_n_actions", type=int, default=11)
-        parser.add_argument("--warmstart_n_samples", type=int, default=16384,
-                            help="Synthetic (s, a) pairs for supervised pre-training.")
-        parser.add_argument("--warmstart_n_epochs", type=int, default=50,
-                            help="Supervised MSE epochs over the synthetic samples.")
-        parser.add_argument("--warmstart_batch_size", type=int, default=256)
-        parser.add_argument("--warmstart_copy_target", type=int, choices=[0, 1], default=1,
-                            help="If 1, copy warm-started critic_local to critic_target. "
-                            "If 0, target stays at its init - TD must catch up. Default 1.")
-        # ── H5: Dyna-style synthetic experience augmentation ──
-        parser.add_argument("--use_dyna_augment", type=int, choices=[0, 1], default=0,
-                            help="At each critic update, generate K fresh synthetic (s, a) "
-                            "pairs and supervise critic_local on H1-style Q* targets. "
-                            "Composes with --use_expected_target.")
-        parser.add_argument("--dyna_n_synthetic", type=int, default=128,
-                            help="Synthetic transitions to generate per critic update (default 128).")
-        parser.add_argument("--dyna_lambda", type=float, default=1.0,
-                            help="Loss-mixing weight for the synthetic critic loss (default 1.0).")
-        parser.add_argument("--dyna_actor_augment", type=int, choices=[0, 1], default=1,
-                            help="If 1, also include synthetic states in the actor-policy gradient. Default 1.")
-        parser.add_argument("--iqn_N", type=int, default=32,
-                            help="Number of quantile samples in the IQN critic (default 32; smaller = faster).")
-        # H7: Twin critics (TD3-style)
-        parser.add_argument("--use_twin_critic", type=int, choices=[0, 1], default=0,
-                            help="Enable TD3-style twin critics. The TD target is the min over both critics' "
-                            "kernel-expected predictions. Reduces overestimation bias.")
-        # H9: Jump-event importance weighting
-        parser.add_argument("--use_jump_iw", type=int, choices=[0, 1], default=0,
-                            help="Detect Y-jump events between t and t+1, and upweight those transitions' "
-                            "critic loss. Compensates for rare-but-valuable jump-driven payoffs.")
-        parser.add_argument("--jump_iw_weight", type=float, default=3.0,
-                            help="Multiplicative loss weight for jump-event transitions (default 3.0).")
-        # H8: Antithetic-pair averaged TD target
-        parser.add_argument("--use_antithetic_target", type=int, choices=[0, 1], default=0,
-                            help="Use the HHK antithetic-path partner's next-state to average the TD target.")
-        parser.add_argument("--antithetic_preserve_stratify", type=int, choices=[0, 1], default=1,
-                            help="If 1 (default), keep training-set stratification and track antithetic "
-                            "partner indices through the permutation. If 0, disable stratification "
-                            "(legacy H8 behaviour).")
 
         # ── Function approximator (actor/critic front-end) ──
         parser.add_argument("--approximator", type=str, default="nn",
@@ -1041,45 +974,17 @@ class LoggingManager:
 
 def generate_datasets(
     stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128,
-    stratify_train: bool = True, return_partner_idx: bool = False,
 ):
     """
     Generate training and evaluation datasets using antithetic variance reduction and QMC.
-
-    stratify_train: if False (legacy H8 path), training paths are NOT stratified so
-        adjacent indices (2i, 2i+1) remain antithetic partners trivially.
-    return_partner_idx: if True, run with stratify=True but compute partner_idx (an
-        int array mapping each stratified index to its antithetic partner's new index).
-        Returns (train_ds, eval_ds, partner_idx_train).
     """
 
     print(f"🎲 Generating datasets: {n_paths} training + {n_paths_eval} eval paths...")
     pre_generation_start = time.time()
 
-    if return_partner_idx:
-        # Generate unstratified, then stratify manually with permutation tracking
-        train_t, train_S, train_X, train_Y = simulate_hhk_spot(
-            **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=False, batch_size=batch_size
-        )
-        from src.simulate_hhk_spot import _stratify  # noqa: F401
-        train_t, train_S, train_X, train_Y, new_order = _stratify(
-            train_t, train_S, train_X, train_Y, batch_size, return_perm=True
-        )
-        # Compute partner_idx (in the new stratified ordering)
-        # original index of new position i is new_order[i]
-        # antithetic partner's original index is new_order[i] ^ 1 (with bounds clipping)
-        # find its new position via inverse_perm
-        inverse_perm = np.argsort(new_order)
-        orig_indices = new_order.astype(np.int64)
-        partner_orig = orig_indices ^ 1
-        # Clip out-of-bounds partners (rare; happens if n_paths is odd)
-        partner_orig = np.minimum(partner_orig, n_paths - 1)
-        partner_idx = inverse_perm[partner_orig].astype(np.int64)
-    else:
-        train_t, train_S, train_X, train_Y = simulate_hhk_spot(
-            **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=stratify_train, batch_size=batch_size
-        )
-        partner_idx = None
+    train_t, train_S, train_X, train_Y = simulate_hhk_spot(
+        **stochastic_process_params, n_paths=n_paths, seed=seed, stratify=True, batch_size=batch_size
+    )
     # print(f'>>>> shape of train_S: {train_S.shape}')
     # # Plot 200 sample paths and the mean
     # plt.figure(figsize=(12, 6))
@@ -1115,8 +1020,6 @@ def generate_datasets(
     total_storage_mb = (sum(arr.nbytes for arr in train_ds) + sum(arr.nbytes for arr in eval_ds)) / 1024**2
     print(f"✅ Datasets generated in {pre_generation_time:.2f}s ({total_storage_mb:.1f} MB)")
 
-    if return_partner_idx:
-        return train_ds, eval_ds, partner_idx
     return train_ds, eval_ds
 
 
@@ -1315,10 +1218,8 @@ def run_training(
             action_v = np.clip(action, action_low, action_high)
             next_state, reward, terminated, truncated, info_step = train_env.step(action_v[0])
             done = terminated or truncated
-            next_state_antithetic = info_step.get("next_state_antithetic") if isinstance(info_step, dict) else None
             agent.step(
                 state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer,
-                next_state_antithetic=next_state_antithetic,
             )
             actions_episode.append(action_v[0])
 
@@ -1481,54 +1382,29 @@ def main():
         "dtype": np_dtype,
     }
 
-    # Generate training and evaluation datasets:
-    # H8: when antithetic-target training is on, either disable stratification
-    # (legacy) or preserve it and track the antithetic partner index through
-    # the permutation (preferred; --antithetic_preserve_stratify=1, default).
-    _use_h8 = int(getattr(args, "use_antithetic_target", 0))
-    _preserve_strat = int(getattr(args, "antithetic_preserve_stratify", 1))
-    train_partner_idx = None
-    if _use_h8 and _preserve_strat:
-        train_ds, eval_ds, train_partner_idx = generate_datasets(
-            stochastic_process_params=stochastic_process_params,
-            n_paths=args.n_paths,
-            n_paths_eval=args.n_paths_eval,
-            seed=seed,
-            batch_size=args.batch_size,
-            stratify_train=True,
-            return_partner_idx=True,
-        )
-        print(f"H8 stratify-preserved: partner_idx computed for {len(train_partner_idx)} paths")
-    else:
-        train_ds, eval_ds = generate_datasets(
-            stochastic_process_params=stochastic_process_params,
-            n_paths=args.n_paths,
-            n_paths_eval=args.n_paths_eval,
-            seed=seed,
-            batch_size=args.batch_size,
-            stratify_train=(not bool(_use_h8)),
-        )
+    # Generate training and evaluation datasets
+    train_ds, eval_ds = generate_datasets(
+        stochastic_process_params=stochastic_process_params,
+        n_paths=args.n_paths,
+        n_paths_eval=args.n_paths_eval,
+        seed=seed,
+        batch_size=args.batch_size,
+    )
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype,
-        enable_antithetic=bool(_use_h8),
-        partner_idx_arr=train_partner_idx,
     )
     eval_env = SwingOptionEnv(
         contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype,
     )
 
     # ── Optional: build the semi-analytical transition kernel ──────────────
-    # Needed whenever --use_expected_target=1 (H1) OR --use_critic_warmstart=1 (H4).
+    # Needed whenever --use_expected_target=1.
     expected_target_kernel = None
     expected_target_chunk_size = None
-    warmstart_kernel = None
-    dyna_kernel = None
     use_expected_target = int(getattr(args, "use_expected_target", 0))
-    use_warmstart = int(getattr(args, "use_critic_warmstart", 0))
-    use_dyna = int(getattr(args, "use_dyna_augment", 0))
-    if use_expected_target or use_warmstart or use_dyna:
+    if use_expected_target:
         from src.transition_kernel import KernelParams, precompute_kernel
         kparams = KernelParams(
             alpha=float(args.alpha),
@@ -1549,16 +1425,11 @@ def main():
         print(f"Built kernel: M={shared_kernel.M} "
               f"(M_x={shared_kernel.M_x}, M_y={shared_kernel.M_y}), "
               f"hash={shared_kernel.params_hash}")
-        if use_expected_target:
-            expected_target_kernel = shared_kernel
-            expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
-            if int(args.nstep) != 1:
-                print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
-                args.nstep = 1
-        if use_warmstart:
-            warmstart_kernel = shared_kernel
-        if use_dyna:
-            dyna_kernel = shared_kernel
+        expected_target_kernel = shared_kernel
+        expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
+        if int(args.nstep) != 1:
+            print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
+            args.nstep = 1
 
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
@@ -1661,8 +1532,6 @@ def main():
             action_size=train_env.action_space.shape[0],
             n_step=args.nstep,
             per=args.per,
-            munchausen=args.munchausen,
-            distributional=args.iqn,
             random_seed=seed,
             hidden_size=args.layer_size,
             actor_hidden_size=actor_hidden_size,
@@ -1672,7 +1541,6 @@ def main():
             optimizer=args.optimizer,
             weight_decay_actor=args.weight_decay_actor,
             weight_decay_critic=args.weight_decay_critic,
-            critic_ema_decay=args.critic_ema_decay,
             target_policy_noise=args.target_policy_noise,
             target_policy_clip=args.target_policy_clip,
             BUFFER_SIZE=args.max_replay_size,
@@ -1732,23 +1600,6 @@ def main():
             # feat/semi-analytical-bootstrap
             expected_target_kernel=expected_target_kernel,
             expected_target_chunk_size=expected_target_chunk_size,
-            # H5: Dyna-style augmentation
-            dyna_kernel=dyna_kernel,
-            dyna_contract=(swing_contract if dyna_kernel is not None else None),
-            dyna_n_synthetic=(int(args.dyna_n_synthetic) if dyna_kernel is not None else 0),
-            dyna_lambda=float(args.dyna_lambda),
-            dyna_actor_augment=bool(int(args.dyna_actor_augment)),
-            # H6: IQN quantile count
-            iqn_N=int(args.iqn_N),
-            # H7: TD3-style twin critics
-            use_twin_critic=bool(int(args.use_twin_critic)),
-            # H9: Jump-event importance weighting
-            use_jump_iw=bool(int(args.use_jump_iw)),
-            jump_iw_weight=float(args.jump_iw_weight),
-            jump_iw_decay_Y=float(np.exp(-float(args.beta) * float(swing_contract.dt))),
-            jump_iw_threshold=1e-3,
-            # H8: Antithetic-pair averaged TD target
-            use_antithetic_target=bool(int(args.use_antithetic_target)),
             # Function approximator injection (None => default NN, bit-identical)
             actor_factory=actor_factory,
             critic_factory=critic_factory,
@@ -1758,28 +1609,6 @@ def main():
         except StopIteration:
             param_device = torch.device("cpu")
         print(f"Sanity: model param device = {param_device}")
-
-        # ── H4: critic warm-start via backward induction on (X, Y, Q, t) ──
-        if warmstart_kernel is not None:
-            from src.critic_warmstart import warm_start_critic, grid_price_at_origin
-            print(f"\n[H4] Building backward-induction value grid + supervising critic_local ...")
-            warm_grid = warm_start_critic(
-                agent,
-                kernel=warmstart_kernel,
-                contract=swing_contract,
-                n_samples=int(args.warmstart_n_samples),
-                n_epochs=int(args.warmstart_n_epochs),
-                batch_size=int(args.warmstart_batch_size),
-                n_X=int(args.warmstart_n_X),
-                n_Y=int(args.warmstart_n_Y),
-                n_actions=int(args.warmstart_n_actions),
-                seed=int(args.seed),
-                verbose=True,
-                copy_target=bool(int(args.warmstart_copy_target)),
-            )
-            V0 = grid_price_at_origin(warm_grid)
-            print(f"[H4] Grid-implied initial price V(X=0, Y=0, Q_max, t=0) = {V0:.4f}")
-            print(f"[H4] LSM benchmark (for comparison)                       = {mean_lsm_price:.4f}\n")
 
         t0 = time.time()
 

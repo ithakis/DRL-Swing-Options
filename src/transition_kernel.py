@@ -518,97 +518,6 @@ def expected_critic_target(
     return expected
 
 
-def expected_iqn_target(
-    critic_target,
-    actor_target,
-    states,
-    next_states,
-    kernel: TransitionKernel,
-    *,
-    N: int,
-    strike: float,
-    target_policy_noise: float = 0.0,
-    chunk_size: Optional[int] = None,
-):
-    """H6: kernel-expected target for an IQN distributional critic.
-
-    Same structure as expected_critic_target but each synthetic next-state
-    produces an N-quantile output Z(s', a', tau_n) for sampled tau_n. We
-    compute the *expected quantile* over the kernel via a weighted average
-    of the per-node quantile predictions:
-
-        E[Z_tau(s', pi(s'))] = sum_m w_m * critic_target(s'_m, pi(s'_m), tau)
-
-    Note: this is the quantile-wise weighted average, NOT the quantile of
-    the mixture distribution. The two coincide only when the quantile
-    function is linear over the mixture support. For smooth Q across the
-    kernel's support this is an excellent approximation.
-
-    Returns
-    -------
-    qt_next_expected : tensor of shape (B, N)
-        Kernel-expected quantile predictions per (s, a) in the batch.
-    """
-    import torch
-
-    device = states.device
-    dtype = states.dtype
-    B = states.shape[0]
-    M = kernel.M
-
-    X_t = states[:, OBS_IDX_X].detach().to("cpu", dtype=torch.float64).numpy()
-    Y_t = states[:, OBS_IDX_Y].detach().to("cpu", dtype=torch.float64).numpy()
-    t_norm_next = next_states[:, OBS_IDX_T_NORM].detach().to("cpu", dtype=torch.float64).numpy()
-    t_idx_next = np.clip(
-        np.rint(t_norm_next * kernel.n_rights).astype(np.int64),
-        0, kernel.n_rights,
-    )
-
-    S_grid, X_grid, Y_grid = build_next_state_grid_batched(X_t, Y_t, t_idx_next, kernel)
-
-    next_states_BM = next_states.detach().unsqueeze(1).expand(B, M, -1).contiguous()
-    S_t = torch.from_numpy(S_grid).to(device=device, dtype=dtype)
-    X_torch = torch.from_numpy(X_grid).to(device=device, dtype=dtype)
-    Y_torch = torch.from_numpy(Y_grid).to(device=device, dtype=dtype)
-    next_states_BM[..., OBS_IDX_S_MINUS_K] = S_t - strike
-    next_states_BM[..., OBS_IDX_S] = S_t
-    next_states_BM[..., OBS_IDX_X] = X_torch
-    next_states_BM[..., OBS_IDX_Y] = Y_torch
-
-    weights = torch.from_numpy(build_quadrature_weights(kernel)).to(device=device, dtype=dtype)
-    # (M,) -> (1, M, 1) for broadcasting against (B, M, N)
-    w3 = weights.view(1, M, 1)
-
-    def _forward_iqn(flat_states):
-        actions = actor_target(flat_states)
-        if target_policy_noise and target_policy_noise > 0.0:
-            noise = torch.randn_like(actions) * target_policy_noise
-            actions = torch.clamp(actions + noise, 0.0, 1.0)
-            apply_gate = getattr(actor_target, "apply_profitability_gate", None)
-            if apply_gate is not None:
-                actions = apply_gate(q_raw=actions, state=flat_states)
-        # critic_target(state, action, N) -> (n_rows, 1, N) and taus
-        qt, _ = critic_target(flat_states, actions, N)
-        return qt.squeeze(1)  # (n_rows, N)
-
-    if chunk_size is None or chunk_size >= M:
-        flat_states = next_states_BM.reshape(B * M, -1)
-        with torch.no_grad():
-            qt_all = _forward_iqn(flat_states)              # (B*M, N)
-        qt_all = qt_all.reshape(B, M, N)
-        expected = (qt_all * w3).sum(dim=1)                  # (B, N)
-    else:
-        expected = torch.zeros((B, N), device=device, dtype=dtype)
-        with torch.no_grad():
-            for start in range(0, M, chunk_size):
-                end = min(start + chunk_size, M)
-                chunk = next_states_BM[:, start:end, :].reshape(B * (end - start), -1)
-                qt_chunk = _forward_iqn(chunk).reshape(B, end - start, N)
-                w_chunk = weights[start:end].view(1, end - start, 1)
-                expected = expected + (qt_chunk * w_chunk).sum(dim=1)
-    return expected
-
-
 __all__ = [
     "KernelParams",
     "TransitionKernel",
@@ -616,7 +525,6 @@ __all__ = [
     "build_next_state_grid_batched",
     "build_quadrature_weights",
     "expected_critic_target",
-    "expected_iqn_target",
     "OBS_IDX_S_MINUS_K",
     "OBS_IDX_T_NORM",
     "OBS_IDX_S",
