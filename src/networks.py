@@ -123,7 +123,9 @@ def _build_activation(activation: str) -> Tuple[Callable[[], nn.Module], float]:
     if act == "silu":
         # torch init does not expose a SiLU-specific gain; use ReLU-equivalent
         return lambda: nn.SiLU(inplace=True), math.sqrt(2.0)
-    raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', or 'silu'.")
+    if act == "tanh":
+        return lambda: nn.Tanh(), nn.init.calculate_gain("tanh")
+    raise ValueError(f"Unsupported activation '{activation}'. Choose from 'relu', 'leaky_relu', 'silu', or 'tanh'.")
 
 
 def _normalize_init_method(init_method: Optional[str]) -> str:
@@ -748,6 +750,380 @@ class Critic(nn.Module):
             x = block(x)
 
         return self.fc4(x)
+
+
+# =====================================================================
+# Fast non-NN function approximators (approximator study)
+# ---------------------------------------------------------------------
+# Drop-in replacements for the NN Actor/Critic that match the same forward
+# signatures and reuse the profitability-gate STE + output activation.
+# Each is a differentiable  CuratedFeatures -> feature-map -> linear-head
+# model, so the D4PG/DDPG gradients (dQ/da for the actor update, dQ/dw and
+# da/dtheta for SGD) flow through autograd exactly as before.  They are
+# cheaper than the 2x64 SiLU+LayerNorm net and port trivially to C++
+# (a fixed feature transform followed by a single BLAS gemv).
+#
+# The four contenders share one front-end (CuratedFeatures) and differ only
+# in the feature map:
+#   poly    -> Chebyshev tensor-product basis (interpretable, LSM-family)
+#   rff     -> Random Fourier Features (frozen random projection + cosine)
+#   rbf     -> Radial Basis Function network (localized Gaussian kernels)
+#   mlp     -> tiny 1-hidden-layer MLP on the curated features (the "tiny_nn"
+#              safety net: keeps universal approximation, still ~6-8x cheaper)
+# =====================================================================
+
+# State-vector indices (mirror src/transition_kernel.py OBS_IDX_* and
+# src/agent_evaluation._build_state_batch).
+_OBS_S_MINUS_K = 0
+_OBS_Q_EXERCISED = 1
+_OBS_Q_REMAINING = 2
+_OBS_TTM = 3
+_OBS_T_NORM = 4
+_OBS_S = 5
+_OBS_X = 6
+_OBS_Y = 7
+_OBS_DAYS = 8
+
+
+class CuratedFeatures(nn.Module):
+    """Domain-informed, fixed-scale feature builder shared by all approximators.
+
+    Maps the raw 9-dim HHK swing state to a compact, roughly-standardized
+    feature vector.  Scales are fixed: the HHK process is identical across the
+    convex-cost regimes we study (only c_cost/gamma_cost vary), so fixed scales
+    are valid everywhere and -- unlike running BatchNorm-style stats -- need no
+    buffer synchronisation between the local and target networks.
+
+    Output (use_cross=True) is 10-dim:
+        [ log-moneyness, ttm, q_remaining, q_exercised, X, Y, days_since,
+          logm*q_remaining, ttm*q_remaining, X*Y ]
+    """
+
+    def __init__(
+        self,
+        strike: float = 1.0,
+        *,
+        use_cross: bool = True,
+        x_scale: float = 4.0,
+        y_scale: float = 2.0,
+        logm_scale: float = 2.857,
+        clip: float = 5.0,
+    ) -> None:
+        super().__init__()
+        self.strike = float(strike)
+        self.use_cross = bool(use_cross)
+        self.x_scale = float(x_scale)
+        self.y_scale = float(y_scale)
+        self.logm_scale = float(logm_scale)
+        self.clip = float(clip)
+        self.out_dim = 7 + (3 if self.use_cross else 0)
+
+    def forward(self, state: Tensor) -> Tensor:
+        s = state[..., _OBS_S:_OBS_S + 1].clamp_min(1e-6)
+        logm = torch.log(s / self.strike) * self.logm_scale
+        ttm = (state[..., _OBS_TTM:_OBS_TTM + 1] - 0.5) * 2.0
+        q_rem = (state[..., _OBS_Q_REMAINING:_OBS_Q_REMAINING + 1] - 0.5) * 2.0
+        q_ex = (state[..., _OBS_Q_EXERCISED:_OBS_Q_EXERCISED + 1] - 0.5) * 2.0
+        x = state[..., _OBS_X:_OBS_X + 1] * self.x_scale
+        y = state[..., _OBS_Y:_OBS_Y + 1] * self.y_scale
+        days = (state[..., _OBS_DAYS:_OBS_DAYS + 1] - 0.5) * 2.0
+        feats = [logm, ttm, q_rem, q_ex, x, y, days]
+        if self.use_cross:
+            feats.append(logm * q_rem)
+            feats.append(ttm * q_rem)
+            feats.append(x * y)
+        z = torch.cat(feats, dim=-1)
+        return torch.clamp(z, -self.clip, self.clip)
+
+
+def _chebyshev_stack(x: Tensor, degree: int) -> Tensor:
+    """Stack Chebyshev polynomials T_1..T_degree per input feature.
+
+    Args:
+        x: input tensor with values in (-1, 1), shape (..., K).
+        degree: highest Chebyshev order.
+    Returns:
+        Tensor of shape (..., K * degree) -- T_1, T_2, ..., T_degree for each feature.
+    """
+    cols = [x]
+    t_prev = torch.ones_like(x)
+    t_cur = x
+    for _ in range(2, degree + 1):
+        t_next = 2.0 * x * t_cur - t_prev
+        cols.append(t_next)
+        t_prev, t_cur = t_cur, t_next
+    return torch.cat(cols, dim=-1)
+
+
+class PolyFeatureMap(nn.Module):
+    """Chebyshev (per-feature) polynomial basis on curated features.
+
+    Inputs are squashed through tanh into (-1, 1) for Chebyshev stability, then
+    expanded to degree d.  A leading constant gives the bias term.
+    """
+
+    def __init__(self, in_dim: int, degree: int = 3) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.degree = int(degree)
+        self.out_dim = 1 + self.in_dim * self.degree
+
+    def forward(self, z: Tensor) -> Tensor:
+        xb = torch.tanh(z)
+        cheb = _chebyshev_stack(xb, self.degree)
+        bias = torch.ones(z.shape[:-1] + (1,), dtype=z.dtype, device=z.device)
+        return torch.cat([bias, cheb], dim=-1)
+
+
+class RFFFeatureMap(nn.Module):
+    """Random Fourier Features: phi(z) = sqrt(2/D) * cos(Omega z + b).
+
+    Omega ~ N(0, 1/lengthscale^2), b ~ U[0, 2pi).  Frozen by default (only the
+    linear head trains); optionally learnable (arXiv 2112.03257).
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        n_features: int = 256,
+        lengthscale: float = 1.0,
+        learnable: bool = False,
+        seed: int = 0,
+    ) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.out_dim = int(n_features)
+        g = torch.Generator().manual_seed(int(seed))
+        omega = torch.randn(self.in_dim, self.out_dim, generator=g) / float(lengthscale)
+        b = torch.rand(self.out_dim, generator=g) * (2.0 * math.pi)
+        if learnable:
+            self.omega = nn.Parameter(omega)
+            self.b = nn.Parameter(b)
+        else:
+            self.register_buffer("omega", omega)
+            self.register_buffer("b", b)
+        self._scale = math.sqrt(2.0 / self.out_dim)
+
+    def forward(self, z: Tensor) -> Tensor:
+        return self._scale * torch.cos(z @ self.omega + self.b)
+
+
+class RBFFeatureMap(nn.Module):
+    """Radial Basis Function network: phi_i(z) = exp(-||z - c_i||^2 / 2 sigma^2).
+
+    Centers are sampled once in the standardized curated-feature space (which is
+    ~unit scale by construction); bandwidth is shared and optionally learnable.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        n_centers: int = 128,
+        bandwidth: float = 1.0,
+        learnable_bandwidth: bool = False,
+        seed: int = 0,
+    ) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.out_dim = int(n_centers)
+        g = torch.Generator().manual_seed(int(seed) + 1234)
+        centers = torch.randn(self.out_dim, self.in_dim, generator=g)
+        self.register_buffer("centers", centers)
+        # ``bandwidth`` is a relative multiplier: the effective sigma scales with
+        # sqrt(in_dim) so unit-variance inputs give O(1) activations at any dim
+        # (expected squared distance between two unit-Gaussian points is 2*dim).
+        eff_bw = max(float(bandwidth), 1e-6) * math.sqrt(max(self.in_dim, 1))
+        log_bw = math.log(eff_bw)
+        if learnable_bandwidth:
+            self.log_bw = nn.Parameter(torch.tensor(log_bw))
+        else:
+            self.register_buffer("log_bw", torch.tensor(log_bw))
+
+    def forward(self, z: Tensor) -> Tensor:
+        bw = torch.exp(self.log_bw)
+        d2 = torch.cdist(z, self.centers).pow(2)
+        return torch.exp(-d2 / (2.0 * bw * bw))
+
+
+class MLPFeatureMap(nn.Module):
+    """Tiny 1-hidden-layer MLP feature map (the 'tiny_nn' contender front-end)."""
+
+    def __init__(self, in_dim: int, width: int = 32, activation: str = "silu", seed: int = 0) -> None:
+        super().__init__()
+        torch.manual_seed(int(seed))
+        act_factory, gain = _build_activation(activation)
+        linear = nn.Linear(int(in_dim), int(width))
+        torch.nn.init.orthogonal_(linear.weight, gain=gain)
+        torch.nn.init.zeros_(linear.bias)
+        self.net = nn.Sequential(linear, act_factory())
+        self.out_dim = int(width)
+
+    def forward(self, z: Tensor) -> Tensor:
+        return self.net(z)
+
+
+def _build_feature_map(kind: str, in_dim: int, cfg: dict, seed: int) -> nn.Module:
+    kind = (kind or "poly").lower()
+    if kind == "poly":
+        return PolyFeatureMap(in_dim, degree=int(cfg.get("degree", 3)))
+    if kind == "rff":
+        return RFFFeatureMap(
+            in_dim,
+            n_features=int(cfg.get("rff_dim", 256)),
+            lengthscale=float(cfg.get("lengthscale", 1.0)),
+            learnable=bool(cfg.get("learnable", False)),
+            seed=seed,
+        )
+    if kind == "rbf":
+        return RBFFeatureMap(
+            in_dim,
+            n_centers=int(cfg.get("rbf_centers", 128)),
+            bandwidth=float(cfg.get("bandwidth", 1.0)),
+            learnable_bandwidth=bool(cfg.get("learnable_bandwidth", False)),
+            seed=seed,
+        )
+    if kind in ("mlp", "tiny_nn"):
+        return MLPFeatureMap(
+            in_dim,
+            width=int(cfg.get("width", 32)),
+            activation=str(cfg.get("activation", "silu")),
+            seed=seed,
+        )
+    raise ValueError(f"Unknown feature_kind '{kind}'. Choose from poly, rff, rbf, mlp.")
+
+
+class BasisActor(Actor):
+    """Actor with a feature-map + linear head instead of an MLP stack.
+
+    Subclasses Actor so the profitability-gate STE, output activation, noise
+    interface, and ``set_profitability_params`` all work unchanged; only the
+    pre-activation computation (``forward_preact``) is replaced.
+    """
+
+    def __init__(
+        self,
+        state_size: int,
+        action_size: int,
+        seed: int,
+        hidden_size: int = 64,
+        n_layers: int = 2,
+        action_output: str = "tanh01",
+        activation: str = "silu",
+        norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
+        input_preprocessor: Optional[nn.Module] = None,
+        *,
+        feature_kind: str = "poly",
+        feature_cfg: Optional[dict] = None,
+    ) -> None:
+        super().__init__(
+            state_size,
+            action_size,
+            seed,
+            hidden_size=hidden_size,
+            n_layers=n_layers,
+            action_output=action_output,
+            activation=activation,
+            norm_type=norm_type,
+            init_method=init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        cfg = dict(feature_cfg or {})
+        self.feature_kind = (feature_kind or "poly").lower()
+        self.curated = CuratedFeatures(
+            strike=float(cfg.get("strike", 1.0)),
+            use_cross=bool(cfg.get("use_cross", True)),
+        )
+        self.feature_map = _build_feature_map(self.feature_kind, self.curated.out_dim, cfg, seed)
+        # Output layer keeps the name ``fc4`` so Agent.calibrate_bias (which scales
+        # the actor's output weight/bias) works unchanged; ``head`` aliases it.
+        del self.hidden_layers
+        del self.fc4
+        self.fc4 = nn.Linear(self.feature_map.out_dim, action_size)
+        torch.nn.init.uniform_(self.fc4.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.fc4.bias)
+        self.to(self.device)
+
+    @property
+    def head(self) -> nn.Module:
+        return self.fc4
+
+    def forward_preact(self, state: Tensor) -> Tensor:
+        # CuratedFeatures consumes the RAW env state (fixed-scale normalization
+        # built in), so any HHKInputLayer preprocessor is intentionally bypassed
+        # to avoid double-transforming the spot/factor slots.
+        return self.fc4(self.feature_map(self.curated(state)))
+
+
+class BasisCritic(Critic):
+    """Critic with a feature-map + linear head instead of an MLP stack.
+
+    For poly we couple the (scaled) action explicitly via [phi_s, a*phi_s, a, a^2]
+    so dQ/da is state-dependent (a DPG-compatible quadratic-in-action critic,
+    cf. Silver et al. 2014 Thm 3).  For rff/rbf/mlp the scaled action is simply
+    appended to the curated vector and the map handles the coupling.
+    """
+
+    def __init__(
+        self,
+        state_size: int,
+        action_size: int,
+        seed: int,
+        hidden_size: int = 64,
+        n_layers: int = 2,
+        activation: str = "silu",
+        norm_type: str = "layernorm",
+        init_method: str = "orthogonal",
+        input_preprocessor: Optional[nn.Module] = None,
+        *,
+        feature_kind: str = "poly",
+        feature_cfg: Optional[dict] = None,
+    ) -> None:
+        super().__init__(
+            state_size,
+            action_size,
+            seed,
+            hidden_size=hidden_size,
+            n_layers=n_layers,
+            activation=activation,
+            norm_type=norm_type,
+            init_method=init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        cfg = dict(feature_cfg or {})
+        self.feature_kind = (feature_kind or "poly").lower()
+        self.curated = CuratedFeatures(
+            strike=float(cfg.get("strike", 1.0)),
+            use_cross=bool(cfg.get("use_cross", True)),
+        )
+        kc = self.curated.out_dim
+        if self.feature_kind == "poly":
+            self.feature_map = _build_feature_map("poly", kc, cfg, seed + 7)
+            head_dim = 2 * self.feature_map.out_dim + 2
+        else:
+            self.feature_map = _build_feature_map(self.feature_kind, kc + 1, cfg, seed + 7)
+            head_dim = self.feature_map.out_dim
+        self.head = nn.Linear(head_dim, 1)
+        torch.nn.init.uniform_(self.head.weight, -3e-3, 3e-3)
+        torch.nn.init.zeros_(self.head.bias)
+        del self.state_encoder
+        del self.action_layer
+        del self.post_layers
+        del self.fc4
+        self.to(self.device)
+
+    def _features(self, state: Tensor, action: Tensor) -> Tensor:
+        # See BasisActor.forward_preact: curated features use the RAW state, so
+        # the input_preprocessor is bypassed by design.
+        z = self.curated(state)
+        a_scaled = (action - 0.5) * 2.0
+        if self.feature_kind == "poly":
+            phi_s = self.feature_map(z)
+            return torch.cat([phi_s, a_scaled * phi_s, a_scaled, a_scaled * a_scaled], dim=-1)
+        return self.feature_map(torch.cat([z, a_scaled], dim=-1))
+
+    def forward(self, state: Tensor, action: Tensor) -> Tensor:
+        return self.head(self._features(state, action))
 
 
 class IQN(nn.Module):

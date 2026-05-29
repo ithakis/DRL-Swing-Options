@@ -115,6 +115,11 @@ class Agent:
         jump_iw_threshold: float = 1e-3,     # Y' - decay_Y*Y > threshold => jump
         # H8: Antithetic-pair averaged TD target
         use_antithetic_target: bool = False,
+        # Approximator injection: drop-in replacements for Actor/Critic. When
+        # provided they must honor the same call signature (see BasisActor/
+        # BasisCritic). Default None keeps the NN path bit-identical.
+        actor_factory=None,
+        critic_factory=None,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -222,11 +227,14 @@ class Agent:
 
         self.actor_type = (actor_type or "standard").lower()
         self.action_output = (action_output or "tanh01").lower()  # v60: store action output activation
-        if self.actor_type == "finance_informed":
+        if actor_factory is not None:
+            actor_cls = actor_factory
+        elif self.actor_type == "finance_informed":
             from .networks import FinanceInformedActor
             actor_cls = FinanceInformedActor
         else:
             actor_cls = Actor
+        critic_cls = critic_factory if critic_factory is not None else Critic
 
         # ── Semi-analytical TD target (feat/semi-analytical-bootstrap, H1) ──
         self._strike = float(strike)
@@ -340,7 +348,7 @@ class Agent:
             ).to(self.device)
             self.critic_target.load_state_dict(self.critic_local.state_dict())
         else:
-            self.critic_local = Critic(
+            self.critic_local = critic_cls(
                 state_size,
                 action_size,
                 random_seed,
@@ -351,7 +359,7 @@ class Agent:
                 init_method=self.init_method,
                 input_preprocessor=input_preprocessor,
             )
-            self.critic_target = Critic(
+            self.critic_target = critic_cls(
                 state_size,
                 action_size,
                 random_seed,

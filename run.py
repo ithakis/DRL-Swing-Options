@@ -654,7 +654,7 @@ class ConfigManager:
                             help="QMC nodes per nonzero jump count in the Y mesh (default 4).")
         parser.add_argument("--kernel_N_max", type=int, default=2,
                             help="Truncate Poisson jump count at this many jumps (default 2; "
-                            "captures > 99.96% of mass at lambda*dt ~= 0.024).")
+                            "captures > 99.96%% of mass at lambda*dt ~= 0.024).")
         parser.add_argument("--kernel_chunk_M", type=int, default=0,
                             help="If >0, evaluate the per-batch critic on chunks of this size in the M "
                             "axis to bound peak memory. 0 = no chunking.")
@@ -705,6 +705,38 @@ class ConfigManager:
                             help="If 1 (default), keep training-set stratification and track antithetic "
                             "partner indices through the permutation. If 0, disable stratification "
                             "(legacy H8 behaviour).")
+
+        # ── Function approximator (actor/critic front-end) ──
+        parser.add_argument("--approximator", type=str, default="nn",
+                            choices=["nn", "poly", "rff", "rbf", "tiny_nn"],
+                            help="Actor/critic approximator. 'nn' = current 2x64 SiLU+LN net "
+                            "(bit-identical default). poly/rff/rbf/tiny_nn use a curated feature "
+                            "map + linear head (faster, C++-portable).")
+        parser.add_argument("--feature_use_cross", type=int, choices=[0, 1], default=1,
+                            help="Include domain cross-terms (moneyness*inventory, ttm*inventory, X*Y) "
+                            "in the curated feature vector. Default 1.")
+        # poly
+        parser.add_argument("--poly_degree", type=int, default=3,
+                            help="Chebyshev total degree for --approximator=poly (default 3).")
+        # rff
+        parser.add_argument("--rff_dim", type=int, default=256,
+                            help="Number of random Fourier features for --approximator=rff (default 256).")
+        parser.add_argument("--rff_lengthscale", type=float, default=1.0,
+                            help="RBF-kernel lengthscale for the RFF frequencies (default 1.0).")
+        parser.add_argument("--rff_learnable", type=int, choices=[0, 1], default=0,
+                            help="If 1, the RFF frequency matrix Omega is trainable (default 0, frozen).")
+        # rbf
+        parser.add_argument("--rbf_centers", type=int, default=128,
+                            help="Number of RBF centers for --approximator=rbf (default 128).")
+        parser.add_argument("--rbf_bandwidth", type=float, default=1.0,
+                            help="RBF bandwidth multiplier of sqrt(dim) for --approximator=rbf (default 1.0).")
+        parser.add_argument("--rbf_learnable_bandwidth", type=int, choices=[0, 1], default=0,
+                            help="If 1, the RBF bandwidth is trainable (default 0).")
+        # tiny_nn
+        parser.add_argument("--tiny_width", type=int, default=32,
+                            help="Hidden width for --approximator=tiny_nn feature map (default 32).")
+        parser.add_argument("--tiny_activation", type=str, default="silu",
+                            help="Activation for --approximator=tiny_nn (default silu).")
 
         return parser
 
@@ -1592,6 +1624,38 @@ def main():
         actor_hidden_size = args.actor_hidden_size or args.layer_size
         critic_hidden_size = args.critic_hidden_size or args.layer_size
 
+        # ── Function approximator selection ──
+        actor_factory = None
+        critic_factory = None
+        approximator = (getattr(args, "approximator", "nn") or "nn").lower()
+        if approximator != "nn":
+            import functools
+            from src.networks import BasisActor, BasisCritic
+            feature_cfg = {
+                "strike": float(args.strike),
+                "use_cross": bool(int(args.feature_use_cross)),
+                # poly
+                "degree": int(args.poly_degree),
+                # rff
+                "rff_dim": int(args.rff_dim),
+                "lengthscale": float(args.rff_lengthscale),
+                "learnable": bool(int(args.rff_learnable)),
+                # rbf
+                "rbf_centers": int(args.rbf_centers),
+                "bandwidth": float(args.rbf_bandwidth),
+                "learnable_bandwidth": bool(int(args.rbf_learnable_bandwidth)),
+                # tiny_nn
+                "width": int(args.tiny_width),
+                "activation": str(args.tiny_activation),
+            }
+            actor_factory = functools.partial(
+                BasisActor, feature_kind=approximator, feature_cfg=feature_cfg
+            )
+            critic_factory = functools.partial(
+                BasisCritic, feature_kind=approximator, feature_cfg=feature_cfg
+            )
+            print(f"Approximator: {approximator} (curated feature map + linear head)")
+
         agent = Agent(
             state_size=train_env.observation_space.shape[0],
             action_size=train_env.action_space.shape[0],
@@ -1685,6 +1749,9 @@ def main():
             jump_iw_threshold=1e-3,
             # H8: Antithetic-pair averaged TD target
             use_antithetic_target=bool(int(args.use_antithetic_target)),
+            # Function approximator injection (None => default NN, bit-identical)
+            actor_factory=actor_factory,
+            critic_factory=critic_factory,
         )
         try:
             param_device = next(agent.actor_local.parameters()).device
