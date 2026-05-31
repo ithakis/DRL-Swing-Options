@@ -115,6 +115,53 @@ Key facts:
 - **Sweeps**: `tools/sweep_approximators.py` (Stage A tuning -> Stage B screening 24 seeds -> Stage C finalists, accurate kernel).  CSVs land in `logs/_sweep_approx/` in the `tools/stats_analysis.py` schema.
 - **Analysis**: `Jupyter Notebooks/8: Approximator Comparison.ipynb` (speed microbenchmark, correctness, screening/finalist stats, winner selection, end-to-end C++ port plan).  Isolated single-thread microbenchmark: poly ~2.0x, rbf/tiny_nn ~1.6x, rff ~1.45x updates/sec vs the NN.
 
+## Risk Management: Delta / Gamma (`src/greeks.py`)
+
+Pathwise Greeks via **CRN bump-and-revalue**.  In `simulate_hhk_spot`, `S0` enters *only* through
+`X[:,0]=log(S0)-f(0)`; every random draw is keyed off `seed` and is independent of `S0`.  Revaluing
+a frozen policy on bundles started at `{S0-dS, S0, S0+dS}` with **one shared seed** therefore reuses
+identical randomness — the bump is the near-deterministic multiplicative shift
+`S_t(S0')=S_t(S0)*exp(dlogS0*e^{-alpha t})` and the finite-difference noise cancels path-by-path.
+
+- `Delta ~= [V(S0+dS)-V(S0-dS)]/(2 dS)`, `Gamma ~= [V(S0+dS)-2V(S0)+V(S0-dS)]/dS^2`, relative bump
+  `dS=h*S0` (default `h=0.01`).  A 5-point stencil + Richardson `(h, h/2)` extrapolation cancels the
+  O(h^2) bias; `delta_se` (CRN std error) and `h_spread_*` are the reported error bars.
+- `bump_greeks(price_fn, S0, h, seed)` is policy-agnostic; `make_rl_price_fn(agent, contract,
+  hhk_params, n_paths)` adapts a trained Agent; `greeks_for_run(name)` loads a saved run end-to-end.
+- **Daily-rebalanced hedge**: `rl_dynamic_delta_hedge(agent, contract, hhk_params, S0)` computes the
+  per-date continuation Delta by spot-bump-and-re-roll (closed-form OU propagation of the bump, no
+  re-sim, via `_roll_from`), **conditions** it on the date-t state (Longstaff–Schwartz, so the hedge
+  ratio is F_t-measurable), and hedges with the HHK forward using the martingale increment
+  `DF_{t+1}(F_{t+1}-F_t)`.  `regression_forward_hedge(cf, spot, X, Y, q_before, ...)` is the
+  policy-agnostic regression-delta hedge used to compare RL vs LSM apples-to-apples.
+- Tests: `pytest tools/test_greeks.py` (estimator exactness on closed-form V, Richardson on a quartic,
+  CRN-coupling identity, `_roll_from` reproduces the canonical price, dynamic hedge is unbiased +
+  variance-reducing, saved-run sanity).  `Jupyter Notebooks/Hedging.ipynb`: 9-pt revalued PV/Δ/Γ grid
+  (RL vs LSM), daily hedge, RL-vs-LSM regression hedge, P&L with VaR/ES lines.
+
+## CLI flag cleanup (refactor/simplify-config) — status
+
+Done (this branch): deleted `logs/` (3.6 GB, reproducible), stale `Convex Costs Results 1–6/8.csv`,
+and the stale `.claude/worktrees/...` worktree.  IQN is already gone from `networks.py`.
+
+**Potential CLI removals — need sign-off (entangled with the canonical retrain).**  These are all
+*eval-safe* (evaluation uses `add_noise=False` and the saved-run JSONs don't pass them), so removing
+them does **not** change re-evaluation of the 6843 saved agents — but they are wired into the existing
+`Convex Cost Experiments/*.sh`, so prune them **together with** regenerating those scripts under a
+frozen kernel-on canonical:
+- Inert (documented no-op): `--final_lr_fraction`, `--lr_schedule_episodes`, `--min_lr`; dead `--compile`.
+- Training-only ablation knobs that lost: `--adaptive_noise_scale`, `--warmup_noise_fraction`,
+  `--single_critic_step` (drop the `=0` double-step), `--calibrate_bias_mode` (keep `closed_form`),
+  `--actor_type` (keep `standard`; `finance_informed` is already ignored at eval), and collapse
+  `--noise_schedule` to `linear` (drop `hyperbolic`/`const_floor`).
+
+**Do NOT remove without a retrain (eval-critical):** `--use_robust_normalization` and
+`--actor_output_activation` change the **actor forward pass** and are read from each saved run's JSON
+by `tools/rebuild_results_v7.build_agent`; the paper agents were trained with `use_robust_normalization=1`
+and `beta_sigmoid_3.0`.  Likewise keep `--weight_averaging` default `off` (an `ema` default would make
+`build_agent` use uninitialized EMA weights at eval).  Retire these only after re-baselining the paper
+runs on the new canonical.
+
 ## Architecture
 
 ### Data Flow
@@ -127,12 +174,15 @@ Key facts:
 |------|------|
 | `agent.py` | D4PG agent: actor-critic updates, exploration-noise schedules (pre-squash Gaussian; `hyperbolic`/`const_floor`/`linear`, canonical = linear σ0→floor), closed-form/Rprop `calibrate_bias` warm-start, eval-only EMA weight averaging, critic warmup, constant-LR target soft updates |
 | `swing_env.py` | Gymnasium environment: maps agent actions to exercise quantities, enforces contract constraints (q_min/q_max, Q_min/Q_max, refraction), computes discounted rewards with convex costs. Also contains `approximate_Q_T()` for HHK-based expected quantity estimation |
-| `networks.py` | Actor (profitability-gated with STE), Critic (standard TD), IQN (distributional, **not used in current paper**). Actor gates unprofitable exercises: `q_out = q_raw * 1[Pi(q) > 0]` |
+| `networks.py` | Actor (profitability-gated with STE), Critic (standard TD), and the curated-feature approximators (`CuratedFeatures`, `Poly/RFF/RBF/MLPFeatureMap`, `BasisActor`/`BasisCritic`). Actor gates unprofitable exercises: `q_out = q_raw * 1[Pi(q) > 0]`. (IQN was removed — no longer present.) |
 | `lsm_swing_pricer.py` | LSM baseline: Numba-accelerated backward induction with configurable basis functions (power/laguerre/hermite/chebyshev), polynomial degree, and regularization. Two modes: `LSM_minimal` (spot-only features) and `LSM_full` (full HHK+contract state). Net profitability gate applied at both terminal and non-terminal steps |
 | `simulate_hhk_spot.py` | HHK spot price simulation: S_t = exp(f(t) + X_t + Y_t) with mean-reverting OU diffusion and compound Poisson jumps. Uses Sobol quasi-random sequences, stratified sampling of terminal values |
 | `swing_contract.py` | Dataclass defining the swing option contract: local/global exercise bounds, strike, maturity, convex cost params (c, gamma), refraction periods |
 | `replay_buffer.py` | Circular replay buffer and Prioritized Experience Replay with Numba-accelerated Fenwick tree |
 | `agent_evaluation.py` | Shared evaluation logic: batch evaluation, statistics (option price, confidence intervals, exercise stats, bang-bangness) |
+| `transition_kernel.py` | Analytical HHK transition kernel (quadrature mesh) backing `--use_expected_target=1` deterministic TD targets |
+| `greeks.py` | Pathwise Delta/Gamma via CRN bump-and-revalue (`bump_greeks`, `make_rl_price_fn`, `greeks_for_run`); central differences + Richardson, relative bump `dS=h*S0` |
+| `hedging_utils.py` | HHK forward price (`hhk_forward_price`), P&L risk metrics (`compute_pnl_risk_metrics`), trace normalization/summary helpers |
 | `MultiPro.py` | Multiprocessing wrapper for parallel environment stepping |
 
 ### Top-Level Scripts
@@ -174,7 +224,8 @@ Key facts:
 | `6: Convex costs 0.04 Analysis` | Detailed case study; **generates Figures 1-3** for the paper (HHK paths, main results, bang-bangness) |
 | `7: Phase 1 Findings - Semi-Analytical Kernel` | Statistical summary of the semi-analytical kernel study (M_x isolation, hypothesis tests) |
 | `8: Approximator Comparison` | Compares the `--approximator` contenders: speed microbenchmark, correctness, screening/finalist stats, winner, end-to-end C++ port plan |
-| `Convex_Costs_Relationships` | Exploration of convex cost relationships |
+| `Hedging` | **Risk management** — pathwise Delta/Gamma via CRN bump (`src/greeks.py`), value/Δ/Γ-vs-spot curves, and a static HHK-forward hedge backtest. Figures → `figs/hedging_*.png` |
+| `Convex_Costs_Relationships` | Exploration of convex cost relationships (exploratory; candidate for removal) |
 
 ### Paper (`Paper/`)
 

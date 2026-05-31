@@ -39,6 +39,7 @@ make tensorboard
 Open the Jupyter Notebooks:
 - `5: Convex Costs LSM vs RL.ipynb` — Main comparison analysis
 - `6: Convex costs 0.04 Analysis.ipynb` — Detailed case study
+- `Hedging.ipynb` — Pathwise Delta/Gamma (CRN bump-and-revalue) and a forward-hedge backtest for risk management
 
 ### 5. Build The Paper
 
@@ -127,6 +128,42 @@ dY_t = -β Y_t dt + J dN_t        # Jump component
 
 ---
 
+## Recent Capabilities
+
+### Semi-Analytical Transition Kernel (`--use_expected_target=1`)
+
+Replaces the critic's single-sample TD bootstrap with an **analytical expectation over the HHK
+transition kernel**, making the TD target deterministic. Bit-identical to v61 when off. `M_x` is
+the sole controlling accuracy axis (`M_x=2` is a hard fast plateau). See `src/transition_kernel.py`
+and notebook 7.
+
+### Function Approximators (`--approximator`)
+
+With a deterministic target, the actor/critic front-end becomes the main lever for speed and
+C++-portability. `--approximator` swaps the `2×64 SiLU+LayerNorm` net for a curated feature map +
+linear head (`poly`/`rff`/`rbf`/`tiny_nn`). The `nn` default is bit-identical. See `src/networks.py`,
+`tools/test_approximators.py`, and notebook 8.
+
+### Risk Management: Delta / Gamma & Hedging
+
+`src/greeks.py` computes **pathwise Delta and Gamma** via Common-Random-Number bump-and-revalue:
+the policy is revalued on path bundles started at `{S0−δ, S0, S0+δ}` sharing one simulation seed
+(in HHK the seed-keyed draws are independent of `S0`, so the bump is near-deterministic and the
+finite-difference noise cancels). Central differences with a relative bump `δ=h·S0`, a 5-point
+stencil and Richardson `(h, h/2)` extrapolation give low-variance, low-bias Greeks. `Hedging.ipynb`
+adds a **9-point revalued PV/Δ/Γ grid (RL vs LSM)**, a **daily-rebalanced** delta hedge
+(`rl_dynamic_delta_hedge`: per-date continuation Δ by bump-and-re-roll, conditioned to be
+`F_t`-measurable, hedged with the HHK forward), an apples-to-apples RL-vs-LSM regression-delta hedge,
+and final P&L distributions with **VaR/ES** lines. Validated by `tools/test_greeks.py`.
+
+```python
+from src.greeks import greeks_for_run
+r = greeks_for_run("SwingOption_20_c0.04_gamma2_11", n_paths=16384, h=0.01, seed=999)
+print(r.delta, r.gamma, r.delta_se)   # CRN standard error is tiny
+```
+
+---
+
 ## Experiment Configuration
 
 ### Swing Contract
@@ -211,7 +248,13 @@ make train ARGS=' \
 | `--gamma_cost` | 1.0 | Convex cost exponent |
 | `-seed` | 0 | Random seed |
 | `-layer_size` | 64 | Network hidden size |
-| `-per` | 1 | Enable PER |
+| `--use_expected_target` | 0 | Replace the single-sample TD bootstrap with the analytical HHK transition-kernel expectation (deterministic target). Bit-identical to v61 when 0 |
+| `--kernel_M_x` | 4 | Gauss–Hermite nodes on the OU transition (sole controlling accuracy axis; `2` is the fast plateau) |
+| `--approximator` | nn | Actor/critic front-end: `nn` (default, bit-identical) or a curated feature map + linear head (`poly`/`rff`/`rbf`/`tiny_nn`) for C++-portable speed |
+
+> A fuller flag reference lives in `CLAUDE.md`. The config is being simplified on the
+> `refactor/simplify-config` branch — several legacy/ablation knobs are slated for removal
+> (see CLAUDE.md “CLI flag cleanup”).
 
 ---
 
@@ -247,14 +290,20 @@ make train ARGS=' \
 
 ## Analysis Notebooks
 
-| Notebook | Purpose |
-|----------|---------|
-| `1: Validation 1: Stochastic Process` | HHK simulation validation |
-| `2: Validation 2: LSM Pricing` | LSM benchmark validation |
-| `3: Training Dashboard` | TensorBoard metrics analysis |
-| `4: Evaluation 1: RL vs LSM Analysis` | Statistical comparison |
-| `5: Convex Costs LSM vs RL` | **Main results analysis** |
-| `6: Convex costs 0.04 Analysis` | Detailed case study; generates Figures 1–3 (HHK paths, main results, Bang-Bangness) |
+| Notebook | Purpose | Status |
+|----------|---------|--------|
+| `1: Validation 1: Stochastic Process` | HHK simulation validation | Stable |
+| `2: Validation 2: LSM Pricing` | LSM benchmark validation | Stable |
+| `3: Training Dashboard` | TensorBoard metrics analysis | Depends on deleted `logs/` — redo or drop |
+| `4: Evaluation 1: RL vs LSM Analysis` | Statistical comparison | Rerun under the kernel-on canonical |
+| `5: Convex Costs LSM vs RL` | **Main results analysis** | Rerun (paper figures) |
+| `6: Convex costs 0.04 Analysis` | Case study; generates Figures 1–3 (HHK paths, main results, Bang-Bangness) | Rerun (paper figures) |
+| `7: Phase 1 Findings — Semi-Analytical Kernel` | Statistical summary of the kernel study (M_x isolation, hypothesis tests) | Frozen research record |
+| `8: Approximator Comparison` | Speed/correctness/screening of the `--approximator` contenders | Frozen research record |
+| `Hedging` | Pathwise Delta/Gamma (CRN bump) + forward-hedge backtest | New |
+
+> The paper-figure notebooks (4–6) need a rerun once the simplified kernel-on canonical config
+> is frozen, since the underlying numbers shift. Notebook 1 (the stochastic process) is solid.
 
 ---
 
@@ -276,7 +325,10 @@ DRL-Swing-Options/
 ├── src/
 │   ├── agent.py                # D4PG agent implementation
 │   ├── swing_env.py            # Gymnasium environment
-│   ├── networks.py             # Actor/Critic/IQN networks
+│   ├── networks.py             # Actor/Critic + curated-feature approximators
+│   ├── transition_kernel.py    # Analytical HHK transition kernel (deterministic TD target)
+│   ├── greeks.py               # Pathwise Delta/Gamma (CRN bump-and-revalue)
+│   ├── hedging_utils.py        # HHK forward price, P&L risk metrics, trace helpers
 │   ├── lsm_swing_pricer.py     # LSM_minimal and LSM_full benchmarks
 │   ├── simulate_hhk_spot.py    # HHK simulation
 │   └── replay_buffer.py        # PER and circular buffers
@@ -299,16 +351,18 @@ DRL-Swing-Options/
 
 ### Hyperparameter Evolution
 
-The algorithm has evolved through 62 versions (see `HPT.md`). Key milestones:
+The algorithm has evolved through v1–v63 plus a post-v62 research phase (see `HPT.md`). Key milestones:
 - **v42**: Profitability-gated actor with STE
 - **v59**: Critic warmup + adaptive noise
-- **v61**: Current recommended for convex costs
+- **v61**: Paper configuration for convex costs (IQN off, standard critic)
+- **Post-v62**: Semi-analytical kernel (deterministic TD target), function approximators, and the
+  deterministic-target retune (closed-form warm-start, linear noise + eval-only EMA, faster critic LR)
 
 ### Architecture Summary
 
-- **Networks**: 2×64 MLPs, SiLU activation, LayerNorm
+- **Networks**: 2×64 MLPs, SiLU activation, LayerNorm (or a curated feature map via `--approximator`)
 - **PER**: Soft alpha ramp (0.1 → 0.2), beta ≈ 1.0
-- **Noise**: Pre-squash Gaussian, plateau + hyperbolic decay
+- **Noise**: Pre-squash Gaussian; canonical schedule is full-horizon **linear** σ0→floor decay
 - **Output**: β-sigmoid(3.0) for softer saturation
 
 ---
