@@ -1,0 +1,1979 @@
+\documentclass[10pt,a4paper,reqno]{amsart}
+\usepackage{amsthm,amssymb,amstext,graphicx,comment}
+\usepackage[foot]{amsaddr}
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{enumerate}
+\usepackage{amscd}
+\usepackage{mathtools}
+\usepackage[bibliography= common]{apxproof}
+\usepackage[linesnumbered,ruled,vlined]{algorithm2e}
+\SetKwInput{KwInput}{Input}                % Set the Input
+\SetKwInput{KwOutput}{Output}              % set the Output
+\newcommand{\KwContinue}{\bf continue}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage[table]{xcolor}% http://ctan.org/pkg/xcolor
+\usepackage{mathabx}
+\usepackage{bm}
+\newcommand{\XiI}{\Xi_1^{11}}
+\newcommand{\F}{\mathcal{F}}
+\newcommand{\XiII}{\Xi_1^{12}}
+\newcommand{\XiIII}{\Xi_1^{21}}
+\newcommand{\XiIV}{\Xi_1^{22}}
+\usepackage{bbm}
+\usepackage{subcaption}
+\usepackage{array}
+\usepackage{empheq}
+% \newcommand{\Hrow}{1.2}        % vertical spacing between rows
+% \newcommand{\W}{12}            % horizontal axis length
+% \newcommand{\h}{0.45}          % rectangle height
+
+% \tikzset{
+%   monthline/.style={thick},
+%   tick/.style      ={thick},
+%   tradable/.style  ={draw=black, fill=gray!30},
+%   held/.style      ={draw=black, fill=blue!30},
+%   lbl/.style       ={font=\small}
+% }
+
+% \usetikzlibrary{patterns.meta}
+
+% \tikzset{
+%     hash/.style={
+%         pattern={Lines[angle=45,distance=4pt,line width=.4pt]},
+%         pattern color=black!50
+%     },
+%     bluebox/.style={fill=blue!40},
+%     monthline/.style={thick,->},
+%     tick/.style={line width=.4pt},
+%     lbl/.style={font=\small}
+% }
+
+\usepackage{textcomp}
+\usepackage{multirow}
+\hypersetup{
+  colorlinks=true,
+  pdfauthor={© Sven Karbach},
+  pdfsubject={},
+  pdfkeywords={}
+}
+\makeatletter
+\newsavebox{\@brx}
+\newcommand{\llangle}[1][]{\savebox{\@brx}{\(\m@th{#1\langle}\)}%
+  \mathopen{\copy\@brx\kern-0.5\wd\@brx\usebox{\@brx}}}
+\newcommand{\rrangle}[1][]{\savebox{\@brx}{\(\m@th{#1\rangle}\)}%
+  \mathclose{\copy\@brx\kern-0.5\wd\@brx\usebox{\@brx}}}
+\makeatother
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator{\diag}{diag}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\<}{\langle}
+\renewcommand{\>}{\rangle}
+\usepackage{enumitem}
+\usepackage{empheq}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{bibentry}
+\usepackage{soul}
+\usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{eso-pic}
+\usepackage[capitalise]{cleveref}
+% \hypersetup{
+%  colorlinks=true,
+%  linkcolor=black,    % Color of internal links
+%  citecolor=black,    % Color of citations
+%  urlcolor=black,     % Color of URLs
+%  anchorcolor=black,  % Color of anchors
+%  pdftitle={},
+%  pdfauthor={© Sven Karbach},
+%  pdfsubject={},
+%  pdfkeywords={}
+% }
+\newcommand{\abs}[1]{\left|\left|#1\right|\right|}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{assumption}[theorem]{Assumption}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{proposition}[theorem]{Proposition}
+\setlength\parindent{0pt}
+\newtheoremstyle{example}
+  {.3\baselineskip}
+  {.3\baselineskip}
+  {\normalsize}  % BODYFONT
+  {0pt}       % INDENT (empty value is the same as 0pt)
+  {\bfseries} % HEADFONT
+  {.}         % HEADPUNCT
+  {5pt plus 1pt minus 1pt} % HEADSPACE
+  {}          % CUSTOM-HEAD-SPEC
+\theoremstyle{example}
+\DeclareMathOperator\Tr{Tr}
+\DeclareMathOperator\dom{dom}
+\DeclareMathOperator\Res{Res}
+\DeclareMathOperator\lin{lin}
+% \DeclareMathOperator\diag{diag}
+\DeclareMathOperator{\vect}{vec}
+\newcommand*\D{\mathop{}\!\mathrm{d}}
+% \newcommand*\E{\mathop{}\!\mathrm{e}}
+\newcommand*\I{\mathop{}\!\mathrm{i}}
+\def\e{{\mathrm{e}}}
+\def\S{{\mathcal S}}
+\def\R{{\mathcal R}}
+
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\Id}{\mathrm{Id}}
+\newcommand{\dvg}{\textbf{\mathrm{div}}}
+\newcommand{\grad}{\textbf{\mathrm{grad}}}
+\newcommand*\DD{\mathop{}\!\textnormal{D}}
+\newcommand{\dt}{\D t }
+\newcommand{\dnt}{\D^{n} t }
+\newcommand{\du}{\D u\;}
+\newcommand{\dx}{\D x }
+\newcommand{\dnx}{\D^{n} x }
+\newcommand{\dy}{\D y }
+\newcommand{\dz}{\D z }
+\newcommand{\dnu}{\D \nu }
+\newcommand{\dlambda}{\D \lambda}
+\newcommand{\dmuc}{\D \ol{\mu}}
+\newcommand{\op}[1]{\mathbf{#1}}
+\newcommand{\ve}{\mathbf{e}}
+\newcommand{\veb}{\mathbf{\bar e}}
+\newcommand{\vf}{\mathbf{f}}
+\newcommand{\sven}[1]{\textcolor{red}{[Sven: #1]}}
+\newcommand{\konstantinos}[1]{\textcolor{blue}{[Konstantinos: #1]}}
+
+\begin{document}
+
+
+\title[Forward-Curve Representation and Delta Hedging under the HHK Model]{Forward-Curve Representation and Delta Hedging under the HHK Model}
+
+
+
+\address{\today{}, Korteweg-de Vries Institute for Mathematics and Informatics
+  Institute at the University of Amsterdam, Science Park
+, 1098 XH, Amsterdam.}      
+
+\maketitle
+\vspace{-3mm}
+% \begin{center}
+%   \begin{tabular}{cc}
+    % \textsc{Konstantinos Chatziandreou} & \textsc{Sven Karbach} \\
+%     \small[\texttt{\MakeLowercase{k.chatziandreou@uva.nl}}] &
+%                                                               \small[\texttt{\MakeLowercase{sven@karbach.org}}]
+%     \\ 
+%   \end{tabular}
+% \end{center}
+
+\section{Forward-Curve Representation and Delta Hedging under the HHK Model}
+\label{sec:hedging_hhk}
+
+% In this section we derive the forward-curve sensitivities of the swing value under the HHK model
+% \eqref{eq:model}--\eqref{eq:jumpOU} and the convex-cost payoff \eqref{eq:payoff}. 
+
+The objective is to
+obtain the exact delta of the swing value with respect to the forward curve and, from it, the natural
+forward-strip hedging strategy.
+
+\subsection{Forward prices under the HHK model}
+
+For $0 \le t \le T$, define the forward price
+\[
+F_t^{[T]} := \mathbb{E}\!\left[S_T \mid \mathcal{F}_t\right].
+\]
+Let
+\[
+M_J(u) := \mathbb{E}\!\left[e^{uJ}\right]
+\]
+denote the moment generating function of a generic jump size $J$, whenever finite.
+
+\begin{proposition}[HHK forward representation]
+\label{prop:hhk_forward}
+Under \eqref{eq:model}--\eqref{eq:jumpOU}, for every $0 \le t \le T$,
+\begin{equation}
+\label{eq:hhk_forward_formula}
+F_t^{[T]}
+=
+\exp\!\Big(
+f(T)
++
+e^{-\alpha(T-t)} X_t
++
+e^{-\beta(T-t)} Y_t
++
+B(t,T)
+\Big),
+\end{equation}
+where
+\begin{equation}
+\label{eq:hhk_B}
+B(t,T)
+:=
+\frac{\sigma^2}{4\alpha}\Big(1-e^{-2\alpha(T-t)}\Big)
++
+\lambda \int_0^{T-t}
+\Big(
+M_J(e^{-\beta u})-1
+\Big)\,\D u.
+\end{equation}
+If, in addition, $J \sim \mathrm{Exp}(1/\mu_J)$ and $\mu_J<1$, then
+\begin{equation}
+\label{eq:hhk_B_exp}
+B(t,T)
+=
+\frac{\sigma^2}{4\alpha}\Big(1-e^{-2\alpha(T-t)}\Big)
++
+\frac{\lambda}{\beta}
+\log\!\Bigg(
+\frac{1-\mu_J e^{-\beta(T-t)}}{1-\mu_J}
+\Bigg).
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+The Ornstein--Uhlenbeck factor admits the explicit solution
+\begin{equation}
+\label{eq:X_solution_hedge}
+X_T
+=
+e^{-\alpha(T-t)} X_t
++
+\sigma \int_t^T e^{-\alpha(T-s)}\,\D W_s.
+\end{equation}
+Likewise, the spike factor satisfies
+\begin{equation}
+\label{eq:Y_solution_hedge}
+Y_T
+=
+e^{-\beta(T-t)} Y_t
++
+\sum_{t<\tau_\ell\le T} J_\ell e^{-\beta(T-\tau_\ell)},
+\end{equation}
+where $(\tau_\ell)_\ell$ are the jump times of $N$ after time $t$.
+
+Since $S_T=\exp(f(T)+X_T+Y_T)$, conditioning on $\mathcal{F}_t$ and using the independence of the
+Brownian and Poisson components yields
+\begin{align}
+F_t^{[T]}
+&=
+\mathbb{E}\!\left[
+\exp\!\big(f(T)+X_T+Y_T\big)
+\mid \mathcal{F}_t
+\right]
+\nonumber\\
+&=
+\exp\!\Big(
+f(T)+e^{-\alpha(T-t)}X_t+e^{-\beta(T-t)}Y_t
+\Big)
+\nonumber\\
+&\quad\times
+\mathbb{E}\!\left[
+\exp\!\Big(
+\sigma \int_t^T e^{-\alpha(T-s)}\,\D W_s
+\Big)
+\right]
+\,
+\mathbb{E}\!\left[
+\exp\!\Big(
+\sum_{t<\tau_\ell\le T} J_\ell e^{-\beta(T-\tau_\ell)}
+\Big)
+\right].
+\label{eq:forward_proof_split}
+\end{align}
+The Gaussian exponential moment gives
+\[
+\mathbb{E}\!\left[
+\exp\!\Big(
+\sigma \int_t^T e^{-\alpha(T-s)}\,\D W_s
+\Big)
+\right]
+=
+\exp\!\Big(
+\frac{\sigma^2}{2}
+\int_t^T e^{-2\alpha(T-s)}\,\D s
+\Big)
+=
+\exp\!\Big(
+\frac{\sigma^2}{4\alpha}(1-e^{-2\alpha(T-t)})
+\Big).
+\]
+For the jump term, the exponential formula for Poisson random measures gives
+\begin{align*}
+\mathbb{E}\!\left[
+\exp\!\Big(
+\sum_{t<\tau_\ell\le T} J_\ell e^{-\beta(T-\tau_\ell)}
+\Big)
+\right]
+&=
+\exp\!\Bigg(
+\lambda
+\int_t^T
+\Big(
+M_J(e^{-\beta(T-s)})-1
+\Big)\,\D s
+\Bigg) \\
+&=
+\exp\!\Bigg(
+\lambda
+\int_0^{T-t}
+\Big(
+M_J(e^{-\beta u})-1
+\Big)\,\D u
+\Bigg).
+\end{align*}
+Substituting these two identities into \eqref{eq:forward_proof_split} yields
+\eqref{eq:hhk_forward_formula}--\eqref{eq:hhk_B}.
+
+If $J\sim \mathrm{Exp}(1/\mu_J)$, then
+\[
+M_J(u)=\frac{1}{1-\mu_J u},
+\qquad
+u<\mu_J^{-1}.
+\]
+Hence
+\begin{align*}
+\lambda \int_0^{T-t}\Big(M_J(e^{-\beta u})-1\Big)\,\D u
+&=
+\lambda \int_0^{T-t}
+\frac{\mu_J e^{-\beta u}}{1-\mu_J e^{-\beta u}}\,\D u \\
+&=
+\frac{\lambda}{\beta}
+\log\!\Bigg(
+\frac{1-\mu_J e^{-\beta(T-t)}}{1-\mu_J}
+\Bigg),
+\end{align*}
+which proves \eqref{eq:hhk_B_exp}.
+\end{proof}
+
+\begin{corollary}[Multiplicative forward representation]
+\label{cor:mult_forward_rep}
+For every $0 \le t \le T$,
+\begin{equation}
+\label{eq:spot_forward_ratio_general}
+S_T = F_t^{[T]} \,\Lambda_{t,T},
+\end{equation}
+where
+\begin{equation}
+\label{eq:lambda_tT}
+\Lambda_{t,T}
+:=
+\exp\!\Bigg(
+\sigma \int_t^T e^{-\alpha(T-s)}\,\D W_s
++
+\sum_{t<\tau_\ell\le T} J_\ell e^{-\beta(T-\tau_\ell)}
+-
+B(t,T)
+\Bigg).
+\end{equation}
+In particular,
+\begin{equation}
+\label{eq:dS_dF_general}
+\frac{\partial S_T}{\partial F_t^{[T]}}
+=
+\Lambda_{t,T}
+=
+\frac{S_T}{F_t^{[T]}}.
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+Subtract \eqref{eq:hhk_forward_formula} from the logarithm of $S_T$, using
+\eqref{eq:X_solution_hedge}--\eqref{eq:Y_solution_hedge}. This gives
+\eqref{eq:spot_forward_ratio_general}. Since $S_T = F_t^{[T]} \Lambda_{t,T}$ and
+$\Lambda_{t,T}$ does not depend on $F_t^{[T]}$, differentiation immediately yields
+\eqref{eq:dS_dF_general}.
+\end{proof}
+
+A semimartingale form of the forward dynamics, useful for hedging, is obtained by introducing the
+compensated Poisson process
+\[
+\widetilde{N}_t := N_t - \lambda t.
+\]
+Then, for fixed $T$,
+\begin{equation}
+\label{eq:forward_sde_hedge}
+\frac{\D F_t^{[T]}}{F_{t-}^{[T]}}
+=
+\sigma e^{-\alpha(T-t)}\,\D W_t
++
+\Big(
+e^{J_t e^{-\beta(T-t)}}-1
+\Big)\,\D \widetilde{N}_t.
+\end{equation}
+Thus the hedge instruments in our setting are naturally the forwards $F_t^{[T]}$ for the remaining
+exercise maturities $T=t_i,\dots,t_{n-1}$.
+
+\subsection{Envelope theorem and the swing value as a function of the initial forward curve}
+
+We now write the swing value explicitly as a function of the initial forward curve on the exercise dates.
+Define
+\[
+\mathbf{F}_0
+:=
+\big(
+F_0^{[t_0]},F_0^{[t_1]},\dots,F_0^{[t_{n-1}]}
+\big).
+\]
+At the exercise dates $t_0,\dots,t_{n-1}$, the admissible control set is
+\[
+\mathcal{Q}
+:=
+\Bigg\{
+(q_{t_0},\dots,q_{t_{n-1}})
+\,:\,
+q_{t_i}\in[q_{\min},q_{\max}],
+\ 
+\sum_{i=0}^{n-1} q_{t_i}\le Q_{\max},
+\ 
+\text{all operational constraints are satisfied}
+\Bigg\}.
+\]
+The value of the swing contract is then
+\begin{equation}
+\label{eq:V0_forward_curve}
+V_0(\mathbf{F}_0)
+=
+\sup_{(q_{t_i})_{i=0}^{n-1}\in\mathcal{Q}}
+\mathbb{E}\!\Bigg[
+\sum_{i=0}^{n-1}
+e^{-r t_i}
+\Big(
+q_{t_i}(S_{t_i}-K)^+
+-
+c q_{t_i}^{\gamma_{\mathrm{cost}}}
+\Big)
+\Bigg].
+\end{equation}
+By Corollary~\ref{cor:mult_forward_rep}, for each exercise date $t_i$ we have
+\begin{equation}
+\label{eq:exercise_spot_forward}
+S_{t_i}
+=
+F_0^{[t_i]} \Lambda_{0,t_i},
+\qquad
+\Lambda_{0,t_i}
+=
+\frac{S_{t_i}}{F_0^{[t_i]}}.
+\end{equation}
+Hence \eqref{eq:V0_forward_curve} may be rewritten as
+\begin{equation}
+\label{eq:V0_forward_curve_explicit}
+V_0(\mathbf{F}_0)
+=
+\sup_{(q_{t_i})_{i=0}^{n-1}\in\mathcal{Q}}
+\mathbb{E}\!\Bigg[
+\sum_{i=0}^{n-1}
+e^{-r t_i}
+\Big(
+q_{t_i}(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+-
+c q_{t_i}^{\gamma_{\mathrm{cost}}}
+\Big)
+\Bigg].
+\end{equation}
+
+The crucial point is that, in our model, the admissible set $\mathcal{Q}$ depends on the contract
+specification (volume caps, refraction, ramping and other operational features), but does \emph{not}
+depend on the initial forward curve $\mathbf{F}_0$. This is precisely the structural condition required for
+the envelope-theorem argument.
+
+\begin{theorem}[Envelope theorem]
+\label{thm:envelope_general}
+Let $f:\mathbb{R}^n\times\mathbb{R}^{\ell}\to\mathbb{R}$ and
+$g_j:\mathbb{R}^n\times\mathbb{R}^{\ell}\to\mathbb{R}$, $j=1,\dots,m$, be continuously differentiable.
+Consider the constrained optimization problem
+\[
+V(\alpha)
+=
+\sup_{x\in\mathbb{R}^n}
+\big\{
+f(x,\alpha): g_j(x,\alpha)\ge 0,\ j=1,\dots,m
+\big\}.
+\]
+Let
+\[
+L(x,\mu,\alpha)
+=
+f(x,\alpha)+\sum_{j=1}^m \mu_j g_j(x,\alpha)
+\]
+be the associated Lagrangian. If $V$ is differentiable at $\alpha$ and $(x^*(\alpha),\mu^*(\alpha))$
+is a saddle point of the Lagrangian, then for each component $\alpha_k$,
+\[
+\frac{\partial V}{\partial \alpha_k}(\alpha)
+=
+\frac{\partial L}{\partial \alpha_k}\big(x^*(\alpha),\mu^*(\alpha),\alpha\big).
+\]
+\end{theorem}
+
+\subsection{Time-$0$ delta with respect to the initial forward curve}
+
+We now apply Theorem~\ref{thm:envelope_general} to the swing problem.
+
+\begin{proposition}[Time-$0$ forward-curve delta]
+\label{prop:time0_delta}
+Assume that an optimal exercise policy
+\[
+(q_{t_0}^*,\dots,q_{t_{n-1}}^*) \in \mathcal{Q}
+\]
+exists for \eqref{eq:V0_forward_curve_explicit}. Assume further that the map
+\[
+\mathbf{F}_0
+\longmapsto
+\mathbb{E}\!\Bigg[
+\sum_{i=0}^{n-1}
+e^{-r t_i}
+\Big(
+q_{t_i}^*(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+-
+c (q_{t_i}^*)^{\gamma_{\mathrm{cost}}}
+\Big)
+\Bigg]
+\]
+is continuously differentiable. Then, for every $i=0,\dots,n-1$,
+\begin{equation}
+\label{eq:time0_delta_main}
+\frac{\partial V_0}{\partial F_0^{[t_i]}}
+=
+e^{-r t_i}
+\mathbb{E}\!\left[
+q_{t_i}^*
+\mathbf{1}_{\{S_{t_i}>K\}}
+\frac{S_{t_i}}{F_0^{[t_i]}}
+\right].
+\end{equation}
+Equivalently,
+\begin{equation}
+\label{eq:time0_delta_main_alt}
+\frac{\partial V_0}{\partial F_0^{[t_i]}}
+=
+e^{-r t_i}
+\mathbb{E}\!\left[
+q_{t_i}^*
+\mathbf{1}_{\{F_0^{[t_i]}\Lambda_{0,t_i}>K\}}
+\Lambda_{0,t_i}
+\right].
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Define the objective
+\begin{equation}
+\label{eq:f_objective_hedge}
+f\big((q_{t_i})_{i=0}^{n-1},\mathbf{F}_0\big)
+:=
+\mathbb{E}\!\Bigg[
+\sum_{i=0}^{n-1}
+e^{-r t_i}
+\Big(
+q_{t_i}(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+-
+c q_{t_i}^{\gamma_{\mathrm{cost}}}
+\Big)
+\Bigg].
+\end{equation}
+Let $g_1,\dots,g_m$ denote all the constraint functions defining $\mathcal{Q}$:
+instantaneous exercise bounds, cumulative volume restriction, refraction constraints,
+ramping limits and any further operational constraints. By construction,
+\[
+g_j\big((q_{t_i})_{i=0}^{n-1},\mathbf{F}_0\big)
+=
+g_j\big((q_{t_i})_{i=0}^{n-1}\big),
+\qquad
+j=1,\dots,m,
+\]
+so that
+\begin{equation}
+\label{eq:g_no_forward_dep}
+\frac{\partial g_j}{\partial F_0^{[t_i]}} = 0,
+\qquad
+i=0,\dots,n-1,\quad j=1,\dots,m.
+\end{equation}
+
+Let
+\[
+L\big((q_{t_i})_{i=0}^{n-1},\mu,\mathbf{F}_0\big)
+=
+f\big((q_{t_i})_{i=0}^{n-1},\mathbf{F}_0\big)
++
+\sum_{j=1}^m \mu_j g_j\big((q_{t_i})_{i=0}^{n-1}\big)
+\]
+be the Lagrangian. Applying Theorem~\ref{thm:envelope_general} and using
+\eqref{eq:g_no_forward_dep}, we obtain
+\begin{equation}
+\label{eq:envelope_step_time0}
+\frac{\partial V_0}{\partial F_0^{[t_i]}}
+=
+\frac{\partial L}{\partial F_0^{[t_i]}}
+\big((q_{t_j}^*)_{j=0}^{n-1},\mu^*,\mathbf{F}_0\big)
+=
+\frac{\partial f}{\partial F_0^{[t_i]}}
+\big((q_{t_j}^*)_{j=0}^{n-1},\mathbf{F}_0\big).
+\end{equation}
+Thus no derivative of the optimizer $(q_{t_i}^*)_{i=0}^{n-1}$ appears.
+
+It remains to compute the partial derivative of $f$. Since only the $i$-th summand depends on
+$F_0^{[t_i]}$,
+\[
+\frac{\partial f}{\partial F_0^{[t_i]}}
+=
+e^{-r t_i}
+\frac{\partial}{\partial F_0^{[t_i]}}
+\mathbb{E}\!\left[
+q_{t_i}^*
+(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+\right].
+\]
+The convex cost term has zero direct derivative with respect to $F_0^{[t_i]}$.
+
+Because the factor $X_{t_i}$ contains a non-degenerate Gaussian component, the law of $S_{t_i}$ is
+continuous, hence
+\[
+\mathbb{P}(S_{t_i}=K)=0.
+\]
+Therefore the positive-part function is differentiable almost surely at
+$F_0^{[t_i]}\Lambda_{0,t_i}$, and
+\[
+\frac{\partial}{\partial F_0^{[t_i]}}
+(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+=
+\mathbf{1}_{\{F_0^{[t_i]}\Lambda_{0,t_i}>K\}}
+\Lambda_{0,t_i}.
+\]
+Moreover,
+\[
+\left|
+\frac{\partial}{\partial F_0^{[t_i]}}
+\Big(
+q_{t_i}^*
+(F_0^{[t_i]}\Lambda_{0,t_i}-K)^+
+\Big)
+\right|
+\le
+q_{\max}\Lambda_{0,t_i},
+\]
+and since
+\[
+\mathbb{E}[\Lambda_{0,t_i}] = 1,
+\]
+the right-hand side is integrable. Hence differentiation may be interchanged with expectation by dominated
+convergence. We conclude that
+\begin{align*}
+\frac{\partial V_0}{\partial F_0^{[t_i]}}
+&=
+e^{-r t_i}
+\mathbb{E}\!\left[
+q_{t_i}^*
+\mathbf{1}_{\{F_0^{[t_i]}\Lambda_{0,t_i}>K\}}
+\Lambda_{0,t_i}
+\right] \\
+&=
+e^{-r t_i}
+\mathbb{E}\!\left[
+q_{t_i}^*
+\mathbf{1}_{\{S_{t_i}>K\}}
+\frac{S_{t_i}}{F_0^{[t_i]}}
+\right],
+\end{align*}
+which proves \eqref{eq:time0_delta_main}--\eqref{eq:time0_delta_main_alt}.
+\end{proof}
+
+\begin{remark}
+\label{rem:delta_interpretation}
+Formula \eqref{eq:time0_delta_main} is the exact analogue, in our HHK setting, of the standard
+envelope-theorem swing delta with respect to the initial forward curve. Relative to the no-cost,
+linear-payoff case, two changes occur:
+\begin{enumerate}
+    \item the multiplicative factor is now the exact HHK ratio $S_{t_i}/F_0^{[t_i]}$;
+    \item the positive-part payoff contributes the indicator $\mathbf{1}_{\{S_{t_i}>K\}}$.
+\end{enumerate}
+The convex cost term $-c q_{t_i}^{\gamma_{\mathrm{cost}}}$ does not contribute directly to the derivative with
+respect to $F_0^{[t_i]}$, but it changes the optimizer $q_{t_i}^*$ and therefore affects the delta indirectly
+through the optimal exercise policy.
+\end{remark}
+
+\subsection{Dynamic delta strategy}
+
+For hedging, the relevant object is the \emph{continuation value} at a generic exercise date $t_i$.
+Define
+\begin{equation}
+\label{eq:continuation_value}
+V_i
+:=
+\operatorname*{ess\,sup}_{(q_{t_j})_{j=i}^{n-1}\in\mathcal{Q}_i}
+\mathbb{E}\!\Bigg[
+\sum_{j=i}^{n-1}
+e^{-r(t_j-t_i)}
+\Big(
+q_{t_j}(S_{t_j}-K)^+
+-
+c q_{t_j}^{\gamma_{\mathrm{cost}}}
+\Big)
+\Bigg|
+\mathcal{F}_{t_i}
+\Bigg],
+\end{equation}
+where $\mathcal{Q}_i$ is the set of remaining admissible controls given the current contract state at
+time $t_i$.
+
+Let
+\[
+\mathbf{F}_i
+:=
+\big(
+F_{t_i}^{[t_i]},F_{t_i}^{[t_{i+1}]},\dots,F_{t_i}^{[t_{n-1}]}
+\big)
+\]
+denote the forward curve observed at time $t_i$ over the remaining exercise dates. For every $j\ge i$,
+Corollary~\ref{cor:mult_forward_rep} gives
+\begin{equation}
+\label{eq:dynamic_forward_rep}
+S_{t_j}
+=
+F_{t_i}^{[t_j]}\Lambda_{t_i,t_j},
+\end{equation}
+where
+\begin{equation}
+\label{eq:dynamic_lambda}
+\Lambda_{t_i,t_j}
+:=
+\exp\!\Bigg(
+\sigma \int_{t_i}^{t_j} e^{-\alpha(t_j-s)}\,\D W_s
++
+\sum_{t_i<\tau_\ell\le t_j}
+J_\ell e^{-\beta(t_j-\tau_\ell)}
+-
+B(t_i,t_j)
+\Bigg).
+\end{equation}
+
+\begin{corollary}[Dynamic forward-curve delta]
+\label{cor:dynamic_delta}
+Assume that, for the continuation problem \eqref{eq:continuation_value}, an optimal continuation
+policy exists and the corresponding value function is differentiable with respect to the remaining
+forward curve $\mathbf{F}_i$. Then, for every $m=i,\dots,n-1$,
+\begin{equation}
+\label{eq:dynamic_delta_formula}
+\Delta_i^{(m)}
+:=
+\frac{\partial V_i}{\partial F_{t_i}^{[t_m]}}
+=
+e^{-r(t_m-t_i)}
+\mathbb{E}\!\left[
+q_{t_m}^*
+\mathbf{1}_{\{S_{t_m}>K\}}
+\frac{S_{t_m}}{F_{t_i}^{[t_m]}}
+\Bigg|
+\mathcal{F}_{t_i}
+\right].
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+The proof is identical to that of Proposition~\ref{prop:time0_delta}, except that all quantities are now
+conditional on $\mathcal{F}_{t_i}$ and the optimization is over the remaining admissible controls in
+$\mathcal{Q}_i$.
+\end{proof}
+
+In particular, since $F_{t_i}^{[t_i]} = S_{t_i}$, the prompt delta is
+\begin{equation}
+\label{eq:prompt_delta}
+\Delta_i^{(i)}
+=
+q_{t_i}^* \mathbf{1}_{\{S_{t_i}>K\}}.
+\end{equation}
+
+The natural delta hedge at time $t_i$ is therefore the forward strip
+\begin{equation}
+\label{eq:hedge_positions}
+\phi_i^{(m)} := \Delta_i^{(m)},
+\qquad
+m=i,\dots,n-1.
+\end{equation}
+That is, at time $t_i$ one holds $\phi_i^{(m)}$ units of the forward maturing at $t_m$.
+
+\subsection{Discrete-time hedging recursion}
+
+Consider the seller of the swing contract. Let $B_{t_i}$ denote the value of the hedging portfolio
+immediately \emph{after} the cash flow at time $t_i$ has been settled and the hedge has been rebalanced.
+Starting from the premium
+\[
+B_{t_0}=V_0,
+\]
+and using that forwards are zero-cost instruments at inception, the self-financing recursion over one step is
+\begin{equation}
+\label{eq:self_financing_recursion}
+B_{t_{i+1}}
+=
+e^{r\Delta t}
+\Big(
+B_{t_i}
+-
+\Pi_{t_i}(q_{t_i}^*)
+\Big)
++
+\sum_{m=i+1}^{n-1}
+\phi_i^{(m)}
+\Big(
+F_{t_{i+1}}^{[t_m]} - F_{t_i}^{[t_m]}
+\Big),
+\qquad i=0,\dots,n-2.
+\end{equation}
+The position $\phi_i^{(m)}$ is then reset at time $t_{i+1}$ to the new delta
+$\phi_{i+1}^{(m)}=\Delta_{i+1}^{(m)}$.
+
+The local first-order hedge relation is therefore
+\begin{equation}
+\label{eq:first_order_hedge_relation}
+V_{i+1}-\mathbb{E}[V_{i+1}\mid \mathcal{F}_{t_i}]
+\approx
+\sum_{m=i+1}^{n-1}
+\Delta_i^{(m)}
+\Big(
+F_{t_{i+1}}^{[t_m]} - F_{t_i}^{[t_m]}
+\Big),
+\end{equation}
+which identifies \eqref{eq:hedge_positions} as the exact forward-curve delta hedge.
+
+\begin{remark}[Incomplete-market interpretation]
+\label{rem:incomplete_market}
+The HHK model contains jump risk, while the spot itself is not directly tradable. Consequently, the
+market is incomplete and the strategy \eqref{eq:hedge_positions} is, in general, not a perfect replication
+strategy. What is exact is the \emph{first-order sensitivity}: \eqref{eq:time0_delta_main} and
+\eqref{eq:dynamic_delta_formula} are the exact deltas of the swing value with respect to the forward
+curve in our model.
+\end{remark}
+
+\begin{remark}[Delivery-period forwards]
+\label{rem:delivery_period_forwards}
+In practice, electricity forwards are usually quoted for delivery periods. If
+\[
+F_t^{[T_1,T_2]}
+=
+\int_{T_1}^{T_2}
+w(T;T_1,T_2)\,F_t^{[T]}\,\D T
+\]
+denotes the corresponding delivery-period forward, then a hedge in quoted bucket forwards is obtained
+by applying the chain rule to the instantaneous-forward deltas derived above, once a parametrization of
+the curve $T \mapsto F_t^{[T]}$ in terms of market quotes has been fixed.
+\end{remark}
+\section{Hedging with Delivery-Period Forwards Quoted in Energy Markets}
+\label{sec:delivery_period_hedging}
+
+In actual electricity markets, the hedge instruments are not the idealized instantaneous-maturity forwards
+$F_t^{[T]}$, but delivery-period forwards such as daily, weekly, monthly, quarterly, or yearly baseload
+products. In this section we extend the forward-curve delta calculus of
+Sections~\ref{sec:hedging_hhk}--\ref{eq:first_order_hedge_relation} to such quoted market instruments.
+
+The starting point is that a delivery-period forward is a weighted average of instantaneous forwards:
+\begin{equation}
+\label{eq:delivery_forward_def}
+F_t^{[T_1,T_2]}
+=
+\int_{T_1}^{T_2}
+w(T;T_1,T_2)\,F_t^{[T]}\,\D T,
+\qquad 0\le t\le T_1<T_2.
+\end{equation}
+The weight function depends on the settlement convention. Two standard examples are:
+\begin{equation}
+\label{eq:delivery_weights}
+w(T;T_1,T_2)
+=
+\frac{1}{T_2-T_1}
+\quad\text{(single settlement at the end of delivery),}
+\end{equation}
+and
+\begin{equation}
+\label{eq:delivery_weights_discounted}
+w(T;T_1,T_2)
+=
+\frac{r e^{-rT}}{e^{-rT_1}-e^{-rT_2}}
+\quad\text{(continuous / instantaneous settlement).}
+\end{equation}
+In both cases,
+\[
+\int_{T_1}^{T_2} w(T;T_1,T_2)\,\D T = 1.
+\]
+
+\subsection{Delivery-period forwards under the HHK model}
+
+Under Proposition~\ref{prop:hhk_forward}, the instantaneous forward is
+\[
+F_t^{[T]}
+=
+\exp\!\Big(
+f(T)
++
+e^{-\alpha(T-t)}X_t
++
+e^{-\beta(T-t)}Y_t
++
+B(t,T)
+\Big).
+\]
+Hence every quoted delivery-period forward admits the exact HHK representation
+\begin{equation}
+\label{eq:delivery_forward_hhk}
+F_t^{[T_1,T_2]}
+=
+\int_{T_1}^{T_2}
+w(T;T_1,T_2)
+\exp\!\Big(
+f(T)
++
+e^{-\alpha(T-t)}X_t
++
+e^{-\beta(T-t)}Y_t
++
+B(t,T)
+\Big)\,\D T.
+\end{equation}
+
+Thus the market-quoted hedge instruments are nonlinear functionals of the HHK state $(X_t,Y_t)$, but
+they are \emph{linear} functionals of the instantaneous forward curve $T \mapsto F_t^{[T]}$.
+
+\subsection{The swing delta as a measure on delivery time}
+
+Fix a rebalancing date $t_i$. From Corollary~\ref{cor:dynamic_delta}, the continuation value
+$V_i$ has instantaneous-forward deltas
+\[
+\Delta_i^{(m)}
+=
+\frac{\partial V_i}{\partial F_{t_i}^{[t_m]}}
+=
+e^{-r(t_m-t_i)}
+\mathbb{E}\!\left[
+q_{t_m}^*
+\mathbf{1}_{\{S_{t_m}>K\}}
+\frac{S_{t_m}}{F_{t_i}^{[t_m]}}
+\Bigg|
+\mathcal{F}_{t_i}
+\right],
+\qquad m=i,\dots,n-1.
+\]
+It is convenient to collect these deltas into the atomic measure
+\begin{equation}
+\label{eq:delta_measure}
+\mathfrak{D}_i(\D u)
+:=
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}\,\delta_{t_m}(\D u),
+\end{equation}
+where $\delta_{t_m}$ denotes the Dirac mass at $t_m$.
+
+For any deterministic perturbation $h$ of the instantaneous forward curve over the remaining exercise dates,
+the first variation of the continuation value is
+\begin{equation}
+\label{eq:gateaux_delta_measure}
+\DD V_i[h]
+=
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}\,h(t_m)
+=
+\int h(u)\,\mathfrak{D}_i(\D u).
+\end{equation}
+Hence the swing delta is most naturally viewed as a signed measure on delivery time.
+
+\subsection{Market-curve parametrization by quoted delivery products}
+
+Let the hedge universe at time $t_i$ consist of $p$ quoted delivery-period forwards
+\[
+G_i^a := F_{t_i}^{[T_1^a,T_2^a]},
+\qquad a=1,\dots,p.
+\]
+To express the instantaneous forward curve in terms of quoted products, we introduce deterministic
+shape functions $\psi_a(\cdot)$ on the delivery horizon such that
+\begin{equation}
+\label{eq:curve_reconstruction}
+F_{t_i}^{[u]}
+=
+\sum_{a=1}^p \psi_a(u)\,G_i^a,
+\qquad u\in[t_i,\bar T],
+\end{equation}
+for some terminal date $\bar T \ge t_{n-1}$ covering all remaining exercise dates.
+
+For consistency with quoted market prices, the shape functions must satisfy the normalization identities
+\begin{equation}
+\label{eq:shape_normalization}
+\int_{T_1^b}^{T_2^b}
+w(T;T_1^b,T_2^b)\,\psi_a(T)\,\D T
+=
+\delta_{ab},
+\qquad a,b=1,\dots,p.
+\end{equation}
+Indeed, inserting \eqref{eq:curve_reconstruction} into \eqref{eq:delivery_forward_def} yields
+\[
+F_{t_i}^{[T_1^b,T_2^b]}
+=
+\sum_{a=1}^p G_i^a
+\int_{T_1^b}^{T_2^b}
+w(T;T_1^b,T_2^b)\,\psi_a(T)\,\D T
+=
+G_i^b.
+\]
+
+\begin{remark}
+\label{rem:shape_choice}
+The representation \eqref{eq:curve_reconstruction} is the mathematical bridge between idealized
+instantaneous-forward hedging and actual market hedging. Typical choices are:
+\begin{enumerate}
+    \item \emph{piecewise-flat buckets:}
+    \[
+    \psi_a(u)=\mathbf{1}_{[T_1^a,T_2^a)}(u),
+    \]
+    for a partition of the delivery horizon into disjoint quoted buckets;
+    \item \emph{piecewise-polynomial or spline shapes}, calibrated so that
+    \eqref{eq:shape_normalization} holds;
+    \item \emph{seasonality-corrected shapes}, where the intrabucket profile is prescribed
+    by a deterministic seasonal pattern and only the bucket levels are quoted by the market.
+\end{enumerate}
+Once \eqref{eq:curve_reconstruction} is fixed, the hedge in quoted delivery forwards is fully determined.
+\end{remark}
+
+\subsection{Exact chain-rule deltas with respect to quoted delivery forwards}
+
+We now differentiate the continuation value with respect to the quoted products $G_i^a$.
+
+\begin{proposition}[Quoted-product delta]
+\label{prop:quoted_product_delta}
+Assume that at time $t_i$ the remaining instantaneous forward curve admits the representation
+\eqref{eq:curve_reconstruction}. Then the continuation value $V_i$, viewed as a function of the quoted
+market vector
+\[
+\mathbf{G}_i := (G_i^1,\dots,G_i^p),
+\]
+has deltas
+\begin{equation}
+\label{eq:quoted_delta_formula}
+\Gamma_i^{(a)}
+:=
+\frac{\partial V_i}{\partial G_i^a}
+=
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}\,\psi_a(t_m),
+\qquad a=1,\dots,p.
+\end{equation}
+Equivalently, in measure form,
+\begin{equation}
+\label{eq:quoted_delta_measure}
+\Gamma_i^{(a)}
+=
+\int \psi_a(u)\,\mathfrak{D}_i(\D u).
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+By \eqref{eq:curve_reconstruction}, for each remaining exercise date $t_m$,
+\[
+F_{t_i}^{[t_m]}
+=
+\sum_{a=1}^p \psi_a(t_m)\,G_i^a.
+\]
+Hence, by the chain rule,
+\begin{align*}
+\frac{\partial V_i}{\partial G_i^a}
+&=
+\sum_{m=i}^{n-1}
+\frac{\partial V_i}{\partial F_{t_i}^{[t_m]}}
+\frac{\partial F_{t_i}^{[t_m]}}{\partial G_i^a} \\
+&=
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}\,\psi_a(t_m),
+\end{align*}
+which proves \eqref{eq:quoted_delta_formula}. Formula
+\eqref{eq:quoted_delta_measure} is just \eqref{eq:quoted_delta_formula} rewritten using
+\eqref{eq:delta_measure}.
+\end{proof}
+
+\begin{corollary}[Piecewise-flat market buckets]
+\label{cor:piecewise_flat_bucket_delta}
+Suppose the quoted products form a partition of the relevant delivery horizon into disjoint buckets
+\[
+I_a=[T_1^a,T_2^a), \qquad a=1,\dots,p,
+\]
+and that the instantaneous forward curve is piecewise constant on these buckets:
+\[
+F_{t_i}^{[u]}
+=
+\sum_{a=1}^p G_i^a\,\mathbf{1}_{I_a}(u).
+\]
+Then
+\begin{equation}
+\label{eq:bucket_sum_delta}
+\Gamma_i^{(a)}
+=
+\sum_{\substack{m=i,\dots,n-1\\ t_m \in I_a}}
+\Delta_i^{(m)},
+\qquad a=1,\dots,p.
+\end{equation}
+Thus the delta of a monthly (or quarterly) quoted forward is the sum of the exercise-date deltas falling
+into that delivery bucket.
+\end{corollary}
+
+\begin{proof}
+In this case, $\psi_a(u)=\mathbf{1}_{I_a}(u)$ in \eqref{eq:quoted_delta_formula}.
+\end{proof}
+
+\subsection{Dynamics of quoted delivery-period forwards}
+
+To formulate a practical hedge and, later, a variance-optimal projection, we now derive the dynamics
+of the quoted products.
+
+Let $\mu(\D t,\D z)$ denote the jump measure associated with the marked Poisson process of jump sizes,
+with compensator
+\[
+\lambda \nu(\D z)\,\D t,
+\]
+where $\nu$ is the law of a generic jump size $J$, and let
+\[
+\widetilde{\mu}(\D t,\D z)
+:=
+\mu(\D t,\D z)-\lambda\nu(\D z)\,\D t
+\]
+be the compensated jump measure.
+
+For every instantaneous forward with maturity $T$, the HHK dynamics imply
+\begin{equation}
+\label{eq:instant_forward_prm}
+\D F_t^{[T]}
+=
+\sigma e^{-\alpha(T-t)}F_t^{[T]}\,\D W_t
++
+\int_{\mathbb{R}_+}
+F_{t-}^{[T]}\Big(e^{z e^{-\beta(T-t)}}-1\Big)\,\widetilde{\mu}(\D t,\D z).
+\end{equation}
+Integrating over a delivery period yields the product dynamics.
+
+\begin{proposition}[Quoted-product semimartingale dynamics]
+\label{prop:quoted_product_dynamics}
+For a quoted delivery-period forward
+\[
+G_t^a := F_t^{[T_1^a,T_2^a]},
+\]
+define
+\begin{equation}
+\label{eq:Aa_def}
+A_t^a
+:=
+\sigma
+\int_{T_1^a}^{T_2^a}
+w(T;T_1^a,T_2^a)\,
+e^{-\alpha(T-t)}F_t^{[T]}\,\D T,
+\end{equation}
+and
+\begin{equation}
+\label{eq:Ba_def}
+B_t^a(z)
+:=
+\int_{T_1^a}^{T_2^a}
+w(T;T_1^a,T_2^a)\,
+F_{t-}^{[T]}
+\Big(
+e^{z e^{-\beta(T-t)}}-1
+\Big)\,\D T.
+\end{equation}
+Then
+\begin{equation}
+\label{eq:quoted_product_semimart}
+\D G_t^a
+=
+A_t^a\,\D W_t
++
+\int_{\mathbb{R}_+}
+B_t^a(z)\,\widetilde{\mu}(\D t,\D z).
+\end{equation}
+Consequently, the predictable quadratic covariation of two quoted products is
+\begin{equation}
+\label{eq:quoted_product_pqc}
+\D\langle G^a,G^b\rangle_t^{p}
+=
+A_t^aA_t^b\,\D t
++
+\lambda
+\int_{\mathbb{R}_+}
+B_t^a(z)B_t^b(z)\,\nu(\D z)\,\D t.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Insert \eqref{eq:instant_forward_prm} into \eqref{eq:delivery_forward_def} and apply stochastic Fubini's
+theorem. Formula \eqref{eq:quoted_product_pqc} follows from the orthogonality of the Brownian and
+compensated-jump martingale parts.
+\end{proof}
+
+For later use, the predictable quadratic covariation between a quoted product and an instantaneous forward
+with maturity $u \ge t$ is
+\begin{equation}
+\label{eq:cross_pqc_product_inst}
+\D\langle G^a,F^{[u]}\rangle_t^{p}
+=
+A_t^a\,
+\sigma e^{-\alpha(u-t)}F_t^{[u]}\,\D t
++
+\lambda
+\int_{\mathbb{R}_+}
+B_t^a(z)\,
+F_{t-}^{[u]}
+\Big(
+e^{z e^{-\beta(u-t)}}-1
+\Big)\,
+\nu(\D z)\,\D t.
+\end{equation}
+
+\subsection{Exact first-order hedge in quoted products}
+
+Let
+\[
+\boldsymbol{\Gamma}_i
+:=
+\big(\Gamma_i^{(1)},\dots,\Gamma_i^{(p)}\big)^\top
+\]
+be the vector of quoted-product deltas from Proposition~\ref{prop:quoted_product_delta}.
+Define the hedge positions
+\begin{equation}
+\label{eq:quoted_hedge_positions}
+\eta_i^{(a)} := \Gamma_i^{(a)},
+\qquad a=1,\dots,p.
+\end{equation}
+Then, for every admissible curve perturbation generated by variations of the quoted market vector
+$\mathbf{G}_i$, the first-order change of the continuation value satisfies
+\begin{equation}
+\label{eq:exact_first_order_quoted}
+\DD V_i[h_{\delta \mathbf{G}}]
+=
+\sum_{a=1}^p \eta_i^{(a)}\,\delta G_i^a,
+\end{equation}
+where
+\[
+h_{\delta \mathbf{G}}(u)
+=
+\sum_{a=1}^p \psi_a(u)\,\delta G_i^a.
+\]
+Thus \eqref{eq:quoted_hedge_positions} is the exact first-order hedge \emph{within the chosen market
+representation of the forward curve}.
+
+In discrete time, the self-financing hedge recursion becomes
+\begin{equation}
+\label{eq:self_financing_quoted}
+B_{t_{i+1}}
+=
+e^{r\Delta t}
+\Big(
+B_{t_i}-\Pi_{t_i}(q_{t_i}^*)
+\Big)
++
+\sum_{a=1}^p
+\eta_i^{(a)}
+\Big(
+G_{t_{i+1}}^a-G_{t_i}^a
+\Big),
+\qquad i=0,\dots,n-2.
+\end{equation}
+
+\subsection{Variance-optimal hedge when the quoted products do not span the full curve}
+
+In practice, the quoted hedge universe may be too small to describe all exercise-date forward exposures
+exactly. Then one should project the idealized instantaneous-forward hedge onto the span of the quoted
+products.
+
+Let
+\[
+\Delta G_i^a := G_{t_{i+1}}^a-G_{t_i}^a,
+\qquad
+\Delta \mathbf{G}_i := (\Delta G_i^1,\dots,\Delta G_i^p)^\top,
+\]
+and define the centered one-step change of the continuation value by
+\[
+\Delta \widetilde V_i
+:=
+V_{i+1}-\mathbb{E}[V_{i+1}\mid \mathcal{F}_{t_i}].
+\]
+The locally variance-optimal quoted-product hedge is the solution of
+\begin{equation}
+\label{eq:vo_problem}
+\eta_i^{\mathrm{vo}}
+=
+\operatorname*{arg\,min}_{\eta\in\mathbb{R}^p}
+\mathbb{E}\!\left[
+\big(
+\Delta \widetilde V_i-\eta^\top \Delta \mathbf{G}_i
+\big)^2
+\Big|
+\mathcal{F}_{t_i}
+\right].
+\end{equation}
+
+\begin{proposition}[Local variance-optimal quoted-product hedge]
+\label{prop:vo_quoted}
+Assume the conditional covariance matrix
+\[
+C_i
+:=
+\mathbb{E}\!\left[
+\Delta \mathbf{G}_i\,\Delta \mathbf{G}_i^\top
+\Big|
+\mathcal{F}_{t_i}
+\right]
+\]
+is invertible. Then the unique solution to \eqref{eq:vo_problem} is
+\begin{equation}
+\label{eq:vo_solution}
+\eta_i^{\mathrm{vo}}
+=
+C_i^{-1} b_i,
+\qquad
+b_i
+:=
+\mathbb{E}\!\left[
+\Delta \mathbf{G}_i\,\Delta \widetilde V_i
+\Big|
+\mathcal{F}_{t_i}
+\right].
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Expand the conditional quadratic criterion in \eqref{eq:vo_problem} and differentiate with respect to
+$\eta$. The normal equations are
+\[
+C_i \eta = b_i.
+\]
+Since $C_i$ is invertible, the solution is \eqref{eq:vo_solution}.
+\end{proof}
+
+To connect \eqref{eq:vo_solution} with the delta formulas derived earlier, use the first-order
+approximation
+\begin{equation}
+\label{eq:delta_linearization_value}
+\Delta \widetilde V_i
+\approx
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}
+\Big(
+F_{t_{i+1}}^{[t_m]}-F_{t_i}^{[t_m]}
+\Big).
+\end{equation}
+Then
+\begin{equation}
+\label{eq:bi_delta_approx}
+b_i^a
+\approx
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}
+\,
+\mathbb{E}\!\left[
+\Delta G_i^a
+\Big(
+F_{t_{i+1}}^{[t_m]}-F_{t_i}^{[t_m]}
+\Big)
+\Big|
+\mathcal{F}_{t_i}
+\right].
+\end{equation}
+The conditional covariances entering \eqref{eq:bi_delta_approx} are determined, to first order in
+$\Delta t$, by the predictable covariations
+\eqref{eq:quoted_product_pqc} and \eqref{eq:cross_pqc_product_inst}.
+
+\begin{corollary}[Reduction to the exact chain-rule hedge]
+\label{cor:vo_equals_chain_rule}
+Suppose the market-curve parametrization \eqref{eq:curve_reconstruction} is exact over the relevant
+delivery horizon, so that for one-step changes
+\[
+F_{t_{i+1}}^{[t_m]}-F_{t_i}^{[t_m]}
+=
+\sum_{a=1}^p
+\psi_a(t_m)\,
+\Delta G_i^a,
+\qquad m=i,\dots,n-1.
+\]
+Then
+\[
+\eta_i^{\mathrm{vo}}=\boldsymbol{\Gamma}_i.
+\]
+Hence the local variance-optimal hedge coincides with the exact chain-rule quoted-product delta hedge.
+\end{corollary}
+
+\begin{proof}
+Using the exact representation of the forward increments and \eqref{eq:delta_linearization_value},
+\[
+\Delta \widetilde V_i
+\approx
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}
+\sum_{a=1}^p \psi_a(t_m)\Delta G_i^a
+=
+\sum_{a=1}^p
+\Gamma_i^{(a)}\Delta G_i^a
+=
+\boldsymbol{\Gamma}_i^\top \Delta \mathbf{G}_i.
+\]
+Therefore,
+\[
+b_i
+=
+\mathbb{E}\!\left[
+\Delta \mathbf{G}_i\Delta \mathbf{G}_i^\top
+\Big|
+\mathcal{F}_{t_i}
+\right]
+\boldsymbol{\Gamma}_i
+=
+C_i \boldsymbol{\Gamma}_i,
+\]
+and \eqref{eq:vo_solution} yields
+\[
+\eta_i^{\mathrm{vo}}=\boldsymbol{\Gamma}_i.
+\]
+\end{proof}
+
+\subsection{Interpretation}
+
+The extension from instantaneous forwards to actual market instruments is therefore mathematically clean.
+
+First, one computes the ideal swing deltas
+\[
+\Delta_i^{(m)} = \frac{\partial V_i}{\partial F_{t_i}^{[t_m]}}
+\]
+at the exercise dates.
+
+Second, one specifies how the market quotes $(G_i^a)_{a=1}^p$ reconstruct the instantaneous forward
+curve through \eqref{eq:curve_reconstruction}. This induces the quoted-product deltas
+\[
+\Gamma_i^{(a)}
+=
+\sum_{m=i}^{n-1}
+\Delta_i^{(m)}\psi_a(t_m).
+\]
+
+Third, one hedges in the actually traded delivery-period forwards using either:
+\begin{enumerate}
+    \item the exact first-order chain-rule hedge $\eta_i^{(a)}=\Gamma_i^{(a)}$ when the chosen market
+    parametrization spans the relevant forward-curve deformations, or
+    \item the local variance-optimal projection $\eta_i^{\mathrm{vo}}=C_i^{-1}b_i$ when the hedge
+    universe is incomplete.
+\end{enumerate}
+
+Thus the mathematically correct object being hedged is not a single scalar delta, but the forward-curve
+delta measure \eqref{eq:delta_measure}; the market hedge is obtained by pushing this measure through
+the quoted-product basis of the delivery curve.
+
+
+%========================================================
+% INSERT THIS AFTER THE DELIVERY-PERIOD HEDGING SECTION
+%========================================================
+
+\subsection{RL-Based Implementation of Pricing and Hedging}
+\label{sec:rl_pricing_hedging_impl}
+
+We now give an implementable algorithmic procedure that connects the pricing policy learned by deep
+reinforcement learning to the forward-curve hedge derived in
+Sections~\ref{sec:hedging_hhk}--\ref{sec:delivery_period_hedging}. The key point is that the trained
+actor $\pi_\theta$ is used in two roles:
+
+\begin{enumerate}
+    \item as the policy generating the optimal exercise quantities along simulated HHK paths, and
+    \item as the policy defining the continuation-value and delta estimators used to construct the hedge.
+\end{enumerate}
+
+At each exercise date $t_i$, let $s_i$ denote the pre-exercise state and let
+\[
+q_{t_i}^{\pi_\theta} := \mathcal{A}(s_i,\pi_\theta(s_i))
+\]
+be the feasible action produced by the trained actor after denormalization, profitability gating,
+cumulative-volume clipping, and operational masking. Here $\mathcal{A}$ denotes the full feasibility map
+implemented by the environment and the actor gate from Section~\ref{sec:profitability_gate}.
+
+For a quoted hedge universe
+\[
+\mathbf{G}_i = (G_i^1,\dots,G_i^p)^\top,
+\qquad
+G_i^a = F_{t_i}^{[T_1^a,T_2^a]},
+\]
+assume the remaining instantaneous forward curve is reconstructed through
+\begin{equation}
+\label{eq:rl_impl_curve_reconstruction}
+F_{t_i}^{[u]}
+=
+\sum_{a=1}^p \psi_a(u)\,G_i^a,
+\qquad
+u\in[t_i,\bar T].
+\end{equation}
+
+\paragraph{Policy rollout price estimator.}
+For any state $s_i$ and quoted forward vector $\mathbf{G}_i$, define the risk-neutral rollout price under
+the learned policy by
+\begin{equation}
+\label{eq:policy_value_estimator}
+\widehat{V}_i^{\pi_\theta}(s_i,\mathbf{G}_i)
+:=
+\frac{1}{M_V}
+\sum_{\ell=1}^{M_V}
+\sum_{m=i}^{n-1}
+e^{-r(t_m-t_i)}
+\Big(
+q_{t_m}^{(\ell)}(S_{t_m}^{(\ell)}-K)^+
+-
+c \big(q_{t_m}^{(\ell)}\big)^{\gamma_{\mathrm{cost}}}
+\Big),
+\end{equation}
+where, on rollout $\ell$, the process
+\[
+\big(X_{t_m}^{(\ell)},Y_{t_m}^{(\ell)},S_{t_m}^{(\ell)}\big)_{m=i}^{n-1}
+\]
+is simulated under the HHK model conditional on the current state at time $t_i$, and the actions
+$q_{t_m}^{(\ell)}$ are generated recursively by the feasible actor policy.
+
+\paragraph{Continuation-value estimator after the current exercise.}
+At time $t_i$, once the current exercise $q_{t_i}^{\pi_\theta}$ has been fixed and the inventory / refraction
+state has been updated, let $\bar s_i$ denote the post-exercise state. The continuation value is estimated by
+\begin{equation}
+\label{eq:continuation_value_estimator_impl}
+\widehat{V}_{i,\mathrm{cont}}^{\pi_\theta}(\bar s_i,\mathbf{G}_i)
+:=
+\frac{1}{M_\Delta}
+\sum_{\ell=1}^{M_\Delta}
+\sum_{m=i+1}^{n-1}
+e^{-r(t_m-t_i)}
+\Big(
+q_{t_m}^{(\ell)}(S_{t_m}^{(\ell)}-K)^+
+-
+c \big(q_{t_m}^{(\ell)}\big)^{\gamma_{\mathrm{cost}}}
+\Big).
+\end{equation}
+
+\paragraph{Instantaneous-forward delta estimator.}
+Using Corollary~\ref{cor:dynamic_delta}, for every future exercise date $t_m$, $m=i+1,\dots,n-1$, define
+the Monte Carlo estimator
+\begin{equation}
+\label{eq:delta_mc_estimator_impl}
+\widehat{\Delta}_i^{(m)}
+:=
+\frac{e^{-r(t_m-t_i)}}{M_\Delta\,F_{t_i}^{[t_m]}}
+\sum_{\ell=1}^{M_\Delta}
+q_{t_m}^{(\ell)}
+\mathbf{1}_{\{S_{t_m}^{(\ell)}>K\}}
+S_{t_m}^{(\ell)}.
+\end{equation}
+This is the discrete implementation of
+\[
+\Delta_i^{(m)}
+=
+e^{-r(t_m-t_i)}
+\mathbb{E}\!\left[
+q_{t_m}^*
+\mathbf{1}_{\{S_{t_m}>K\}}
+\frac{S_{t_m}}{F_{t_i}^{[t_m]}}
+\Bigg|
+\mathcal{F}_{t_i}
+\right].
+\]
+
+\paragraph{Quoted-product delta estimator.}
+Define the shape matrix
+\begin{equation}
+\label{eq:shape_matrix_impl}
+\Psi_i
+\in \mathbb{R}^{p\times(n-i-1)},
+\qquad
+[\Psi_i]_{a,m-i}
+:=
+\psi_a(t_m),
+\qquad
+a=1,\dots,p,\quad m=i+1,\dots,n-1.
+\end{equation}
+Let
+\[
+\widehat{\boldsymbol{\Delta}}_i
+:=
+\big(
+\widehat{\Delta}_i^{(i+1)},\dots,\widehat{\Delta}_i^{(n-1)}
+\big)^\top.
+\]
+Then the exact first-order quoted-product hedge is
+\begin{equation}
+\label{eq:quoted_delta_mc_impl}
+\widehat{\boldsymbol{\Gamma}}_i
+=
+\Psi_i \widehat{\boldsymbol{\Delta}}_i,
+\qquad
+\widehat{\Gamma}_i^{(a)}
+=
+\sum_{m=i+1}^{n-1}
+\widehat{\Delta}_i^{(m)}\psi_a(t_m).
+\end{equation}
+
+\paragraph{Variance-optimal projection.}
+If the quoted hedge universe does not span the relevant forward-curve deformations, then the hedge is
+obtained by the local variance-optimal projection. For one-step scenarios
+$\ell=1,\dots,M_{\mathrm{vo}}$, define
+\[
+\Delta \mathbf{G}_i^{(\ell)}
+:=
+\mathbf{G}_{i+1}^{(\ell)}-\mathbf{G}_i,
+\qquad
+\Delta \widetilde V_i^{(\ell)}
+:=
+\widehat{V}_{i+1}^{\pi_\theta}\!\big(s_{i+1}^{(\ell)},\mathbf{G}_{i+1}^{(\ell)}\big)
+-
+\frac{1}{M_{\mathrm{vo}}}
+\sum_{k=1}^{M_{\mathrm{vo}}}
+\widehat{V}_{i+1}^{\pi_\theta}\!\big(s_{i+1}^{(k)},\mathbf{G}_{i+1}^{(k)}\big).
+\]
+Then
+\begin{equation}
+\label{eq:vo_cov_est_impl}
+\widehat{C}_i
+:=
+\frac{1}{M_{\mathrm{vo}}-1}
+\sum_{\ell=1}^{M_{\mathrm{vo}}}
+\big(\Delta \mathbf{G}_i^{(\ell)}-\overline{\Delta \mathbf{G}}_i\big)
+\big(\Delta \mathbf{G}_i^{(\ell)}-\overline{\Delta \mathbf{G}}_i\big)^\top,
+\end{equation}
+\begin{equation}
+\label{eq:vo_cross_est_impl}
+\widehat{b}_i
+:=
+\frac{1}{M_{\mathrm{vo}}-1}
+\sum_{\ell=1}^{M_{\mathrm{vo}}}
+\big(\Delta \mathbf{G}_i^{(\ell)}-\overline{\Delta \mathbf{G}}_i\big)
+\big(\Delta \widetilde V_i^{(\ell)}-\overline{\Delta \widetilde V}_i\big),
+\end{equation}
+and the regularized variance-optimal hedge is
+\begin{equation}
+\label{eq:vo_hedge_impl}
+\widehat{\boldsymbol{\eta}}_i^{\mathrm{vo}}
+=
+\big(\widehat{C}_i+\varepsilon_{\mathrm{reg}} I_p\big)^{-1}\widehat{b}_i.
+\end{equation}
+
+\paragraph{Self-financing update.}
+Let $B_{t_i}$ denote the hedging portfolio value at time $t_i$, and let
+$\boldsymbol{\eta}_i$ be the quoted-product hedge chosen at time $t_i$. Then the discrete-time
+self-financing recursion is
+\begin{equation}
+\label{eq:self_financing_impl}
+B_{t_{i+1}}
+=
+e^{r\Delta t}
+\Big(
+B_{t_i} - \Pi_{t_i}(q_{t_i}^{\pi_\theta})
+\Big)
++
+\boldsymbol{\eta}_i^\top
+\big(
+\mathbf{G}_{i+1}-\mathbf{G}_i
+\big),
+\qquad i=0,\dots,n-2.
+\end{equation}
+
+\paragraph{Hedge error.}
+For diagnostics, define the post-rebalancing mark-to-model hedge error by
+\begin{equation}
+\label{eq:hedge_error_impl}
+\varepsilon_i^{\mathrm{hedge}}
+:=
+B_{t_i}
+-
+\widehat{V}_i^{\pi_\theta}(s_i,\mathbf{G}_i).
+\end{equation}
+\begin{comment}
+Algorithm~\ref{alg:rl_training_pricing} trains the pricing policy.
+Algorithm~\ref{alg:cont_value_delta_estimation} estimates continuation values and deltas from the trained
+policy. Algorithm~\ref{alg:rl_online_hedging} gives the full online pricing-and-hedging procedure.
+
+\begin{algorithm}[htbp]
+\caption{Offline RL Training and Policy Selection for Pricing}
+\label{alg:rl_training_pricing}
+\begin{algorithmic}[1]
+\Require HHK parameters $\Theta_{\mathrm{HHK}}$, contract parameters $\mathcal{C}$, training episodes $N_{\mathrm{train}}$, evaluation paths $N_{\mathrm{eval}}$
+\Require Replay parameters, optimizer parameters, profitability-gate parameters, shape functions $\{\psi_a\}_{a=1}^p$
+\Ensure Trained actor $\pi_{\theta^\star}$, critic $Q_{\phi^\star}$, preprocessing statistics, selected checkpoint $(\theta^\star,\phi^\star)$
+\State Generate risk-neutral HHK training and evaluation paths
+\State Initialize actor $\pi_\theta$, critic $Q_\phi$, target networks $\pi_{\theta'}$, $Q_{\phi'}$
+\State Initialize replay buffer $\mathcal{D}$ and input preprocessors
+\State Set actor feasibility parameters $(q_{\min},q_{\max},Q_{\max},c,\gamma_{\mathrm{cost}})$
+\For{episode $e=1$ to $N_{\mathrm{train}}$}
+    \State Reset environment to initial state $s_0^{(e)}$
+    \For{decision step $i=0$ to $n-1$}
+        \State Compute actor output $\tilde q_{t_i} \gets \pi_\theta(s_i)$ with pre-squash exploration noise
+        \State Map to feasible action $q_{t_i} \gets \mathcal{A}(s_i,\tilde q_{t_i})$
+        \State Execute $q_{t_i}$ in the environment and observe $(s_{i+1},r_i,\mathrm{done})$
+        \State Store transition $(s_i,q_{t_i},r_i,s_{i+1},\mathrm{done})$ in $\mathcal{D}$
+        \If{replay buffer size is at least $N_{\min}$ and update condition is satisfied}
+            \State Sample a minibatch from $\mathcal{D}$ with importance weights
+            \State Update critic parameters $\phi$ by minimizing the TD loss
+            \If{$e > e_{\mathrm{warmup}}$}
+                \State Update actor parameters $\theta$ by deterministic policy gradient
+                \State Soft-update actor target $\theta' \gets (1-\tau)\theta' + \tau\theta$
+            \EndIf
+            \State Soft-update critic target $\phi' \gets (1-\tau)\phi' + \tau\phi$
+        \EndIf
+    \EndFor
+    \If{$e$ is an evaluation checkpoint}
+        \State Estimate out-of-sample price $\widehat V_0^{(e)}$ by policy rollouts on evaluation paths
+        \State Save checkpoint $(\theta_e,\phi_e,\widehat V_0^{(e)})$
+    \EndIf
+\EndFor
+\State Select best checkpoint
+\[
+(\theta^\star,\phi^\star)
+\gets
+\arg\max_{e\in\mathcal E_{\mathrm{chk}}} \widehat V_0^{(e)}
+\]
+\State \Return $\pi_{\theta^\star}$, $Q_{\phi^\star}$, preprocessing statistics, selected checkpoint
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Continuation-Value and Delta Estimation from the Trained RL Policy}
+\label{alg:cont_value_delta_estimation}
+\begin{algorithmic}[1]
+\Require Post-exercise state $\bar s_i$ at time $t_i$
+\Require Current quoted forward vector $\mathbf{G}_i=(G_i^1,\dots,G_i^p)^\top$
+\Require Trained actor $\pi_\theta$, shape functions $\{\psi_a\}_{a=1}^p$, rollout count $M_\Delta$
+\Ensure Continuation-value estimate $\widehat V_{i,\mathrm{cont}}^{\pi_\theta}$, instantaneous-forward deltas $\widehat{\boldsymbol{\Delta}}_i$, quoted-product deltas $\widehat{\boldsymbol{\Gamma}}_i$
+\For{$m=i+1$ to $n-1$}
+    \State Reconstruct instantaneous forward at exercise date $t_m$:
+    \[
+    F_{t_i}^{[t_m]} \gets \sum_{a=1}^{p} \psi_a(t_m)\,G_i^a
+    \]
+    \State Initialize accumulators $A_m \gets 0$
+\EndFor
+\State Initialize continuation-value accumulator $V_{\mathrm{sum}} \gets 0$
+\For{rollout $\ell=1$ to $M_\Delta$}
+    \State Initialize simulated HHK state at time $t_i$ from $\bar s_i$
+    \State Initialize a copy of the post-exercise contract state
+    \For{$m=i+1$ to $n-1$}
+        \State Simulate $(X_{t_m}^{(\ell)},Y_{t_m}^{(\ell)},S_{t_m}^{(\ell)})$ under HHK from $t_{m-1}$ to $t_m$
+        \State Construct RL state $s_{t_m}^{(\ell)}$ from the simulated factors and current contract variables
+        \State Compute feasible actor action
+        \[
+        q_{t_m}^{(\ell)} \gets \mathcal{A}\big(s_{t_m}^{(\ell)},\pi_\theta(s_{t_m}^{(\ell)})\big)
+        \]
+        \State Update continuation-value accumulator
+        \[
+        V_{\mathrm{sum}}
+        \gets
+        V_{\mathrm{sum}}
+        +
+        e^{-r(t_m-t_i)}
+        \Big(
+        q_{t_m}^{(\ell)}(S_{t_m}^{(\ell)}-K)^+
+        -
+        c\big(q_{t_m}^{(\ell)}\big)^{\gamma_{\mathrm{cost}}}
+        \Big)
+        \]
+        \State Update delta numerator accumulator
+        \[
+        A_m
+        \gets
+        A_m
+        +
+        e^{-r(t_m-t_i)}
+        q_{t_m}^{(\ell)}
+        \mathbf{1}_{\{S_{t_m}^{(\ell)}>K\}}
+        S_{t_m}^{(\ell)}
+        \]
+        \State Update the copied contract variables using $q_{t_m}^{(\ell)}$
+    \EndFor
+\EndFor
+\State Compute continuation value
+\[
+\widehat V_{i,\mathrm{cont}}^{\pi_\theta}
+\gets
+\frac{V_{\mathrm{sum}}}{M_\Delta}
+\]
+\For{$m=i+1$ to $n-1$}
+    \State Compute instantaneous-forward delta
+    \[
+    \widehat{\Delta}_i^{(m)}
+    \gets
+    \frac{A_m}{M_\Delta\,F_{t_i}^{[t_m]}}
+    \]
+\EndFor
+\State Form delta vector
+\[
+\widehat{\boldsymbol{\Delta}}_i
+\gets
+\big(
+\widehat{\Delta}_i^{(i+1)},\dots,\widehat{\Delta}_i^{(n-1)}
+\big)^\top
+\]
+\State Build shape matrix $\Psi_i$ with entries $[\Psi_i]_{a,m-i}=\psi_a(t_m)$
+\State Compute quoted-product deltas
+\[
+\widehat{\boldsymbol{\Gamma}}_i \gets \Psi_i \widehat{\boldsymbol{\Delta}}_i
+\]
+\State \Return $\widehat V_{i,\mathrm{cont}}^{\pi_\theta}$, $\widehat{\boldsymbol{\Delta}}_i$, $\widehat{\boldsymbol{\Gamma}}_i$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Online RL Pricing and Hedge Rebalancing in Quoted Delivery-Period Forwards}
+\label{alg:rl_online_hedging}
+\begin{algorithmic}[1]
+\Require Initial state $s_0$, initial quoted forward vector $\mathbf{G}_0$
+\Require Trained actor $\pi_\theta$, shape functions $\{\psi_a\}_{a=1}^p$
+\Require Pricing rollout count $M_V$, delta rollout count $M_\Delta$, variance-optimal rollout count $M_{\mathrm{vo}}$
+\Require Hedge mode $\mathrm{mode}\in\{\mathrm{exact},\mathrm{vo}\}$ and regularization level $\varepsilon_{\mathrm{reg}}>0$
+\Ensure Initial price $\widehat V_0^{\pi_\theta}$, hedge positions $\{\boldsymbol{\eta}_i\}_{i=0}^{n-2}$, bank-account path $\{B_{t_i}\}$, hedge errors $\{\varepsilon_i^{\mathrm{hedge}}\}$
+\State Compute initial price by policy rollouts
+\[
+\widehat V_0^{\pi_\theta}
+\gets
+\widehat V_0^{\pi_\theta}(s_0,\mathbf{G}_0)
+\]
+\State Initialize bank account $B_{t_0} \gets \widehat V_0^{\pi_\theta}$
+\For{$i=0$ to $n-2$}
+    \State Observe current state $s_i$ and quoted forward vector $\mathbf{G}_i$
+    \State Compute feasible current exercise
+    \[
+    q_{t_i}^{\pi_\theta}
+    \gets
+    \mathcal{A}(s_i,\pi_\theta(s_i))
+    \]
+    \State Compute current cash flow
+    \[
+    C_i
+    \gets
+    \Pi_{t_i}(q_{t_i}^{\pi_\theta})
+    \]
+    \State Update to post-exercise state $\bar s_i$
+    \State Estimate continuation value and exact quoted-product deltas by Algorithm~\ref{alg:cont_value_delta_estimation}
+    \Statex \hspace{\algorithmicindent} $(\widehat V_{i,\mathrm{cont}}^{\pi_\theta},\widehat{\boldsymbol{\Delta}}_i,\widehat{\boldsymbol{\Gamma}}_i)
+    \gets
+    \textsc{ContinuationAndDeltas}(\bar s_i,\mathbf{G}_i,\pi_\theta,\{\psi_a\},M_\Delta)$
+    \If{$\mathrm{mode}=\mathrm{exact}$}
+        \State Set hedge
+        \[
+        \boldsymbol{\eta}_i \gets \widehat{\boldsymbol{\Gamma}}_i
+        \]
+    \Else
+        \For{scenario $\ell=1$ to $M_{\mathrm{vo}}$}
+            \State Simulate one-step HHK evolution from $\bar s_i$ to obtain next state $s_{i+1}^{(\ell)}$
+            \State Simulate / reconstruct next quoted forward vector $\mathbf{G}_{i+1}^{(\ell)}$
+            \State Compute quoted-product increment
+            \[
+            \Delta \mathbf{G}_i^{(\ell)}
+            \gets
+            \mathbf{G}_{i+1}^{(\ell)}-\mathbf{G}_i
+            \]
+            \State Estimate next continuation value under the same actor policy
+            \[
+            U_\ell
+            \gets
+            \widehat V_{i+1}^{\pi_\theta}\big(s_{i+1}^{(\ell)},\mathbf{G}_{i+1}^{(\ell)}\big)
+            \]
+        \EndFor
+        \State Compute sample means
+        \[
+        \overline{\Delta \mathbf{G}}_i
+        \gets
+        \frac{1}{M_{\mathrm{vo}}}\sum_{\ell=1}^{M_{\mathrm{vo}}}\Delta \mathbf{G}_i^{(\ell)},
+        \qquad
+        \overline U
+        \gets
+        \frac{1}{M_{\mathrm{vo}}}\sum_{\ell=1}^{M_{\mathrm{vo}}} U_\ell
+        \]
+        \State Initialize $\widehat C_i \gets 0_{p\times p}$ and $\widehat b_i \gets 0_p$
+        \For{scenario $\ell=1$ to $M_{\mathrm{vo}}$}
+            \State Center increments
+            \[
+            \widetilde{\Delta \mathbf{G}}_i^{(\ell)}
+            \gets
+            \Delta \mathbf{G}_i^{(\ell)}-\overline{\Delta \mathbf{G}}_i,
+            \qquad
+            \widetilde U_\ell
+            \gets
+            U_\ell-\overline U
+            \]
+            \State Accumulate covariance terms
+            \[
+            \widehat C_i
+            \gets
+            \widehat C_i
+            +
+            \widetilde{\Delta \mathbf{G}}_i^{(\ell)}
+            \big(\widetilde{\Delta \mathbf{G}}_i^{(\ell)}\big)^\top
+            \]
+            \[
+            \widehat b_i
+            \gets
+            \widehat b_i
+            +
+            \widetilde{\Delta \mathbf{G}}_i^{(\ell)}\,\widetilde U_\ell
+            \]
+        \EndFor
+        \State Normalize
+        \[
+        \widehat C_i \gets \frac{1}{M_{\mathrm{vo}}-1}\widehat C_i,
+        \qquad
+        \widehat b_i \gets \frac{1}{M_{\mathrm{vo}}-1}\widehat b_i
+        \]
+        \State Solve the regularized normal equations
+        \[
+        \boldsymbol{\eta}_i
+        \gets
+        \big(\widehat C_i+\varepsilon_{\mathrm{reg}}I_p\big)^{-1}\widehat b_i
+        \]
+    \EndIf
+    \State Observe / simulate realized next quoted forward vector $\mathbf{G}_{i+1}$ and realized next state $s_{i+1}$
+    \State Update bank account by the self-financing recursion
+    \[
+    B_{t_{i+1}}
+    \gets
+    e^{r\Delta t}\big(B_{t_i}-C_i\big)
+    +
+    \boldsymbol{\eta}_i^\top(\mathbf{G}_{i+1}-\mathbf{G}_i)
+    \]
+    \State Compute hedge error diagnostic
+    \[
+    \varepsilon_{i+1}^{\mathrm{hedge}}
+    \gets
+    B_{t_{i+1}}
+    -
+    \widehat V_{i+1}^{\pi_\theta}(s_{i+1},\mathbf{G}_{i+1})
+    \]
+\EndFor
+\State At the final exercise date $t_{n-1}$, compute and settle
+\[
+q_{t_{n-1}}^{\pi_\theta} \gets \mathcal{A}(s_{n-1},\pi_\theta(s_{n-1})),
+\qquad
+C_{n-1} \gets \Pi_{t_{n-1}}(q_{t_{n-1}}^{\pi_\theta})
+\]
+\State Final bank account:
+\[
+B_{t_n}
+\gets
+e^{r\Delta t}\big(B_{t_{n-1}}-C_{n-1}\big)
+\]
+\State \Return $\widehat V_0^{\pi_\theta}$, $\{\boldsymbol{\eta}_i\}_{i=0}^{n-2}$, $\{B_{t_i}\}_{i=0}^{n}$, $\{\varepsilon_i^{\mathrm{hedge}}\}_{i=1}^{n-1}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Implementation remarks.}
+Algorithm~\ref{alg:rl_online_hedging} is the mathematically faithful implementation of the theory.
+The exact-mode branch uses the chain-rule hedge
+\[
+\boldsymbol{\eta}_i = \widehat{\boldsymbol{\Gamma}}_i,
+\]
+while the $\mathrm{vo}$-branch uses the local variance-optimal projection
+\[
+\boldsymbol{\eta}_i
+=
+\big(\widehat C_i+\varepsilon_{\mathrm{reg}}I_p\big)^{-1}\widehat b_i.
+\]
+If computational speed is critical, the rollout estimator
+$\widehat V_i^{\pi_\theta}(s_i,\mathbf{G}_i)$ may be replaced by the critic approximation
+\[
+Q_\phi\!\big(s_i,\mathcal{A}(s_i,\pi_\theta(s_i))\big),
+\]
+but the rollout version is the cleaner implementation because it remains fully aligned with the
+risk-neutral control problem used for pricing.
+
+\end{comment}
+\end{document}

@@ -56,7 +56,6 @@ def main():
         state_size=state_size,
         action_size=action_size,
         n_step=parameters.nstep,
-        per=parameters.per,
         random_seed=parameters.seed,
         hidden_size=parameters.layer_size,
         BATCH_SIZE=parameters.batch_size,
@@ -73,13 +72,6 @@ def main():
         device="cpu",
         paths=0,
         min_replay_size=getattr(parameters, "min_replay_size", parameters.batch_size * 10),
-        per_priority_floor=getattr(parameters, "per_priority_floor", 1e-6),
-        per_priority_clip_pct=getattr(parameters, "per_priority_clip_pct", 99.5),
-        per_alpha_final=getattr(parameters, "per_alpha_final", None),
-        per_alpha_ramp_start=getattr(parameters, "per_alpha_ramp_start", 0),
-        per_alpha_ramp_end=getattr(parameters, "per_alpha_ramp_end", 0),
-        per_beta_final=getattr(parameters, "per_beta_final", None),
-        per_alpha_sigmoid=bool(getattr(parameters, "per_alpha_sigmoid", 0)),
         activation=getattr(parameters, "activation", "silu"),
     )
 

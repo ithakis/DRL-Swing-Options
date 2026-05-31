@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import cProfile
 import os
 import pstats
@@ -318,18 +319,23 @@ def evaluate_agent(
     """
 
     def _run():
-        if isinstance(eval_env, SwingOptionEnv):
-            return _evaluate_swing_agent(
-                agent=agent,
-                eval_env=eval_env,
-                writer=writer,
-                path=path,
-                evaluations_dir=evaluations_dir,
-                lsm_price=lsm_price,
-                parquet_writer=parquet_writer,
-                eval_batch_size=eval_batch_size,
-            )
-        return _evaluate_generic_env(agent, eval_env, writer, path, evaluations_dir, n_episodes=n_episodes)
+        # Eval-only EMA (Task 2 L_ema): swap averaged actor weights in for evaluation,
+        # restore training weights afterward. No-op unless weight_averaging=='ema'.
+        avg_ctx = getattr(agent, "averaged_eval_actor", None)
+        ctx = avg_ctx() if callable(avg_ctx) else contextlib.nullcontext()
+        with ctx:
+            if isinstance(eval_env, SwingOptionEnv):
+                return _evaluate_swing_agent(
+                    agent=agent,
+                    eval_env=eval_env,
+                    writer=writer,
+                    path=path,
+                    evaluations_dir=evaluations_dir,
+                    lsm_price=lsm_price,
+                    parquet_writer=parquet_writer,
+                    eval_batch_size=eval_batch_size,
+                )
+            return _evaluate_generic_env(agent, eval_env, writer, path, evaluations_dir, n_episodes=n_episodes)
 
     if not profile:
         return _run()

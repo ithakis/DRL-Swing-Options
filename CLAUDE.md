@@ -39,7 +39,7 @@ Optional opt-in mechanism that replaces the critic's single-sample TD bootstrap 
 
 ```bash
 --use_expected_target=1
---critic_warmup_episodes=0        # not needed with kernel
+--critic_warmup_episodes=512      # REQUIRED for g1 (γ=1, c>0); removable for g2/nocost only
 
 # Fast option — M=4 (M_x=2, M_per_k=1, N_max=1): same Δ% as M=21, ~1.4x baseline wall-clock
 --kernel_M_x=2 --kernel_M_per_k=1 --kernel_N_max=1
@@ -58,6 +58,40 @@ Headline result (focal c=0.04, gamma=2, 4096 ep, 12 seeds):
 No-cost regression: kernel +5.2 pp better than baseline.  H8 (antithetic), H9 (jump-IW), and their combination confirmed dead at 12 seeds — no variance reduction, H8 marginally worse on mean.
 
 See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for the full statistical summary.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics) either did not help or actively hurt.
+
+**⚠️ critic_warmup note:** Warmup is **structurally required** for g1 (γ=1, c=0.04) and cannot be removed or substituted.  A 12-seed cc_g1 investigation (under the single-step default) found `warmup=0` collapses **5/12 seeds to ~−14%** (even with a gentler actor LR — the collapse is not LR-fixable).  But 1024 was over-conservative: `warmup=512` and `256` have **0/12 blowups** and a slightly *better* mean than 1024.  **Canonical is now `--critic_warmup_episodes=512`** (best mean +0.337, safe worst-case +0.076; 256 also safe but thinner margin).  See HPT.md “Critic-warmup investigation”.
+
+**⚠️ v63 LR / clipping / critic-step notes** (see HPT.md “v63 Runtime Feature Audit”):
+- The LR is **constant — no warmup ramp, no decay**.  The cosine/linear LR-decay schedule was **deleted** (Task 2 below: neutral-to-harmful at 4k); `--final_lr_fraction`/`--lr_schedule_episodes`/`--min_lr` are still accepted but **inert**, and `--warmup_episodes` only sizes the `calibrate_bias` dataset.
+- **Gradient clipping was removed in v63** (it was dead code — args were never applied; all v63 results are clip-free).  The `--*_grad_clip*` args no longer exist.
+- **Single critic step is now canonical** (`--single_critic_step=1`, default).  A legacy duplicate `critic_optimizer.step()` (effective ~2× critic LR) was a bug; a 12-seed × 3-regime screen showed single-step strictly beats it on mean Δ%, seed std, and worst-case in every regime.  Set `--single_critic_step=0` only to reproduce pre-fix v63 numbers.
+
+## Deterministic-Target Canonical (Tasks 1–3)
+
+Once the kernel makes the TD target deterministic, three retunes were screened (3-seed → 12-seed,
+regimes cc_g1/cc_g2/nocost, kernel-on fast M_x=2, 4096 ep; harness `tools/sweep_v63_audit.py`, now
+with a `--resume` flag) and **adopted into the kernel-on canonical** (see HPT.md “Deterministic-target
+retune”).  Each is flag-guarded to the prior default; `pytest tools/test_approximators.py` stays 37/37.
+
+```bash
+# Kernel-on canonical after Tasks 1–3 (add to the kernel flags above):
+--calibrate_bias_mode closed_form   # Task 1: O(1) myopic-FOC warm-start (default; 'rprop' = legacy loop)
+--noise_schedule linear             # Task 2: linear σ0→floor over the FULL horizon (set --noise_plateau 0)
+--noise_plateau 0
+--weight_averaging ema --ema_decay 0.999   # Task 2: eval-only EMA of actor weights (Schedule-Free spirit)
+-lr_a 3e-4 -lr_c 6e-4               # Task 3: faster critic (2× the inherited 3e-4) under the det. target
+```
+
+- **Task 1 — closed-form `calibrate_bias`**: replaces the 20-iter Rprop bias loop with a myopic FOC
+  warm-start `q*(S)=clip(((S−K)₊/(c·γ))^{1/(γ−1)}, q_min, q_max)` averaged over the warmup spots,
+  budget-capped by `Q_max/n_rights`, + one variance-scale + one squash-inverted bias shift (O(1) passes,
+  ~10× faster calibration).  Accuracy a statistical wash vs Rprop (all Welch p≥0.44, zero blow-ups);
+  adopted for simplicity/determinism/C++-portability.  `_calibrate_bias_closed_form`/`_output_slope` in `src/agent.py`.
+- **Task 2 — noise + EMA**: reduced exploration via full-horizon linear noise decay lifts focal cc_g2
+  **+0.37pp (Welch p=0.002)** and nocost to ~0; eval-only EMA tightens seed std.  **LR decay deleted**
+  (cosine/linear branches + `--lr_decay_shape`/`--lr_warmup_episodes` removed — constant LR is canonical).
+- **Task 3 — LR magnitude**: `lr_c=6e-4` (vs 3e-4) improves worst-seed AND seed-std in all 3 regimes and
+  mean on cc_g1/nocost; cc_g2 mean dip is trivial/insignificant.  `lr_a` stays 3e-4.
 
 ## Function Approximators (`--approximator`)
 
@@ -91,7 +125,7 @@ Key facts:
 
 | File | Role |
 |------|------|
-| `agent.py` | D4PG agent: actor-critic updates, PER scheduling, noise schedules (pre-squash Gaussian with plateau+hyperbolic decay), critic warmup, target network soft updates |
+| `agent.py` | D4PG agent: actor-critic updates, exploration-noise schedules (pre-squash Gaussian; `hyperbolic`/`const_floor`/`linear`, canonical = linear σ0→floor), closed-form/Rprop `calibrate_bias` warm-start, eval-only EMA weight averaging, critic warmup, constant-LR target soft updates |
 | `swing_env.py` | Gymnasium environment: maps agent actions to exercise quantities, enforces contract constraints (q_min/q_max, Q_min/Q_max, refraction), computes discounted rewards with convex costs. Also contains `approximate_Q_T()` for HHK-based expected quantity estimation |
 | `networks.py` | Actor (profitability-gated with STE), Critic (standard TD), IQN (distributional, **not used in current paper**). Actor gates unprofitable exercises: `q_out = q_raw * 1[Pi(q) > 0]` |
 | `lsm_swing_pricer.py` | LSM baseline: Numba-accelerated backward induction with configurable basis functions (power/laguerre/hermite/chebyshev), polynomial degree, and regularization. Two modes: `LSM_minimal` (spot-only features) and `LSM_full` (full HHK+contract state). Net profitability gate applied at both terminal and non-terminal steps |

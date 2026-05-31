@@ -52,10 +52,8 @@ def base_args(n_paths: int = 4096, contract: str = "focal") -> Dict[str, str]:
         "-n_paths_eval": "8192",
         "-eval_every": "-1",
         # algorithm core
-        "-munchausen": "0",
         "-nstep": "1",
         "--gamma": "1",
-        "-iqn": "0",
         # PER (focal defaults)
         "-per": "1",
         "--per_alpha": "0.1",
@@ -100,7 +98,6 @@ def base_args(n_paths: int = 4096, contract: str = "focal") -> Dict[str, str]:
         # regularisation
         "--weight_decay_actor": "5e-5",
         "--weight_decay_critic": "1.2e-4",
-        "--critic_ema_decay": "0.0",
         # target-policy smoothing (SWEPT BELOW)
         "--target_policy_noise": "0.15",
         "--target_policy_clip": "0.25",

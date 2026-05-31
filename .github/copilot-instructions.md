@@ -22,7 +22,7 @@ When reviewing the manuscript we annotate inserted text with colors to indicate 
 - **Green**: New material or analysis added independently of Sven's comments (e.g., new figures, metrics, or explanatory paragraphs). These are broader content additions rather than direct responses.
 - **Red**: Sven's original inline reviewer comments preserved in the draft for traceability.
 
-When you want to provide feedback on a purple passage, please either (a) paste the purple sentence(s) into your message, or (b) specify the file and line range (for example: [Paper/DRL_Swing_Options.tex](Paper/DRL_Swing_Options.tex#L320-L330)). This makes it easy to locate the targeted fragment and apply edits.
+When you want to provide feedback on a purple passage, please either (a) paste the purple sentence(s) into your message, or (b) specify the file and line range (for example: [main paper source](../Paper/DRL_Swing_Options.tex), lines 320-330). This makes it easy to locate the targeted fragment and apply edits.
 
 ---
 
@@ -68,10 +68,15 @@ make tensorboard
 | `src/simulate_hhk_spot.py` | HHK simulation: 2-factor OU with jumps, Sobol sequence |
 | `src/swing_contract.py` | Contract specification: exercise bounds, refraction, discounting |
 | `src/replay_buffer.py` | Replay buffers: Circular and PER with Fenwick tree |
+| `src/hedging_utils.py` | Shared hedging helpers: trace normalization, HHK forward pricing, Parquet schemas, risk metrics |
 | `tools/compare_lsm_state_modes.py` | Compare reduced-state vs full-state LSM outputs and summary metrics |
+| `tools/build_hedging_cache.py` | Build shared RL/LSM hedging traces on common HHK evaluation paths |
+| `tools/sweep_delta_s0.py` | Sweep `S0` and output premium, value adjustment, `t=0` forward shares, and gamma |
+| `delta_sweep.sh` | Repo-style shell wrapper for the `S0` hedge sweep and summary graphs |
 | `tools/update_convex_costs_results.py` | Refresh convex-cost result tables/CSVs after benchmark reruns |
 | `tools/rebuild_results_v7.py` | Regenerate `Convex Costs Results 7.csv` and `Convex Costs Results 7 focal.csv` from logs |
 | `tools/generate_seed_robustness_figure.py` | Generate Figure 4 (seed robustness strip+box plot) from the focal results CSV |
+| `Jupyter Notebooks/Hedging.ipynb` | Phase-1 hedging notebook: shared-path RL/LSM liability diagnostics, proxy hedge plots, and tail-risk tables |
 
 ### Paper Layout
 - Manuscript sources live in `Paper/`
@@ -144,6 +149,14 @@ make tensorboard
 | `Jupyter Notebooks/` | Validation and results analysis |
 | `results.md` | Quick results summary |
 | `Convex Cost Experiments/` | Pre-configured experiment scripts |
+
+### Hedging Workflow
+- `Jupyter Notebooks/Hedging.ipynb` is the current phase-1 hedge notebook. Section 5 is the canonical execution block; do not recreate the old temporary `5a` subsection.
+- In the notebook, the delta plot is interpreted as the local number of contract-maturity forward shares in the proxy hedge, not as a spot-share delta.
+- The notebook uses the shared-path cache built by `tools/build_hedging_cache.py`. The default smoke workflow caches under `logs/hedging_cache_smoke_notebook/`.
+- The notebook cannot infer a pure `t=0` curve from a single cached initial `S0`; use `delta_sweep.sh` / `tools/sweep_delta_s0.py` for the clean `t=0` forward-share and gamma sweep.
+- `tools/sweep_delta_s0.py` now reports `forward_shares_t0` and `gamma_t0` on the HHK forward basis. `delta_sweep.sh` is the preferred repo entry point.
+- The Section 5 summary tables intentionally color `Mean PnL` on one shared scale and `VaR99`/`CVaR95` on a second shared scale to make cross-row differences easier to see.
 
 ### Paper Build
 ```bash

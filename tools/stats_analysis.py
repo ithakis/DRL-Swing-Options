@@ -1,35 +1,36 @@
-"""
-Statistical analysis framework for the feat/semi-analytical-bootstrap branch.
+"""Statistical analysis framework for the semi-analytical bootstrap sweeps.
 
-Loads all sweep CSVs, computes per-seed Δ% (= eval_price / lsm_price - 1),
-groups by (label, n_paths, contract), and runs:
+This module deduplicates sweep rows across resume CSVs, aggregates per-seed
+Delta% results, and exposes both mean-focused and variance-focused inference:
 
-  * Mean comparison: Welch's two-sample t-test (unequal variances).
-  * Variance comparison: Levene's test (robust to non-normality) and
-    Bartlett's test (parametric).
-  * Per-config summary: mean, std, SE, 95% CI, conservative score
-    (mean - 1.96 * SE).
-  * Pareto frontier over (mean, SE, wall_clock).
-  * Accuracy/speed curves over the kernel size M and n_paths axes.
+  * Welch's two-sample t-test for mean differences.
+  * Levene (center=mean) and Brown-Forsythe (center=median) tests for scale.
+  * Variance-ratio summaries and bootstrap CIs for std / variance.
+  * Paired-seed comparisons when two configs share the same seed set.
+  * Minimum detectable effect summaries so non-significance is not mistaken
+    for strong equivalence.
 
-Designed to be reused across multiple sweep CSVs by passing source paths.
-Imports scipy for the tests; numpy for the arithmetic.
+The functions are designed to be imported by the notebook generator as well as
+used directly from the command line.
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
+import json
 import math
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 try:
     from scipy import stats as sps  # type: ignore
+
     HAVE_SCIPY = True
 except Exception:
     HAVE_SCIPY = False
@@ -38,19 +39,77 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG_DIR = ROOT / "logs" / "_sweep_h1"
 
-# Default canonical sources. Extend as new sweeps land.
+# Default canonical sources. Later entries take precedence when a resumed sweep
+# re-runs the same (label, seed, n_paths, contract) tuple.
 DEFAULT_SOURCES: List[Tuple[str, str, Optional[str], Optional[int]]] = [
-    ("wide1",     "sweep_results_n4096.csv",        "focal",  4096),
-    ("wide2",     "sweep_results_n3072_wide2.csv",  "focal",  3072),
-    ("phase2",    "sweep_h1_phase2.csv",            None,     None),
-    ("phase3",    "sweep_h1_phase3_n8192.csv",      None,     None),
-    ("h4v2",     "sweep_h4_v2_n4096.csv",          None,     None),
-    ("h6",       "sweep_h6_n2048.csv",             None,     None),
-    ("h789",     "sweep_h789_n4096.csv",           None,     None),
-    ("h789r",    "sweep_h789_resume_n4096.csv",    None,     None),
-    ("h8strat",  "sweep_h8strat_n4096.csv",        None,     None),
-    ("paramstd", "sweep_param_study.csv",           None,     None),
+    ("wide1", "sweep_results_n4096.csv", "focal", 4096),
+    ("wide2", "sweep_results_n3072_wide2.csv", "focal", 3072),
+    ("phase2", "sweep_h1_phase2.csv", None, None),
+    ("phase3", "sweep_h1_phase3_n8192.csv", None, None),
+    ("h4v2", "sweep_h4_v2_n4096.csv", None, None),
+    ("h6", "sweep_h6_n2048.csv", None, None),
+    ("h789", "sweep_h789_n4096.csv", None, None),
+    ("h789r", "sweep_h789_resume_n4096.csv", None, None),
+    ("h8strat", "sweep_h8strat_n4096.csv", None, None),
+    ("paramstd", "sweep_param_study.csv", None, None),
+    ("paramstdr", "sweep_param_study_resume.csv", None, None),
+    ("varcamp", "sweep_variance_campaign_n4096.csv", None, None),
+    ("kden", "sweep_kernel_density_n4096.csv", None, None),
 ]
+
+
+def _norm_ppf(prob: float) -> float:
+    if HAVE_SCIPY:
+        return float(sps.norm.ppf(prob))
+    return statistics.NormalDist().inv_cdf(prob)
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return default
+
+
+def _safe_float(value: object, default: float = float("nan")) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except Exception:
+        return default
+
+
+def _percentile_interval(samples: np.ndarray, alpha: float = 0.05) -> Tuple[float, float]:
+    low = float(np.quantile(samples, alpha / 2.0))
+    high = float(np.quantile(samples, 1.0 - alpha / 2.0))
+    return low, high
+
+
+def bootstrap_ci(
+    values: Sequence[float],
+    stat_fn: Callable[[np.ndarray], float],
+    n_bootstrap: int = 4000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> Dict[str, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return {"valid": False}
+    if arr.size == 1:
+        val = float(stat_fn(arr))
+        return {"valid": True, "estimate": val, "ci_low": val, "ci_high": val}
+    rng = np.random.default_rng(seed)
+    samples = np.empty(n_bootstrap, dtype=np.float64)
+    idx = np.arange(arr.size)
+    for boot_idx in range(n_bootstrap):
+        draw = rng.choice(idx, size=arr.size, replace=True)
+        samples[boot_idx] = stat_fn(arr[draw])
+    ci_low, ci_high = _percentile_interval(samples, alpha=alpha)
+    return {
+        "valid": True,
+        "estimate": float(stat_fn(arr)),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+    }
 
 
 @dataclass
@@ -58,29 +117,43 @@ class GroupStats:
     label: str
     contract: str
     n_paths: int
-    n_seeds: int
+    seeds: List[int]
     deltas: List[float]
     walls: List[float]
     evals: List[float]
     lsms: List[float]
+
+    def __post_init__(self) -> None:
+        self.delta_by_seed = {seed: delta for seed, delta in zip(self.seeds, self.deltas)}
+
+    @property
+    def n_seeds(self) -> int:
+        return len(self.deltas)
 
     @property
     def mean(self) -> float:
         return float(np.mean(self.deltas)) if self.deltas else float("nan")
 
     @property
+    def median(self) -> float:
+        return float(np.median(self.deltas)) if self.deltas else float("nan")
+
+    @property
     def std(self) -> float:
-        return float(np.std(self.deltas, ddof=1)) if len(self.deltas) > 1 else 0.0
+        return float(np.std(self.deltas, ddof=1)) if self.n_seeds > 1 else 0.0
+
+    @property
+    def var(self) -> float:
+        return self.std**2
 
     @property
     def se(self) -> float:
-        return self.std / math.sqrt(len(self.deltas)) if len(self.deltas) > 1 else 0.0
+        return self.std / math.sqrt(self.n_seeds) if self.n_seeds > 1 else 0.0
 
     @property
     def ci95(self) -> Tuple[float, float]:
-        m = self.mean
-        s = 1.96 * self.se
-        return m - s, m + s
+        half = 1.96 * self.se
+        return self.mean - half, self.mean + half
 
     @property
     def conservative(self) -> float:
@@ -90,227 +163,520 @@ class GroupStats:
     def wall_mean(self) -> float:
         return float(np.mean(self.walls)) if self.walls else float("nan")
 
+    @property
+    def matched_seed_count(self) -> int:
+        return len(self.delta_by_seed)
+
+    def bootstrap_std_ci(self, n_bootstrap: int = 4000) -> Dict[str, float]:
+        return bootstrap_ci(
+            self.deltas,
+            stat_fn=lambda arr: float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+            n_bootstrap=n_bootstrap,
+            seed=abs(hash((self.label, self.contract, self.n_paths, "std"))) % (2**32),
+        )
+
+    def bootstrap_var_ci(self, n_bootstrap: int = 4000) -> Dict[str, float]:
+        return bootstrap_ci(
+            self.deltas,
+            stat_fn=lambda arr: float(np.var(arr, ddof=1)) if arr.size > 1 else 0.0,
+            n_bootstrap=n_bootstrap,
+            seed=abs(hash((self.label, self.contract, self.n_paths, "var"))) % (2**32),
+        )
+
+    def to_payload(self, n_bootstrap: int = 4000) -> Dict[str, object]:
+        ci_low, ci_high = self.ci95
+        std_ci = self.bootstrap_std_ci(n_bootstrap=n_bootstrap)
+        var_ci = self.bootstrap_var_ci(n_bootstrap=n_bootstrap)
+        return {
+            "label": self.label,
+            "contract": self.contract,
+            "n_paths": self.n_paths,
+            "n_seeds": self.n_seeds,
+            "seeds": list(self.seeds),
+            "mean": self.mean,
+            "median": self.median,
+            "std": self.std,
+            "var": self.var,
+            "se": self.se,
+            "ci_low": ci_low,
+            "ci_high": ci_high,
+            "conservative": self.conservative,
+            "wall_mean": self.wall_mean,
+            "std_ci_low": std_ci.get("ci_low"),
+            "std_ci_high": std_ci.get("ci_high"),
+            "var_ci_low": var_ci.get("ci_low"),
+            "var_ci_high": var_ci.get("ci_high"),
+        }
+
 
 def load_sources(
     sources: Optional[Iterable[Tuple[str, str, Optional[str], Optional[int]]]] = None,
     log_dir: Path = DEFAULT_LOG_DIR,
-) -> List[Dict]:
+    dedupe: bool = True,
+) -> List[Dict[str, str]]:
     if sources is None:
         sources = DEFAULT_SOURCES
-    rows = []
-    for tag, fname, default_contract, default_n in sources:
+
+    rows: List[Dict[str, str]] = []
+    unique_rows: Dict[Tuple[str, int, int, str], Dict[str, str]] = {}
+    for tag, fname, default_contract, default_n_paths in sources:
         path = log_dir / fname
         if not path.exists():
             continue
-        with open(path) as f:
-            for r in csv.DictReader(f):
-                if r.get("status") != "ok":
+        with open(path) as handle:
+            for row in csv.DictReader(handle):
+                if row.get("status") != "ok":
                     continue
-                if not r.get("contract"):
-                    r["contract"] = default_contract or ""
-                if not r.get("n_paths"):
-                    r["n_paths"] = str(default_n) if default_n else ""
-                r["_source"] = tag
-                rows.append(r)
+                if not row.get("contract"):
+                    row["contract"] = default_contract or ""
+                if not row.get("n_paths"):
+                    row["n_paths"] = str(default_n_paths) if default_n_paths is not None else ""
+                row["_source"] = tag
+                if not dedupe:
+                    rows.append(row)
+                    continue
+                key = (
+                    row.get("label", ""),
+                    _safe_int(row.get("seed")),
+                    _safe_int(row.get("n_paths")),
+                    row.get("contract", "") or default_contract or "focal",
+                )
+                unique_rows[key] = row
+    if dedupe:
+        rows = list(unique_rows.values())
+    rows.sort(
+        key=lambda row: (
+            row.get("contract", ""),
+            _safe_int(row.get("n_paths")),
+            row.get("label", ""),
+            _safe_int(row.get("seed")),
+        )
+    )
     return rows
 
 
-def per_seed_delta(row: Dict) -> Optional[float]:
-    try:
-        ep = float(row["eval_price"]); lsm = float(row["lsm_price"])
-        if lsm <= 0: return None
-        return (ep / lsm - 1.0) * 100.0
-    except Exception:
+def per_seed_delta(row: Dict[str, str]) -> Optional[float]:
+    eval_price = _safe_float(row.get("eval_price"))
+    lsm_price = _safe_float(row.get("lsm_price"))
+    if not math.isfinite(eval_price) or not math.isfinite(lsm_price) or lsm_price <= 0:
         return None
+    return (eval_price / lsm_price - 1.0) * 100.0
 
 
-def group_by(rows: List[Dict], key=lambda r: (r["label"], r.get("contract", ""), r.get("n_paths", ""))) -> Dict:
-    out: Dict = defaultdict(list)
-    for r in rows:
-        out[key(r)].append(r)
-    return dict(out)
+def summarize_groups(rows: List[Dict[str, str]]) -> List[GroupStats]:
+    grouped: Dict[Tuple[str, str, int], List[Dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (row.get("label", ""), row.get("contract", "") or "focal", _safe_int(row.get("n_paths")))
+        ].append(row)
 
-
-def summarize_groups(rows: List[Dict]) -> List[GroupStats]:
-    grouped = group_by(rows)
-    out = []
-    for (label, contract, n_paths_str), grp in grouped.items():
-        deltas = []
-        walls = []
-        evals = []
-        lsms = []
-        for r in grp:
-            d = per_seed_delta(r)
-            if d is None:
+    out: List[GroupStats] = []
+    for (label, contract, n_paths), group_rows in grouped.items():
+        seeds: List[int] = []
+        deltas: List[float] = []
+        walls: List[float] = []
+        evals: List[float] = []
+        lsms: List[float] = []
+        for row in sorted(group_rows, key=lambda item: _safe_int(item.get("seed"))):
+            delta = per_seed_delta(row)
+            if delta is None:
                 continue
-            deltas.append(d)
-            evals.append(float(r["eval_price"]))
-            lsms.append(float(r["lsm_price"]))
-            try:
-                walls.append(float(r.get("wall_seconds", "0")))
-            except Exception:
-                pass
-        try:
-            n_paths_int = int(n_paths_str)
-        except Exception:
-            n_paths_int = 0
-        out.append(GroupStats(
-            label=label, contract=contract or "focal", n_paths=n_paths_int,
-            n_seeds=len(deltas), deltas=deltas, walls=walls,
-            evals=evals, lsms=lsms,
-        ))
-    return out
+            seeds.append(_safe_int(row.get("seed")))
+            deltas.append(delta)
+            evals.append(_safe_float(row.get("eval_price"), 0.0))
+            lsms.append(_safe_float(row.get("lsm_price"), 0.0))
+            wall = _safe_float(row.get("wall_seconds"))
+            if math.isfinite(wall) and wall > 0:
+                walls.append(wall)
+        out.append(
+            GroupStats(
+                label=label,
+                contract=contract,
+                n_paths=n_paths,
+                seeds=seeds,
+                deltas=deltas,
+                walls=walls,
+                evals=evals,
+                lsms=lsms,
+            )
+        )
+    return sorted(out, key=lambda group: (group.contract, group.n_paths, group.label))
 
 
-def welch_t_test(a: List[float], b: List[float]) -> Dict:
-    """Welch's two-sample t-test for unequal variances. Returns:
-    {t, df, p_two_sided, mean_diff, se_diff, ci95_diff}."""
+def group_lookup(groups: Sequence[GroupStats]) -> Dict[Tuple[str, str, int], GroupStats]:
+    return {(group.label, group.contract, group.n_paths): group for group in groups}
+
+
+def filter_groups(
+    groups: Sequence[GroupStats],
+    contract: Optional[str] = None,
+    n_paths: Optional[int] = None,
+    min_seeds: int = 1,
+) -> List[GroupStats]:
+    filtered = []
+    for group in groups:
+        if contract is not None and group.contract != contract:
+            continue
+        if n_paths is not None and group.n_paths != n_paths:
+            continue
+        if group.n_seeds < min_seeds:
+            continue
+        filtered.append(group)
+    return filtered
+
+
+def welch_t_test(a: Sequence[float], b: Sequence[float]) -> Dict[str, float]:
     a_arr = np.asarray(a, dtype=np.float64)
     b_arr = np.asarray(b, dtype=np.float64)
-    na, nb = len(a_arr), len(b_arr)
+    na = a_arr.size
+    nb = b_arr.size
     if na < 2 or nb < 2:
         return {"valid": False}
-    mean_a, mean_b = a_arr.mean(), b_arr.mean()
-    var_a, var_b = a_arr.var(ddof=1), b_arr.var(ddof=1)
-    se = math.sqrt(var_a / na + var_b / nb)
-    if se == 0:
+    mean_a = float(a_arr.mean())
+    mean_b = float(b_arr.mean())
+    var_a = float(a_arr.var(ddof=1))
+    var_b = float(b_arr.var(ddof=1))
+    se_diff = math.sqrt(var_a / na + var_b / nb)
+    if se_diff == 0:
         return {"valid": False}
-    t = (mean_a - mean_b) / se
-    # Welch-Satterthwaite df
-    df = (var_a / na + var_b / nb) ** 2 / (
-        (var_a / na) ** 2 / (na - 1) + (var_b / nb) ** 2 / (nb - 1)
-    )
+    t_stat = (mean_a - mean_b) / se_diff
+    df = (var_a / na + var_b / nb) ** 2 / (((var_a / na) ** 2) / (na - 1) + ((var_b / nb) ** 2) / (nb - 1))
     if HAVE_SCIPY:
-        p = float(2 * (1 - sps.t.cdf(abs(t), df)))
+        p_value = float(2 * (1 - sps.t.cdf(abs(t_stat), df)))
     else:
-        # rough normal approx
-        p = float(2 * (1 - 0.5 * (1 + math.erf(abs(t) / math.sqrt(2.0)))))
-    diff = mean_a - mean_b
-    half = 1.96 * se
+        p_value = float(2 * (1 - statistics.NormalDist().cdf(abs(t_stat))))
+    half = 1.96 * se_diff
     return {
-        "valid": True, "t": float(t), "df": float(df), "p": p,
-        "mean_diff": float(diff), "se_diff": float(se),
-        "ci95_low": float(diff - half), "ci95_high": float(diff + half),
+        "valid": True,
+        "mean_diff": mean_a - mean_b,
+        "se_diff": se_diff,
+        "t": t_stat,
+        "df": float(df),
+        "p": p_value,
+        "ci95_low": mean_a - mean_b - half,
+        "ci95_high": mean_a - mean_b + half,
     }
 
 
-def levene_test(a: List[float], b: List[float]) -> Dict:
-    """Levene's test (mean version) for equality of variance."""
-    if not HAVE_SCIPY:
-        return {"valid": False, "msg": "scipy not available"}
-    a_arr = np.asarray(a, dtype=np.float64)
-    b_arr = np.asarray(b, dtype=np.float64)
-    if len(a_arr) < 2 or len(b_arr) < 2:
-        return {"valid": False}
-    stat, p = sps.levene(a_arr, b_arr, center="mean")
-    return {"valid": True, "W": float(stat), "p": float(p)}
-
-
-def f_var_ratio(a: List[float], b: List[float]) -> Dict:
-    """Two-sided F-test of variance ratio (parametric, assumes normality)."""
+def scale_test(a: Sequence[float], b: Sequence[float], center: str) -> Dict[str, float]:
     if not HAVE_SCIPY:
         return {"valid": False}
     a_arr = np.asarray(a, dtype=np.float64)
     b_arr = np.asarray(b, dtype=np.float64)
-    if len(a_arr) < 2 or len(b_arr) < 2:
+    if a_arr.size < 2 or b_arr.size < 2:
         return {"valid": False}
-    var_a = a_arr.var(ddof=1); var_b = b_arr.var(ddof=1)
-    if var_a == 0 or var_b == 0:
+    stat, p_value = sps.levene(a_arr, b_arr, center=center)
+    return {"valid": True, "stat": float(stat), "p": float(p_value), "center": center}
+
+
+def f_var_ratio(a: Sequence[float], b: Sequence[float]) -> Dict[str, float]:
+    if not HAVE_SCIPY:
         return {"valid": False}
-    F = var_a / var_b
-    df_a = len(a_arr) - 1; df_b = len(b_arr) - 1
-    p_one = 1 - sps.f.cdf(F, df_a, df_b) if F >= 1 else sps.f.cdf(F, df_a, df_b)
-    p_two = 2 * min(p_one, 1 - p_one)
-    return {"valid": True, "F": float(F), "df1": df_a, "df2": df_b, "p": float(p_two)}
+    a_arr = np.asarray(a, dtype=np.float64)
+    b_arr = np.asarray(b, dtype=np.float64)
+    if a_arr.size < 2 or b_arr.size < 2:
+        return {"valid": False}
+    var_a = float(a_arr.var(ddof=1))
+    var_b = float(b_arr.var(ddof=1))
+    if var_a <= 0 or var_b <= 0:
+        return {"valid": False}
+    f_stat = var_a / var_b
+    df1 = a_arr.size - 1
+    df2 = b_arr.size - 1
+    lower_tail = float(sps.f.cdf(f_stat, df1, df2))
+    upper_tail = float(1 - lower_tail)
+    p_value = 2 * min(lower_tail, upper_tail)
+    return {
+        "valid": True,
+        "F": f_stat,
+        "df1": float(df1),
+        "df2": float(df2),
+        "p": float(min(p_value, 1.0)),
+        "var_ratio": f_stat,
+        "std_ratio": math.sqrt(f_stat),
+    }
 
 
-def pairwise_compare(group_a: GroupStats, group_b: GroupStats) -> Dict:
-    out: Dict = {"a": group_a.label, "b": group_b.label}
-    out["welch"] = welch_t_test(group_a.deltas, group_b.deltas)
-    out["levene"] = levene_test(group_a.deltas, group_b.deltas)
-    out["f_var"] = f_var_ratio(group_a.deltas, group_b.deltas)
-    return out
+def paired_seed_test(group_a: GroupStats, group_b: GroupStats) -> Dict[str, object]:
+    shared = sorted(set(group_a.delta_by_seed).intersection(group_b.delta_by_seed))
+    if len(shared) < 2:
+        return {"valid": False, "n_pairs": len(shared), "shared_seeds": shared}
+    diffs = np.asarray(
+        [group_a.delta_by_seed[seed] - group_b.delta_by_seed[seed] for seed in shared], dtype=np.float64
+    )
+    mean_diff = float(diffs.mean())
+    std_diff = float(diffs.std(ddof=1)) if diffs.size > 1 else 0.0
+    se_diff = std_diff / math.sqrt(diffs.size) if diffs.size > 1 else 0.0
+    if se_diff == 0:
+        return {
+            "valid": True,
+            "n_pairs": int(diffs.size),
+            "shared_seeds": shared,
+            "mean_diff": mean_diff,
+            "std_diff": std_diff,
+            "se_diff": se_diff,
+            "t": 0.0,
+            "df": float(diffs.size - 1),
+            "p": 1.0,
+            "ci95_low": mean_diff,
+            "ci95_high": mean_diff,
+        }
+    t_stat = mean_diff / se_diff
+    df = diffs.size - 1
+    if HAVE_SCIPY:
+        p_value = float(2 * (1 - sps.t.cdf(abs(t_stat), df)))
+    else:
+        p_value = float(2 * (1 - statistics.NormalDist().cdf(abs(t_stat))))
+    half = 1.96 * se_diff
+    return {
+        "valid": True,
+        "n_pairs": int(diffs.size),
+        "shared_seeds": shared,
+        "mean_diff": mean_diff,
+        "std_diff": std_diff,
+        "se_diff": se_diff,
+        "t": t_stat,
+        "df": float(df),
+        "p": p_value,
+        "ci95_low": mean_diff - half,
+        "ci95_high": mean_diff + half,
+    }
 
 
-def conservative_pareto(groups: List[GroupStats]) -> List[GroupStats]:
-    """Return groups on the (conservative, -wall_mean) Pareto frontier.
-    Higher conservative is better; lower wall is better."""
-    items = [g for g in groups if g.n_seeds >= 2 and not math.isnan(g.wall_mean)]
-    pareto = []
-    for g in items:
+def minimum_detectable_effect(
+    n_a: int,
+    n_b: int,
+    pooled_std: float,
+    alpha: float = 0.05,
+    power: float = 0.80,
+) -> Dict[str, float]:
+    if n_a < 2 or n_b < 2 or pooled_std <= 0:
+        return {"valid": False}
+    z_alpha = _norm_ppf(1.0 - alpha / 2.0)
+    z_beta = _norm_ppf(power)
+    se = pooled_std * math.sqrt(1.0 / n_a + 1.0 / n_b)
+    return {
+        "valid": True,
+        "alpha": alpha,
+        "power": power,
+        "mde": (z_alpha + z_beta) * se,
+    }
+
+
+def paired_minimum_detectable_effect(
+    std_diff: float,
+    n_pairs: int,
+    alpha: float = 0.05,
+    power: float = 0.80,
+) -> Dict[str, float]:
+    if n_pairs < 2 or std_diff <= 0:
+        return {"valid": False}
+    z_alpha = _norm_ppf(1.0 - alpha / 2.0)
+    z_beta = _norm_ppf(power)
+    return {
+        "valid": True,
+        "alpha": alpha,
+        "power": power,
+        "mde": (z_alpha + z_beta) * std_diff / math.sqrt(n_pairs),
+    }
+
+
+def pairwise_compare(
+    group_a: GroupStats,
+    group_b: GroupStats,
+    n_bootstrap: int = 4000,
+) -> Dict[str, object]:
+    std_a = group_a.bootstrap_std_ci(n_bootstrap=n_bootstrap)
+    std_b = group_b.bootstrap_std_ci(n_bootstrap=n_bootstrap)
+    var_ratio = group_a.var / group_b.var if group_b.var > 0 else float("nan")
+    variance_reduction_pct = (1.0 - var_ratio) * 100.0 if math.isfinite(var_ratio) else float("nan")
+    pooled_std = math.sqrt(max(group_a.var + group_b.var, 0.0) / 2.0)
+    paired = paired_seed_test(group_a, group_b)
+    return {
+        "a": group_a.label,
+        "b": group_b.label,
+        "welch": welch_t_test(group_a.deltas, group_b.deltas),
+        "levene_mean": scale_test(group_a.deltas, group_b.deltas, center="mean"),
+        "brown_forsythe": scale_test(group_a.deltas, group_b.deltas, center="median"),
+        "f_var": f_var_ratio(group_a.deltas, group_b.deltas),
+        "paired": paired,
+        "var_ratio": var_ratio,
+        "std_ratio": math.sqrt(var_ratio) if math.isfinite(var_ratio) and var_ratio >= 0 else float("nan"),
+        "variance_reduction_pct": variance_reduction_pct,
+        "std_ci_a": std_a,
+        "std_ci_b": std_b,
+        "mde_independent": minimum_detectable_effect(group_a.n_seeds, group_b.n_seeds, pooled_std),
+        "mde_paired": paired_minimum_detectable_effect(
+            std_diff=float(paired.get("std_diff", float("nan"))) if paired.get("valid") else float("nan"),
+            n_pairs=int(paired.get("n_pairs", 0)),
+        ),
+    }
+
+
+def conservative_pareto(groups: Sequence[GroupStats]) -> List[GroupStats]:
+    candidates = [group for group in groups if group.n_seeds >= 2 and math.isfinite(group.wall_mean)]
+    frontier: List[GroupStats] = []
+    for group in candidates:
         dominated = False
-        for h in items:
-            if h is g: continue
-            if (h.conservative >= g.conservative and h.wall_mean <= g.wall_mean and
-                (h.conservative > g.conservative or h.wall_mean < g.wall_mean)):
+        for other in candidates:
+            if other is group:
+                continue
+            if (
+                other.conservative >= group.conservative
+                and other.wall_mean <= group.wall_mean
+                and (other.conservative > group.conservative or other.wall_mean < group.wall_mean)
+            ):
                 dominated = True
                 break
         if not dominated:
-            pareto.append(g)
-    return pareto
+            frontier.append(group)
+    return sorted(frontier, key=lambda group: group.wall_mean)
 
 
-def print_summary(groups: List[GroupStats], title: str = "") -> None:
-    if title: print(f"\n=== {title} ===")
-    print(f"{'config':<28} {'cont':<6} {'n_paths':>7} {'n':>3} "
-          f"{'mean Δ%':>9} {'std':>6} {'SE':>6} {'95% CI':>20} "
-          f"{'conservative':>12} {'wall_s':>8}")
-    print("-" * 120)
-    for g in sorted(groups, key=lambda g: -g.mean):
-        ci = g.ci95
-        print(f"{g.label:<28} {g.contract:<6} {g.n_paths:>7d} {g.n_seeds:>3d} "
-              f"{g.mean:>+9.3f} {g.std:>6.3f} {g.se:>6.3f} "
-              f"[{ci[0]:+.3f},{ci[1]:+.3f}]  {g.conservative:>+12.3f} {g.wall_mean:>8.0f}")
+def comparisons_against_reference(
+    groups: Sequence[GroupStats],
+    reference_label: str = "H1_only",
+    n_bootstrap: int = 4000,
+) -> List[Dict[str, object]]:
+    reference = next((group for group in groups if group.label == reference_label), None)
+    if reference is None:
+        return []
+    rows: List[Dict[str, object]] = []
+    for group in sorted(groups, key=lambda item: (-item.mean, item.label)):
+        if group.label == reference_label:
+            continue
+        comparison = pairwise_compare(group, reference, n_bootstrap=n_bootstrap)
+        rows.append({"group": group, "comparison": comparison})
+    return rows
+
+
+def build_payload(
+    contract: str = "focal",
+    n_paths: int = 4096,
+    reference_label: str = "H1_only",
+    n_bootstrap: int = 4000,
+) -> Dict[str, object]:
+    rows = load_sources()
+    groups = summarize_groups(rows)
+    filtered = filter_groups(groups, contract=contract, n_paths=n_paths, min_seeds=2)
+    payload = {
+        "rows_loaded": len(rows),
+        "groups": [group.to_payload(n_bootstrap=n_bootstrap) for group in filtered],
+        "pairwise_vs_reference": [],
+        "pareto": [group.to_payload(n_bootstrap=n_bootstrap) for group in conservative_pareto(filtered)],
+    }
+    for row in comparisons_against_reference(
+        filtered, reference_label=reference_label, n_bootstrap=n_bootstrap
+    ):
+        group = row["group"]
+        comparison = row["comparison"]
+        payload["pairwise_vs_reference"].append(
+            {
+                "label": group.label,
+                "n_seeds": group.n_seeds,
+                "mean": group.mean,
+                "std": group.std,
+                "se": group.se,
+                "wall_mean": group.wall_mean,
+                **comparison,
+            }
+        )
+    return payload
+
+
+def print_summary(groups: Sequence[GroupStats], title: str = "") -> None:
+    if title:
+        print(f"\n=== {title} ===")
+    print(
+        f"{'config':<28} {'cont':<6} {'n_paths':>7} {'n':>3} "
+        f"{'mean Δ%':>9} {'std':>7} {'SE':>7} {'95% CI':>22} {'std boot CI':>24} {'wall_s':>8}"
+    )
+    print("-" * 140)
+    for group in sorted(groups, key=lambda item: (-item.mean, item.label)):
+        ci_low, ci_high = group.ci95
+        std_ci = group.bootstrap_std_ci(n_bootstrap=2000)
+        if std_ci.get("valid"):
+            std_ci_str = f"[{std_ci['ci_low']:+.3f},{std_ci['ci_high']:+.3f}]"
+        else:
+            std_ci_str = "n/a"
+        print(
+            f"{group.label:<28} {group.contract:<6} {group.n_paths:>7d} {group.n_seeds:>3d} "
+            f"{group.mean:>+9.3f} {group.std:>7.3f} {group.se:>7.3f} "
+            f"[{ci_low:+.3f},{ci_high:+.3f}] {std_ci_str:>24} {group.wall_mean:>8.0f}"
+        )
+
+
+def print_pairwise(groups: Sequence[GroupStats], reference_label: str, n_bootstrap: int) -> None:
+    reference = next((group for group in groups if group.label == reference_label), None)
+    if reference is None:
+        print(f"\nReference '{reference_label}' not found.")
+        return
+    print(f"\n=== Pairwise vs {reference.label} (n={reference.n_seeds}, mean={reference.mean:+.3f} pp) ===")
+    print(
+        f"{'config':<24} {'gap':>8} {'p(mean)':>8} {'var red%':>9} {'p(BF)':>8} {'pairs':>5} {'p(pair)':>8} {'MDE ind':>8} {'MDE pair':>9}"
+    )
+    print("-" * 110)
+    for row in comparisons_against_reference(groups, reference_label=reference_label, n_bootstrap=n_bootstrap):
+        group = row["group"]
+        comparison = row["comparison"]
+        welch = comparison["welch"]
+        bf = comparison["brown_forsythe"]
+        paired = comparison["paired"]
+        mde_ind = comparison["mde_independent"]
+        mde_pair = comparison["mde_paired"]
+        gap = welch.get("mean_diff", float("nan")) if welch.get("valid") else float("nan")
+        p_mean = welch.get("p", float("nan")) if welch.get("valid") else float("nan")
+        p_bf = bf.get("p", float("nan")) if bf.get("valid") else float("nan")
+        pairs = int(paired.get("n_pairs", 0)) if paired else 0
+        p_pair = paired.get("p", float("nan")) if paired.get("valid") else float("nan")
+        mde_ind_val = mde_ind.get("mde", float("nan")) if mde_ind.get("valid") else float("nan")
+        mde_pair_val = mde_pair.get("mde", float("nan")) if mde_pair.get("valid") else float("nan")
+        print(
+            f"{group.label:<24} {gap:>+8.3f} {p_mean:>8.3f} {comparison['variance_reduction_pct']:>+9.1f} {p_bf:>8.3f} "
+            f"{pairs:>5d} {p_pair:>8.3f} {mde_ind_val:>8.3f} {mde_pair_val:>9.3f}"
+        )
 
 
 def main() -> None:
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--filter_contract", type=str, default="focal")
-    p.add_argument("--filter_npaths", type=int, default=4096)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--filter_contract", type=str, default="focal")
+    parser.add_argument("--filter_npaths", type=int, default=4096)
+    parser.add_argument("--reference_label", type=str, default="H1_only")
+    parser.add_argument("--bootstrap", type=int, default=4000)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
 
     rows = load_sources()
-    print(f"Loaded {len(rows)} OK rows from disk")
     groups = summarize_groups(rows)
+    filtered = filter_groups(groups, contract=args.filter_contract, n_paths=args.filter_npaths, min_seeds=2)
 
-    # Print everything first
-    print_summary(groups, "ALL groups")
+    if args.json:
+        print(
+            json.dumps(
+                build_payload(
+                    contract=args.filter_contract,
+                    n_paths=args.filter_npaths,
+                    reference_label=args.reference_label,
+                    n_bootstrap=args.bootstrap,
+                ),
+                indent=2,
+            )
+        )
+        return
 
-    # Filter to focal @ requested n_paths
-    target = [g for g in groups if g.contract == args.filter_contract and g.n_paths == args.filter_npaths and g.n_seeds >= 2]
-    print_summary(target, f"FILTERED: contract={args.filter_contract}, n_paths={args.filter_npaths}")
+    print(f"Loaded {len(rows)} deduplicated OK rows from disk")
+    print_summary(groups, title="ALL groups")
+    print_summary(filtered, title=f"FILTERED: contract={args.filter_contract}, n_paths={args.filter_npaths}")
+    print_pairwise(filtered, reference_label=args.reference_label, n_bootstrap=args.bootstrap)
 
-    # Pairwise tests vs H1_only
-    h1 = next((g for g in target if g.label == "H1_only"), None)
-    if h1:
-        print(f"\n=== Pairwise vs H1_only (n={h1.n_seeds}, mean={h1.mean:+.3f} pp) ===")
-        print(f"{'config':<28} {'n':>3} {'mean':>8} {'gap':>8} {'t':>6} {'p(t)':>7} {'p(Lev)':>8} {'verdict':<24}")
-        print("-" * 100)
-        for g in sorted(target, key=lambda g: -g.mean):
-            if g is h1: continue
-            cmp = pairwise_compare(g, h1)
-            w = cmp["welch"]
-            lev = cmp["levene"]
-            if not w.get("valid"):
-                continue
-            t = w["t"]
-            pval = w["p"]
-            pl = lev.get("p") if lev.get("valid") else float("nan")
-            if pval < 0.05 and t > 0: verdict = "DECISIVELY better mean"
-            elif pval < 0.05 and t < 0: verdict = "DECISIVELY worse mean"
-            elif pval < 0.20 and t > 0: verdict = "weakly better mean"
-            elif pval < 0.20 and t < 0: verdict = "weakly worse mean"
-            else: verdict = "no different mean"
-            print(f"{g.label:<28} {g.n_seeds:>3d} {g.mean:>+8.3f} {w['mean_diff']:>+8.3f} "
-                  f"{t:>+6.2f} {pval:>7.3f} {pl if not math.isnan(pl) else 0.0:>8.3f}  {verdict:<24}")
-
-    # Pareto frontier
-    pareto = conservative_pareto(target)
+    pareto = conservative_pareto(filtered)
     if pareto:
-        print(f"\n=== Pareto frontier (conservative Δ% vs wall_clock) ===")
-        for g in sorted(pareto, key=lambda g: g.wall_mean):
-            print(f"  {g.label:<28} conservative={g.conservative:+.3f}%  wall={g.wall_mean:.0f}s  n={g.n_seeds}")
+        print("\n=== Pareto frontier (conservative Δ% vs wall-clock) ===")
+        for group in pareto:
+            print(
+                f"  {group.label:<28} conservative={group.conservative:+.3f}% "
+                f"std={group.std:.3f} wall={group.wall_mean:.0f}s n={group.n_seeds}"
+            )
 
 
 if __name__ == "__main__":

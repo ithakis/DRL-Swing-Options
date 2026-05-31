@@ -153,11 +153,82 @@ STAGE_D_CONFIGS: List[Dict[str, object]] = [
     {"kind": "tiny_nn", "label": "tiny_lr10x", "overrides": _with_lr(approx_overrides("tiny_nn", tiny_width=32, tiny_activation="silu"), 10)},
 ]
 
+# Stage F — config-simplification ablation (one feature at a time).
+#
+# Now that the semi-analytical kernel makes the TD target deterministic, most of
+# the v59-61 stability machinery (which existed to tame the NOISY single-sample
+# target) may be redundant.  This stage starts from the FULL v61 stability stack
+# running WITH the kernel ON (the F_anchor), then removes ONE feature per config
+# so attribution is clean.  A feature is "removable" if its ablation is
+# statistically indistinguishable from the anchor (Welch p>0.05 on Delta%) at
+# equal-or-lower seed variance, in BOTH the focal-g2 and nocost regimes.
+#
+# The anchor pins the v61 values explicitly (overriding FAST_KERNEL's warmup=0),
+# so each toggle below changes exactly one field relative to the anchor.
+F_ANCHOR_OV: Dict[str, str] = {
+    "--approximator": "nn",
+    "--critic_warmup_episodes": "1024",   # v61 value (FAST_KERNEL would zero it)
+    "--target_policy_noise": "0.15",
+    "--adaptive_noise_scale": "0.6",
+    "-per": "1",
+    "-t": "0.0032",
+    "--norm": "layernorm",
+    "-layer_size": "64",
+    "--actor_grad_clip": "1.0",
+    "--critic_grad_clip": "2.5",
+}
+
+
+def _abl(label: str, **changes: str) -> Dict[str, object]:
+    """One Stage-F config: the anchor with `changes` overlaid (one feature off)."""
+    return {"kind": "nn", "label": label, "overrides": {**F_ANCHOR_OV, **changes}}
+
+
+STAGE_F_CONFIGS: List[Dict[str, object]] = [
+    _abl("F_anchor"),                                              # full v61 stack + kernel
+    _abl("F_no_critic_warmup", **{"--critic_warmup_episodes": "0"}),
+    _abl("F_no_target_noise",  **{"--target_policy_noise": "0.0"}),
+    _abl("F_no_adaptive_noise", **{"--adaptive_noise_scale": "0.0"}),
+    _abl("F_no_per",           **{"-per": "0"}),
+    _abl("F_const_per",        **{"--per_alpha": "0.1", "--per_alpha_final": "0.1"}),  # no alpha ramp
+    _abl("F_relaxed_clip",     **{"--actor_grad_clip": "100", "--critic_grad_clip": "100"}),
+    _abl("F_bigger_tau",       **{"-t": "0.01"}),
+    _abl("F_no_layernorm",     **{"--norm": "none"}),
+    _abl("F_width32",          **{"-layer_size": "32"}),
+    # Stacked removal: drop PER+Fenwick, critic-warmup, and target-policy noise
+    # together (the three that screened accuracy-neutral at 3 seeds), KEEPING
+    # adaptive_noise (decisively load-bearing: its removal collapsed nocost).
+    # This is the decisive 12-seed x 4-regime confirmation arm.
+    _abl("F_minimal", **{"-per": "0", "--critic_warmup_episodes": "0",
+                         "--target_policy_noise": "0.0"}),
+    # Corrected stack after 12-seed confirmation: drop ONLY the two removals that
+    # were clean in all 4 regimes (PER+Fenwick and target-policy noise). Critic
+    # warmup is RETAINED -- removing it collapsed the g1 regime (-2.15 +/- 5.75).
+    _abl("F_minimal2", **{"-per": "0", "--target_policy_noise": "0.0"}),
+]
+
+# Stage G — speed levers (accuracy/consistency-preserving). Profiling showed the
+# per-step learn() torch compute dominates wall-clock (~83%), env/IPC is ~0.3%, and
+# the FAST kernel is ~free. So feature *removal* buys code/C++ simplicity, not speed;
+# the real speed levers are (1) fewer learn() calls per episode (`-learn_every`, which
+# the v61 paper config already sets to 2 -> test 4) and (2) fewer episodes (the n_paths
+# convergence knee, since the deterministic kernel target should converge faster).
+# LayerNorm-off and width32 are tested here too: small speed, real C++-port simplicity.
+# Each arm changes exactly ONE field vs G_anchor (== F_anchor, v61 stack + FAST kernel).
+STAGE_G_CONFIGS: List[Dict[str, object]] = [
+    _abl("G_anchor"),                                   # v61 stack + FAST kernel (learn_every=2)
+    _abl("G_learn4",       **{"-learn_every": "4"}),    # ~2x fewer learn() calls vs anchor
+    _abl("G_no_layernorm", **{"--norm": "none"}),       # ~8% + C++ simplicity
+    _abl("G_width32",      **{"-layer_size": "32"}),    # smaller net
+]
+
 STAGE_DEFAULTS = {
     "A": {"seeds": list(range(11, 15)), "n_paths": [4096], "kernel": FAST_KERNEL, "workers": 4},
     "B": {"seeds": list(range(11, 35)), "n_paths": [4096], "kernel": FAST_KERNEL, "workers": 4},
     "C": {"seeds": list(range(11, 17)), "n_paths": [8192, 32768], "kernel": ACCURATE_KERNEL, "workers": 3},
     "D": {"seeds": list(range(11, 15)), "n_paths": [4096], "kernel": FAST_KERNEL, "workers": 4},
+    "F": {"seeds": list(range(11, 23)), "n_paths": [4096], "kernel": FAST_KERNEL, "workers": 4},
+    "G": {"seeds": [11, 12, 13], "n_paths": [4096], "kernel": FAST_KERNEL, "workers": 4},
 }
 
 # ----------------------------- CSV / resume ---------------------------------
@@ -209,6 +280,10 @@ def configs_for_stage(stage: str) -> List[Dict[str, object]]:
         return [c for c in STAGE_B_CONFIGS if c["label"] in STAGE_C_LABELS]
     if stage == "D":
         return STAGE_D_CONFIGS
+    if stage == "F":
+        return STAGE_F_CONFIGS
+    if stage == "G":
+        return STAGE_G_CONFIGS
     raise ValueError(stage)
 
 
@@ -236,7 +311,7 @@ def build_runs(stage: str, regimes: Sequence[str], seeds: Sequence[int],
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "C", "D"], required=True)
+    p.add_argument("--stage", choices=["A", "B", "C", "D", "F", "G"], required=True)
     p.add_argument("--max_workers", type=int, default=None,
                    help="Parallel subprocess cap (default per-stage: A/B=4, C=3).")
     p.add_argument("--seeds", type=int, nargs="+", default=None,

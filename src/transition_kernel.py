@@ -431,7 +431,6 @@ def expected_critic_target(
     kernel: TransitionKernel,
     *,
     strike: float,
-    target_policy_noise: float = 0.0,
     chunk_size: Optional[int] = None,
 ):
     """Compute E[critic_target(s', pi_target(s'))] under the quadrature kernel.
@@ -489,12 +488,6 @@ def expected_critic_target(
         flat_states = next_states_BM.reshape(B * M, -1)
         with torch.no_grad():
             actions = actor_target(flat_states)
-            if target_policy_noise and target_policy_noise > 0.0:
-                noise = torch.randn_like(actions) * target_policy_noise
-                actions = torch.clamp(actions + noise, 0.0, 1.0)
-                apply_gate = getattr(actor_target, "apply_profitability_gate", None)
-                if apply_gate is not None:
-                    actions = apply_gate(q_raw=actions, state=flat_states)
             q = critic_target(flat_states, actions)
         q = q.reshape(B, M)
     else:
@@ -505,12 +498,6 @@ def expected_critic_target(
                 end = min(start + chunk_size, M)
                 chunk = next_states_BM[:, start:end, :].reshape(B * (end - start), -1)
                 actions = actor_target(chunk)
-                if target_policy_noise and target_policy_noise > 0.0:
-                    noise = torch.randn_like(actions) * target_policy_noise
-                    actions = torch.clamp(actions + noise, 0.0, 1.0)
-                    apply_gate = getattr(actor_target, "apply_profitability_gate", None)
-                    if apply_gate is not None:
-                        actions = apply_gate(q_raw=actions, state=chunk)
                 q_chunk = critic_target(chunk, actions).reshape(B, end - start)
                 q[:, start:end] = q_chunk
 

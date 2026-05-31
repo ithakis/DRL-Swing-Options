@@ -10,6 +10,7 @@ Author: Senior AI RL Developer
 """
 
 import argparse
+import contextlib
 import csv
 import json
 import multiprocessing as mp
@@ -271,85 +272,6 @@ class ConfigManager:
         # D4PG Algorithm Parameters
         # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
-        # PER hyperparameters
-        parser.add_argument(
-            "--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)"
-        )
-        parser.add_argument(
-            "--per_beta_start",
-            type=float,
-            default=0.4,
-            help="PER: initial importance sampling weight beta_start (default: 0.4)",
-        )
-        parser.add_argument(
-            "--per_beta_frames",
-            type=int,
-            default=100000,
-            help="PER: frames to anneal beta to 1.0 (default: 100000)",
-        )
-        parser.add_argument(
-            "--per_priority_floor",
-            type=float,
-            default=1e-6,
-            help="Minimum PER priority to avoid zeros (default: 1e-6)",
-        )
-        parser.add_argument(
-            "--per_priority_clip_pct",
-            type=float,
-            default=0.0,
-            help="Clip PER priorities to this percentile (0 disables, default: disabled)",
-        )
-        parser.add_argument(
-            "--per_priority_scheme",
-            type=str,
-            default="standard",
-            choices=["standard", "lap"],
-            help="PER: base priority scheme {standard=|TD|, lap=Huber loss} (default: standard)",
-        )
-        parser.add_argument(
-            "--per_huber_kappa",
-            type=float,
-            default=1.0,
-            help="PER: Huber threshold kappa for lap scheme (default: 1.0)",
-        )
-        parser.add_argument(
-            "--per_alpha_final",
-            type=float,
-            default=None,
-            help="Optional PER alpha target for scheduling (None disables)",
-        )
-        parser.add_argument(
-            "--per_alpha_ramp_start",
-            type=int,
-            default=0,
-            help="Episode to start PER alpha ramp (0 disables if end<=start)",
-        )
-        parser.add_argument(
-            "--per_alpha_ramp_end",
-            type=int,
-            default=0,
-            help="Episode to end PER alpha ramp (0 disables if end<=start)",
-        )
-        parser.add_argument(
-            "--per_beta_final",
-            type=float,
-            default=None,
-            help="Optional PER beta target for scheduling (None keeps default beta behavior)",
-        )
-        parser.add_argument(
-            "--per_alpha_sigmoid",
-            type=int,
-            default=0,
-            choices=[0, 1],
-            help="Use sigmoid ramp for PER alpha/beta (default: 0 / linear)",
-        )
-        parser.add_argument(
-            "-per",
-            type=int,
-            default=1,
-            choices=[0, 1],
-            help="Adding Prioritized Experience Replay to the agent if set to 1, default = 1",
-        )
         parser.add_argument(
             "-noise_sigma0",
             type=float,
@@ -375,6 +297,13 @@ class ConfigManager:
             help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx).",
         )
         parser.add_argument(
+            "--single_critic_step",
+            type=int,
+            choices=[0, 1],
+            default=1,
+            help="v63 audit E4: 1 (default, canonical) = single critic optimizer step. 0 restores the legacy double-step only to reproduce pre-fix v63 numbers.",
+        )
+        parser.add_argument(
             "--adaptive_noise_scale",
             type=float,
             default=0.0,
@@ -388,22 +317,44 @@ class ConfigManager:
             help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2",
         )
         parser.add_argument(
-            "--target_noise_decay_start",
-            type=int,
-            default=0,
-            help="v60: Episode to start decaying target policy noise (0 disables). Recommended: 15000",
-        )
-        parser.add_argument(
-            "--target_noise_floor",
-            type=float,
-            default=0.02,
-            help="v60: Minimum target policy noise after decay. Default: 0.02",
-        )
-        parser.add_argument(
             "--actor_output_activation",
             type=str,
             default="tanh01",
             help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01",
+        )
+        parser.add_argument(
+            "--calibrate_bias_mode",
+            type=str,
+            choices=["closed_form", "rprop"],
+            default="closed_form",
+            help="Actor warm-start: 'closed_form' (default, O(1)-pass myopic FOC) or 'rprop' (legacy 20-iter finite-difference loop).",
+        )
+        # Task 2 — scheduler simplification (all default to current behavior).
+        parser.add_argument(
+            "--noise_schedule",
+            type=str,
+            choices=["hyperbolic", "const_floor", "linear"],
+            default="hyperbolic",
+            help="Exploration-noise schedule after the plateau: 'hyperbolic' (default), 'const_floor' (hard step to floor), or 'linear' (sigma0->floor over the horizon).",
+        )
+        parser.add_argument(
+            "--noise_decay_episodes",
+            type=int,
+            default=-1,
+            help="Horizon for the 'linear' noise schedule. <=0 (default) uses the training horizon (n_paths).",
+        )
+        parser.add_argument(
+            "--weight_averaging",
+            type=str,
+            choices=["off", "ema"],
+            default="off",
+            help="Eval-only weight averaging: 'off' (default) or 'ema' (EMA of actor weights used for evaluation only).",
+        )
+        parser.add_argument(
+            "--ema_decay",
+            type=float,
+            default=0.999,
+            help="EMA decay for --weight_averaging ema (default 0.999).",
         )
 
         # Network and Learning Parameters
@@ -499,38 +450,6 @@ class ConfigManager:
             help="Minimum learning rate floor (default: 1e-7)",
         )
         parser.add_argument(
-            "--actor_grad_clip",
-            type=float,
-            default=0.0,
-            help="Clip threshold for actor gradients (<=0 disables clipping, default: 0.0 / disabled)",
-        )
-        parser.add_argument(
-            "--critic_grad_clip",
-            type=float,
-            default=0.0,
-            help="Clip threshold for critic gradients (<=0 disables clipping, default: 0.0 / disabled)",
-        )
-        parser.add_argument(
-            "--actor_grad_clip_type",
-            type=str,
-            choices=["norm", "value", "none"],
-            default="none",
-            help="Clipping strategy for actor gradients (default: none/disabled)",
-        )
-        parser.add_argument(
-            "--critic_grad_clip_type",
-            type=str,
-            choices=["norm", "value", "none"],
-            default="none",
-            help="Clipping strategy for critic gradients (default: none/disabled)",
-        )
-        parser.add_argument(
-            "--grad_clip_norm_type",
-            type=float,
-            default=2.0,
-            help="Norm type used when clipping by norm (default: 2.0 for L2 norm)",
-        )
-        parser.add_argument(
             "--max_replay_size",
             type=int,
             default=int(1e5),
@@ -572,18 +491,6 @@ class ConfigManager:
             type=float,
             default=1e-4,
             help="Decoupled weight decay applied to the critic optimizer (default: 1e-4)",
-        )
-        parser.add_argument(
-            "--target_policy_noise",
-            type=float,
-            default=0.1,
-            help="Std of noise added to target actions for smoothing (default: 0.1; 0 disables)",
-        )
-        parser.add_argument(
-            "--target_policy_clip",
-            type=float,
-            default=0.25,
-            help="Clipping range for target policy smoothing noise (default: 0.25)",
         )
 
         # System and Optimization Parameters
@@ -1189,7 +1096,7 @@ def run_training(
         last_eval_price = eval_summary.option_price
         last_avg_exercised = eval_summary.avg_total_exercised
     for current_path in range(1, args.n_paths + 1):
-        # Fix 3: Update episode count in PER for proper beta annealing
+        # Drives the agent's noise/warmup episode-based schedules
         agent.update_episode_count(current_path)
         path_start_time = time.time()
 
@@ -1531,7 +1438,6 @@ def main():
             state_size=train_env.observation_space.shape[0],
             action_size=train_env.action_space.shape[0],
             n_step=args.nstep,
-            per=args.per,
             random_seed=seed,
             hidden_size=args.layer_size,
             actor_hidden_size=actor_hidden_size,
@@ -1541,8 +1447,6 @@ def main():
             optimizer=args.optimizer,
             weight_decay_actor=args.weight_decay_actor,
             weight_decay_critic=args.weight_decay_critic,
-            target_policy_noise=args.target_policy_noise,
-            target_policy_clip=args.target_policy_clip,
             BUFFER_SIZE=args.max_replay_size,
             BATCH_SIZE=args.batch_size,
             GAMMA=args.gamma,
@@ -1560,39 +1464,26 @@ def main():
             speed_mode=True,
             use_compile=args.compile,
             use_amp=False,
-            per_alpha=args.per_alpha,
-            per_beta_start=args.per_beta_start,
-            per_beta_frames=args.per_beta_frames,
-            per_priority_floor=args.per_priority_floor,
-            per_priority_clip_pct=args.per_priority_clip_pct,
-            per_priority_scheme=args.per_priority_scheme,
-            per_huber_kappa=args.per_huber_kappa,
-            per_alpha_final=args.per_alpha_final,
-            per_alpha_ramp_start=args.per_alpha_ramp_start,
-            per_alpha_ramp_end=args.per_alpha_ramp_end,
-            per_beta_final=args.per_beta_final,
-            per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
             final_lr_fraction=args.final_lr_fraction,
             lr_schedule_episodes=args.lr_schedule_episodes,
             warmup_episodes=args.warmup_episodes,
             min_lr=args.min_lr,
-            actor_grad_clip=args.actor_grad_clip,
-            critic_grad_clip=args.critic_grad_clip,
-            actor_grad_clip_type=args.actor_grad_clip_type,
-            critic_grad_clip_type=args.critic_grad_clip_type,
-            grad_clip_norm_type=args.grad_clip_norm_type,
             activation=args.activation,
             norm_type=args.norm,
             init_method=args.init_method,
             log_interval_scale=log_interval_scale,
             replay_memmap=bool(args.replay_memmap),
             actor_type=args.actor_type,
+            single_critic_step=bool(args.single_critic_step),
             critic_warmup_episodes=args.critic_warmup_episodes,
             adaptive_noise_scale=args.adaptive_noise_scale,
+            # Task 2 — scheduler simplification (defaults preserve current behavior)
+            noise_schedule=args.noise_schedule,
+            noise_decay_episodes=(args.noise_decay_episodes if args.noise_decay_episodes > 0 else args.n_paths),
+            weight_averaging=args.weight_averaging,
+            ema_decay=args.ema_decay,
             # v60 parameters
             warmup_noise_fraction=args.warmup_noise_fraction,
-            target_noise_decay_start=args.target_noise_decay_start,
-            target_noise_floor=args.target_noise_floor,
             action_output=args.actor_output_activation,
             # v62 parameters
             use_robust_normalization=bool(args.use_robust_normalization),
@@ -1618,11 +1509,15 @@ def main():
         else:
             # Warm up the actor using the first 2048 episodes (no training)
             # Iteratively optimize bias to maximize swing option price
-            # Warm up the actor using the first warmup_episodes (no training)
-            # Iteratively optimize bias to maximize swing option price (Rprop)
+            # Warm up the actor using the first warmup_episodes (no training).
+            # Mode: closed-form myopic FOC (default) or legacy Rprop loop.
+            _calib_t0 = time.perf_counter()
             agent.calibrate_bias(
-                env=train_env, n_episodes=args.warmup_episodes, max_iterations=20, target_std=0.005
+                env=train_env, n_episodes=args.warmup_episodes, max_iterations=20, target_std=0.005,
+                mode=args.calibrate_bias_mode,
             )
+            print(f"Calibration wall-time: {time.perf_counter() - _calib_t0:.3f}s "
+                  f"(mode={args.calibrate_bias_mode})")
 
         if args.eval_benchmark:
             print("\nRunning standalone evaluation benchmark (evaluation only)...")
@@ -1681,19 +1576,25 @@ def main():
         if "tensorboard_writer" in locals():
             tensorboard_writer.close()
 
-    # Save trained model (handle compiled models)
+    # Save trained model (handle compiled models). When eval-only EMA is active we
+    # save the EMA-averaged weights (the policy that produced the reported eval price),
+    # so a reloaded model reproduces the evaluation. No-op (saves training weights) when
+    # weight_averaging is off. averaged_eval_actor() swaps EMA into actor_local (and the
+    # shared _actor_local_orig params) for the duration of the save, then restores.
     try:
-        if hasattr(agent, "_actor_local_orig"):
-            # Use original uncompiled model if torch.compile was used
-            torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
-            print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
-        elif hasattr(agent.actor_local, "state_dict"):
-            # No compilation was used, save the regular actor_local
-            torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
-            print(f"✅ Model saved to: runs/{args.name}.pth")
-        else:
-            print("⚠️ Could not save model: actor_local appears to be compiled and no original model found")
-            print("Consider disabling torch.compile (--compile 0) for model saving")
+        ema_ctx = getattr(agent, "averaged_eval_actor", None)
+        with (ema_ctx() if callable(ema_ctx) else contextlib.nullcontext()):
+            if hasattr(agent, "_actor_local_orig"):
+                # Use original uncompiled model if torch.compile was used
+                torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
+                print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
+            elif hasattr(agent.actor_local, "state_dict"):
+                # No compilation was used, save the regular actor_local
+                torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
+                print(f"✅ Model saved to: runs/{args.name}.pth")
+            else:
+                print("⚠️ Could not save model: actor_local appears to be compiled and no original model found")
+                print("Consider disabling torch.compile (--compile 0) for model saving")
     except Exception as e:
         print(f"⚠️ Could not save model: {e}")
 
