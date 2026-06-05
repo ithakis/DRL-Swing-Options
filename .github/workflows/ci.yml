@@ -18,9 +18,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
         with:
-          # Use src= so the action does not append the repo root (which includes notebooks).
-          # ruff.toml enforces E9/F821/F841/W605; notebooks/docs/Paper are excluded there.
-          src: "src tools run.py evaluate_saved_agent.py"
+          src: |
+            src
+            tools
+            run.py
+            evaluate_saved_agent.py
 
   test:
     name: tests + v64 smoke
