@@ -10,6 +10,7 @@ Author: Senior AI RL Developer
 """
 
 import argparse
+import contextlib
 import csv
 import json
 import multiprocessing as mp
@@ -126,13 +127,6 @@ class ConfigManager:
         """Create and configure argument parser"""
         parser = argparse.ArgumentParser(description="Swing Option Pricing with D4PG")
 
-        parser.add_argument(
-            "--actor_type",
-            type=str,
-            default="standard",
-            choices=["standard", "finance_informed"],
-            help="Type of actor architecture. 'finance_informed' uses a greedy baseline.",
-        )
         # Replay Buffer Parameters
         parser.add_argument(
             "-n_paths",
@@ -189,19 +183,19 @@ class ConfigManager:
             "--q_min", type=float, default=0.0, help="Minimum exercise quantity per period, default = 0.0"
         )
         parser.add_argument(
-            "--q_max", type=float, default=1.0, help="Maximum exercise quantity per period, default = 1.0"
+            "--q_max", type=float, default=2.0, help="Maximum exercise quantity per period, default = 2.0 (v64 focal)"
         )
         parser.add_argument(
             "--Q_min", type=float, default=0.0, help="Global minimum total volume, default = 0.0"
         )
         parser.add_argument(
-            "--Q_max", type=float, default=10.0, help="Global maximum total volume, default = 10.0"
+            "--Q_max", type=float, default=20.0, help="Global maximum total volume, default = 10.0"
         )
-        parser.add_argument("--strike", type=float, default=100.0, help="Strike price K, default = 100.0")
+        parser.add_argument("--strike", type=float, default=1.0, help="Strike price K, default = 100.0")
         parser.add_argument(
-            "--maturity", type=float, default=1.0, help="Time to maturity in years, default = 1.0"
+            "--maturity", type=float, default=0.0833, help="Time to maturity in years, default = 0.0833 (v64 focal ~1 month)"
         )
-        parser.add_argument("--n_rights", type=int, default=250, help="Number of decision dates, default = 250")
+        parser.add_argument("--n_rights", type=int, default=22, help="Number of decision dates, default = 22 (v64 focal)")
         parser.add_argument(
             "--risk_free_rate", type=float, default=0.05, help="Risk-free rate for discounting, default = 0.05"
         )
@@ -214,13 +208,13 @@ class ConfigManager:
         parser.add_argument(
             "--c_cost",
             type=float,
-            default=0.0,
+            default=0.04,
             help="Convex cost coefficient c for per-unit exercise cost (0 disables the cost).",
         )
         parser.add_argument(
             "--gamma_cost",
             type=float,
-            default=1.0,
+            default=2.0,
             help="Convex cost exponent gamma for per-unit exercise cost.",
         )
 
@@ -228,14 +222,14 @@ class ConfigManager:
         parser.add_argument(
             "--lsm_basis",
             type=str,
-            default="power",
+            default="chebyshev",
             choices=["power", "laguerre", "hermite", "chebyshev"],
-            help="Basis family for the LSM regression (default: power).",
+            help="Basis family for the LSM regression (default: chebyshev).",
         )
         parser.add_argument(
             "--lsm_degree",
             type=int,
-            default=3,
+            default=2,
             help="Polynomial degree for LSM basis functions (default: 3).",
         )
         parser.add_argument(
@@ -259,121 +253,28 @@ class ConfigManager:
         )
 
         # HHK Stochastic Process Parameters
-        parser.add_argument("--S0", type=float, default=100.0, help="Initial spot price, default = 100.0")
-        parser.add_argument("--alpha", type=float, default=7.0, help="Mean reversion speed, default = 7.0")
-        parser.add_argument("--sigma", type=float, default=1.4, help="Volatility of OU process, default = 1.4")
-        parser.add_argument("--beta", type=float, default=200.0, help="Jump decay rate, default = 200.0")
+        parser.add_argument("--S0", type=float, default=1.0, help="Initial spot price, default = 100.0")
+        parser.add_argument("--alpha", type=float, default=12.0, help="Mean reversion speed, default = 12.0 (v64 HHK)")
+        parser.add_argument("--sigma", type=float, default=1.2, help="Volatility of OU process, default = 1.2 (v64 HHK)")
+        parser.add_argument("--beta", type=float, default=150.0, help="Jump decay rate, default = 150.0 (v64 HHK)")
         parser.add_argument(
-            "--lam", type=float, default=4.0, help="Jump intensity (jumps per year), default = 4.0"
+            "--lam", type=float, default=6.0, help="Jump intensity (jumps per year), default = 6.0 (v64 HHK)"
         )
-        parser.add_argument("--mu_J", type=float, default=0.4, help="Mean jump size, default = 0.4")
+        parser.add_argument("--mu_J", type=float, default=0.3, help="Mean jump size, default = 0.3 (v64 HHK)")
 
         # D4PG Algorithm Parameters
         # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
         parser.add_argument("-nstep", type=int, default=1, help="Nstep bootstrapping, default 1")
-        # PER hyperparameters
-        parser.add_argument(
-            "--per_alpha", type=float, default=0.6, help="PER: priority exponent alpha (default: 0.6)"
-        )
-        parser.add_argument(
-            "--per_beta_start",
-            type=float,
-            default=0.4,
-            help="PER: initial importance sampling weight beta_start (default: 0.4)",
-        )
-        parser.add_argument(
-            "--per_beta_frames",
-            type=int,
-            default=100000,
-            help="PER: frames to anneal beta to 1.0 (default: 100000)",
-        )
-        parser.add_argument(
-            "--per_priority_floor",
-            type=float,
-            default=1e-6,
-            help="Minimum PER priority to avoid zeros (default: 1e-6)",
-        )
-        parser.add_argument(
-            "--per_priority_clip_pct",
-            type=float,
-            default=0.0,
-            help="Clip PER priorities to this percentile (0 disables, default: disabled)",
-        )
-        parser.add_argument(
-            "--per_priority_scheme",
-            type=str,
-            default="standard",
-            choices=["standard", "lap"],
-            help="PER: base priority scheme {standard=|TD|, lap=Huber loss} (default: standard)",
-        )
-        parser.add_argument(
-            "--per_huber_kappa",
-            type=float,
-            default=1.0,
-            help="PER: Huber threshold kappa for lap scheme (default: 1.0)",
-        )
-        parser.add_argument(
-            "--per_alpha_final",
-            type=float,
-            default=None,
-            help="Optional PER alpha target for scheduling (None disables)",
-        )
-        parser.add_argument(
-            "--per_alpha_ramp_start",
-            type=int,
-            default=0,
-            help="Episode to start PER alpha ramp (0 disables if end<=start)",
-        )
-        parser.add_argument(
-            "--per_alpha_ramp_end",
-            type=int,
-            default=0,
-            help="Episode to end PER alpha ramp (0 disables if end<=start)",
-        )
-        parser.add_argument(
-            "--per_beta_final",
-            type=float,
-            default=None,
-            help="Optional PER beta target for scheduling (None keeps default beta behavior)",
-        )
-        parser.add_argument(
-            "--per_alpha_sigmoid",
-            type=int,
-            default=0,
-            choices=[0, 1],
-            help="Use sigmoid ramp for PER alpha/beta (default: 0 / linear)",
-        )
-        parser.add_argument(
-            "-per",
-            type=int,
-            default=1,
-            choices=[0, 1],
-            help="Adding Prioritized Experience Replay to the agent if set to 1, default = 1",
-        )
-        parser.add_argument(
-            "-munchausen",
-            type=int,
-            default=0,
-            choices=[0, 1],
-            help="Adding Munchausen RL to the agent if set to 1 (default: 0 / off)",
-        )
-        parser.add_argument(
-            "-iqn",
-            type=int,
-            choices=[0, 1],
-            default=0,
-            help="Use distributional IQN Critic if set to 1, default = 0 (no IQN)",
-        )
         parser.add_argument(
             "-noise_sigma0",
             type=float,
-            default=1.0,
+            default=1.30,
             help="Initial pre-squash noise std (applied before action squashing)",
         )
         parser.add_argument(
             "-noise_floor",
             type=float,
-            default=0.05,
+            default=0.26,
             help="Minimum pre-squash noise std after decay",
         )
         parser.add_argument(
@@ -385,39 +286,68 @@ class ConfigManager:
         parser.add_argument(
             "--critic_warmup_episodes",
             type=int,
-            default=0,
+            default=512,
             help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx).",
+        )
+        parser.add_argument(
+            "--single_critic_step",
+            type=int,
+            choices=[0, 1],
+            default=1,
+            help="v63 audit E4: 1 (default, canonical) = single critic optimizer step. 0 restores the legacy double-step only to reproduce pre-fix v63 numbers.",
         )
         parser.add_argument(
             "--adaptive_noise_scale",
             type=float,
-            default=0.0,
+            default=0.6,
             help="Scale factor for pre-activation noise relative to |u|. Default: 0.0 (off). Recommended: 0.5.",
         )
         # v60 parameters
         parser.add_argument(
             "--warmup_noise_fraction",
             type=float,
-            default=1.0,
+            default=0.3,
             help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2",
-        )
-        parser.add_argument(
-            "--target_noise_decay_start",
-            type=int,
-            default=0,
-            help="v60: Episode to start decaying target policy noise (0 disables). Recommended: 15000",
-        )
-        parser.add_argument(
-            "--target_noise_floor",
-            type=float,
-            default=0.02,
-            help="v60: Minimum target policy noise after decay. Default: 0.02",
         )
         parser.add_argument(
             "--actor_output_activation",
             type=str,
-            default="tanh01",
+            default="beta_sigmoid_1.5",
             help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01",
+        )
+        parser.add_argument(
+            "--calibrate_bias_mode",
+            type=str,
+            choices=["closed_form", "rprop"],
+            default="closed_form",
+            help="Actor warm-start: 'closed_form' (default, O(1)-pass myopic FOC) or 'rprop' (legacy 20-iter finite-difference loop).",
+        )
+        # Task 2 — scheduler simplification (all default to current behavior).
+        parser.add_argument(
+            "--noise_schedule",
+            type=str,
+            choices=["hyperbolic", "const_floor", "linear"],
+            default="linear",
+            help="Exploration-noise schedule after the plateau: 'hyperbolic' (default), 'const_floor' (hard step to floor), or 'linear' (sigma0->floor over the horizon).",
+        )
+        parser.add_argument(
+            "--noise_decay_episodes",
+            type=int,
+            default=-1,
+            help="Horizon for the 'linear' noise schedule. <=0 (default) uses the training horizon (n_paths).",
+        )
+        parser.add_argument(
+            "--weight_averaging",
+            type=str,
+            choices=["off", "ema"],
+            default="ema",
+            help="Eval-only weight averaging: 'off' (default) or 'ema' (EMA of actor weights used for evaluation only).",
+        )
+        parser.add_argument(
+            "--ema_decay",
+            type=float,
+            default=0.999,
+            help="EMA decay for --weight_averaging ema (default 0.999).",
         )
 
         # Network and Learning Parameters
@@ -430,12 +360,12 @@ class ConfigManager:
         parser.add_argument(
             "-lr_c",
             type=float,
-            default=3e-4,
+            default=6e-4,
             help="Critic learning rate of adapting the network weights, default is 3e-4",
         )
-        parser.add_argument("-learn_every", type=int, default=1, help="Learn every x interactions, default = 1")
+        parser.add_argument("-learn_every", type=int, default=2, help="Learn every x interactions, default = 1")
         parser.add_argument(
-            "-learn_number", type=int, default=1, help="Learn x times per interaction, default = 1"
+            "-learn_number", type=int, default=2, help="Learn x times per interaction, default = 1"
         )
         parser.add_argument(
             "-layer_size",
@@ -458,13 +388,13 @@ class ConfigManager:
         parser.add_argument(
             "--actor_layers",
             type=int,
-            default=2,
+            default=3,
             help="Number of hidden layers in the actor network (default: 2)",
         )
         parser.add_argument(
             "--critic_layers",
             type=int,
-            default=2,
+            default=3,
             help="Number of hidden layers in the critic network (default: 2; must be >=2)",
         )
         parser.add_argument(
@@ -479,14 +409,14 @@ class ConfigManager:
             type=str,
             default="layernorm",
             choices=["layernorm", "rmsnorm", "none"],
-            help="Normalization layer in actor/critic/IQN MLPs (default: layernorm)",
+            help="Normalization layer in actor/critic MLPs (default: layernorm)",
         )
         parser.add_argument(
             "--init_method",
             type=str,
             default="orthogonal",
             choices=["orthogonal", "he", "kaiming"],
-            help="Weight initialization for actor/critic/IQN MLPs (default: orthogonal)",
+            help="Weight initialization for actor/critic MLPs (default: orthogonal)",
         )
         parser.add_argument(
             "--final_lr_fraction",
@@ -513,38 +443,6 @@ class ConfigManager:
             help="Minimum learning rate floor (default: 1e-7)",
         )
         parser.add_argument(
-            "--actor_grad_clip",
-            type=float,
-            default=0.0,
-            help="Clip threshold for actor gradients (<=0 disables clipping, default: 0.0 / disabled)",
-        )
-        parser.add_argument(
-            "--critic_grad_clip",
-            type=float,
-            default=0.0,
-            help="Clip threshold for critic gradients (<=0 disables clipping, default: 0.0 / disabled)",
-        )
-        parser.add_argument(
-            "--actor_grad_clip_type",
-            type=str,
-            choices=["norm", "value", "none"],
-            default="none",
-            help="Clipping strategy for actor gradients (default: none/disabled)",
-        )
-        parser.add_argument(
-            "--critic_grad_clip_type",
-            type=str,
-            choices=["norm", "value", "none"],
-            default="none",
-            help="Clipping strategy for critic gradients (default: none/disabled)",
-        )
-        parser.add_argument(
-            "--grad_clip_norm_type",
-            type=float,
-            default=2.0,
-            help="Norm type used when clipping by norm (default: 2.0 for L2 norm)",
-        )
-        parser.add_argument(
             "--max_replay_size",
             type=int,
             default=int(1e5),
@@ -565,7 +463,7 @@ class ConfigManager:
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
-            "-t", "--t", type=float, default=2e-3, help="Softupdate factor t (Polyak tau), default is 2e-3"
+            "-t", "--t", type=float, default=0.0032, help="Softupdate factor t (Polyak tau), default is 3.2e-3 (v64)"
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
         parser.add_argument(
@@ -587,24 +485,6 @@ class ConfigManager:
             default=1e-4,
             help="Decoupled weight decay applied to the critic optimizer (default: 1e-4)",
         )
-        parser.add_argument(
-            "--critic_ema_decay",
-            type=float,
-            default=0.0,
-            help="EMA decay for critic eval smoothing (0 disables, default: 0.0)",
-        )
-        parser.add_argument(
-            "--target_policy_noise",
-            type=float,
-            default=0.1,
-            help="Std of noise added to target actions for smoothing (default: 0.1; 0 disables)",
-        )
-        parser.add_argument(
-            "--target_policy_clip",
-            type=float,
-            default=0.25,
-            help="Clipping range for target policy smoothing noise (default: 0.25)",
-        )
 
         # System and Optimization Parameters
         parser.add_argument(
@@ -621,7 +501,7 @@ class ConfigManager:
             type=int,
             default=0,
             choices=[0, 1],
-            help="Use torch.compile for model optimization, default=0 (NO!)",
+            help="Use torch.compile for model optimization, default=0 (disabled).",
         )
         parser.add_argument(
             "--fp32",
@@ -634,9 +514,31 @@ class ConfigManager:
             "--use_robust_normalization",
             type=int,
             choices=[0, 1],
-            default=0,
+            default=1,
             help="Enable Robust HHK Normalization (Log-moneyness + Median/IQR scaling). Default: 0 (disabled).",
         )
+        # ── Semi-analytical / expected-target flags (feat/semi-analytical-bootstrap) ──
+        parser.add_argument(
+            "--use_expected_target",
+            type=int,
+            choices=[0, 1],
+            default=1,
+            help="If 1, replace the critic's single-sample bootstrap with a quadrature-"
+            "integrated expectation over the analytical HHK transition kernel. "
+            "Forces n_step=1. Default: 0 (off; bit-identical to v61).",
+        )
+        parser.add_argument("--kernel_M_x", type=int, default=2,
+                            help="Gauss-Hermite nodes on the OU X transition (default 4; "
+                            "M1-friendly. Bump to 6-8 for higher accuracy at ~2x cost).")
+        parser.add_argument("--kernel_M_per_k", type=int, default=1,
+                            help="QMC nodes per nonzero jump count in the Y mesh (default 4).")
+        parser.add_argument("--kernel_N_max", type=int, default=1,
+                            help="Truncate Poisson jump count at this many jumps (default 2; "
+                            "captures > 99.96%% of mass at lambda*dt ~= 0.024).")
+        parser.add_argument("--kernel_chunk_M", type=int, default=0,
+                            help="If >0, evaluate the per-batch critic on chunks of this size in the M "
+                            "axis to bound peak memory. 0 = no chunking.")
+
 
         return parser
 
@@ -940,10 +842,8 @@ class LoggingManager:
 
 
 def generate_datasets(
-    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128
-) -> Tuple[
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-]:
+    stochastic_process_params: Dict, n_paths: int, n_paths_eval: int, seed: int, batch_size: int = 128,
+):
     """
     Generate training and evaluation datasets using antithetic variance reduction and QMC.
     """
@@ -1158,7 +1058,7 @@ def run_training(
         last_eval_price = eval_summary.option_price
         last_avg_exercised = eval_summary.avg_total_exercised
     for current_path in range(1, args.n_paths + 1):
-        # Fix 3: Update episode count in PER for proper beta annealing
+        # Drives the agent's noise/warmup episode-based schedules
         agent.update_episode_count(current_path)
         path_start_time = time.time()
 
@@ -1185,9 +1085,11 @@ def run_training(
 
             action = agent.act(np.expand_dims(state, axis=0))
             action_v = np.clip(action, action_low, action_high)
-            next_state, reward, terminated, truncated, _ = train_env.step(action_v[0])
+            next_state, reward, terminated, truncated, info_step = train_env.step(action_v[0])
             done = terminated or truncated
-            agent.step(state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer)
+            agent.step(
+                state, action_v[0], reward, next_state, done, total_steps, tensorboard_writer,
+            )
             actions_episode.append(action_v[0])
 
             state = next_state
@@ -1349,7 +1251,7 @@ def main():
         "dtype": np_dtype,
     }
 
-    # Generate training and evaluation datasets:
+    # Generate training and evaluation datasets
     train_ds, eval_ds = generate_datasets(
         stochastic_process_params=stochastic_process_params,
         n_paths=args.n_paths,
@@ -1360,11 +1262,43 @@ def main():
 
     # Create environments - Stores the pre-generated paths in the environment
     train_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=train_ds, obs_dtype=np_dtype,
     )
     eval_env = SwingOptionEnv(
-        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype
+        contract=swing_contract, hhk_params=stochastic_process_params, dataset=eval_ds, obs_dtype=np_dtype,
     )
+
+    # ── Optional: build the semi-analytical transition kernel ──────────────
+    # Needed whenever --use_expected_target=1.
+    expected_target_kernel = None
+    expected_target_chunk_size = None
+    use_expected_target = int(getattr(args, "use_expected_target", 0))
+    if use_expected_target:
+        from src.transition_kernel import KernelParams, precompute_kernel
+        kparams = KernelParams(
+            alpha=float(args.alpha),
+            sigma=float(args.sigma),
+            beta=float(args.beta),
+            lam=float(args.lam),
+            mu_J=float(args.mu_J),
+            dt=float(swing_contract.dt),
+            M_x=int(args.kernel_M_x),
+            N_max=int(args.kernel_N_max),
+            M_per_k=int(args.kernel_M_per_k),
+            f_id="no_seasonal",
+        )
+        shared_kernel = precompute_kernel(
+            kparams, swing_contract.n_rights, no_seasonal_function,
+            maturity=float(swing_contract.maturity),
+        )
+        print(f"Built kernel: M={shared_kernel.M} "
+              f"(M_x={shared_kernel.M_x}, M_y={shared_kernel.M_y}), "
+              f"hash={shared_kernel.params_hash}")
+        expected_target_kernel = shared_kernel
+        expected_target_chunk_size = int(args.kernel_chunk_M) if int(args.kernel_chunk_M) > 0 else None
+        if int(args.nstep) != 1:
+            print(f"NOTE: --use_expected_target=1 forces n_step=1 (was {args.nstep}).")
+            args.nstep = 1
 
     ## Create Experiment Directory
     evaluations_dir: Optional[str] = None
@@ -1434,9 +1368,6 @@ def main():
             state_size=train_env.observation_space.shape[0],
             action_size=train_env.action_space.shape[0],
             n_step=args.nstep,
-            per=args.per,
-            munchausen=args.munchausen,
-            distributional=args.iqn,
             random_seed=seed,
             hidden_size=args.layer_size,
             actor_hidden_size=actor_hidden_size,
@@ -1446,9 +1377,6 @@ def main():
             optimizer=args.optimizer,
             weight_decay_actor=args.weight_decay_actor,
             weight_decay_critic=args.weight_decay_critic,
-            critic_ema_decay=args.critic_ema_decay,
-            target_policy_noise=args.target_policy_noise,
-            target_policy_clip=args.target_policy_clip,
             BUFFER_SIZE=args.max_replay_size,
             BATCH_SIZE=args.batch_size,
             GAMMA=args.gamma,
@@ -1466,49 +1394,39 @@ def main():
             speed_mode=True,
             use_compile=args.compile,
             use_amp=False,
-            per_alpha=args.per_alpha,
-            per_beta_start=args.per_beta_start,
-            per_beta_frames=args.per_beta_frames,
-            per_priority_floor=args.per_priority_floor,
-            per_priority_clip_pct=args.per_priority_clip_pct,
-            per_priority_scheme=args.per_priority_scheme,
-            per_huber_kappa=args.per_huber_kappa,
-            per_alpha_final=args.per_alpha_final,
-            per_alpha_ramp_start=args.per_alpha_ramp_start,
-            per_alpha_ramp_end=args.per_alpha_ramp_end,
-            per_beta_final=args.per_beta_final,
-            per_alpha_sigmoid=bool(args.per_alpha_sigmoid),
             final_lr_fraction=args.final_lr_fraction,
             lr_schedule_episodes=args.lr_schedule_episodes,
             warmup_episodes=args.warmup_episodes,
             min_lr=args.min_lr,
-            actor_grad_clip=args.actor_grad_clip,
-            critic_grad_clip=args.critic_grad_clip,
-            actor_grad_clip_type=args.actor_grad_clip_type,
-            critic_grad_clip_type=args.critic_grad_clip_type,
-            grad_clip_norm_type=args.grad_clip_norm_type,
             activation=args.activation,
             norm_type=args.norm,
             init_method=args.init_method,
             log_interval_scale=log_interval_scale,
             replay_memmap=bool(args.replay_memmap),
-            actor_type=args.actor_type,
+            single_critic_step=bool(args.single_critic_step),
             critic_warmup_episodes=args.critic_warmup_episodes,
             adaptive_noise_scale=args.adaptive_noise_scale,
+            # Task 2 — scheduler simplification (defaults preserve current behavior)
+            noise_schedule=args.noise_schedule,
+            noise_decay_episodes=(args.noise_decay_episodes if args.noise_decay_episodes > 0 else args.n_paths),
+            weight_averaging=args.weight_averaging,
+            ema_decay=args.ema_decay,
             # v60 parameters
             warmup_noise_fraction=args.warmup_noise_fraction,
-            target_noise_decay_start=args.target_noise_decay_start,
-            target_noise_floor=args.target_noise_floor,
             action_output=args.actor_output_activation,
             # v62 parameters
             use_robust_normalization=bool(args.use_robust_normalization),
             strike=args.strike,
+            # feat/semi-analytical-bootstrap
+            expected_target_kernel=expected_target_kernel,
+            expected_target_chunk_size=expected_target_chunk_size,
         )
         try:
             param_device = next(agent.actor_local.parameters()).device
         except StopIteration:
             param_device = torch.device("cpu")
         print(f"Sanity: model param device = {param_device}")
+
         t0 = time.time()
 
         if args.saved_model is not None:
@@ -1517,11 +1435,15 @@ def main():
         else:
             # Warm up the actor using the first 2048 episodes (no training)
             # Iteratively optimize bias to maximize swing option price
-            # Warm up the actor using the first warmup_episodes (no training)
-            # Iteratively optimize bias to maximize swing option price (Rprop)
+            # Warm up the actor using the first warmup_episodes (no training).
+            # Mode: closed-form myopic FOC (default) or legacy Rprop loop.
+            _calib_t0 = time.perf_counter()
             agent.calibrate_bias(
-                env=train_env, n_episodes=args.warmup_episodes, max_iterations=20, target_std=0.005
+                env=train_env, n_episodes=args.warmup_episodes, max_iterations=20, target_std=0.005,
+                mode=args.calibrate_bias_mode,
             )
+            print(f"Calibration wall-time: {time.perf_counter() - _calib_t0:.3f}s "
+                  f"(mode={args.calibrate_bias_mode})")
 
         if args.eval_benchmark:
             print("\nRunning standalone evaluation benchmark (evaluation only)...")
@@ -1580,19 +1502,25 @@ def main():
         if "tensorboard_writer" in locals():
             tensorboard_writer.close()
 
-    # Save trained model (handle compiled models)
+    # Save trained model (handle compiled models). When eval-only EMA is active we
+    # save the EMA-averaged weights (the policy that produced the reported eval price),
+    # so a reloaded model reproduces the evaluation. No-op (saves training weights) when
+    # weight_averaging is off. averaged_eval_actor() swaps EMA into actor_local (and the
+    # shared _actor_local_orig params) for the duration of the save, then restores.
     try:
-        if hasattr(agent, "_actor_local_orig"):
-            # Use original uncompiled model if torch.compile was used
-            torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
-            print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
-        elif hasattr(agent.actor_local, "state_dict"):
-            # No compilation was used, save the regular actor_local
-            torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
-            print(f"✅ Model saved to: runs/{args.name}.pth")
-        else:
-            print("⚠️ Could not save model: actor_local appears to be compiled and no original model found")
-            print("Consider disabling torch.compile (--compile 0) for model saving")
+        ema_ctx = getattr(agent, "averaged_eval_actor", None)
+        with (ema_ctx() if callable(ema_ctx) else contextlib.nullcontext()):
+            if hasattr(agent, "_actor_local_orig"):
+                # Use original uncompiled model if torch.compile was used
+                torch.save(agent._actor_local_orig.state_dict(), "runs/" + args.name + ".pth")
+                print(f"✅ Model saved to: runs/{args.name}.pth (original uncompiled version)")
+            elif hasattr(agent.actor_local, "state_dict"):
+                # No compilation was used, save the regular actor_local
+                torch.save(agent.actor_local.state_dict(), "runs/" + args.name + ".pth")
+                print(f"✅ Model saved to: runs/{args.name}.pth")
+            else:
+                print("⚠️ Could not save model: actor_local appears to be compiled and no original model found")
+                print("Consider disabling torch.compile (--compile 0) for model saving")
     except Exception as e:
         print(f"⚠️ Could not save model: {e}")
 

@@ -123,7 +123,6 @@ def approximate_Q_T(
         if brentq is not None:
             return float(brentq(fn, lo, hi, maxiter=200))
         flo = fn(lo)
-        fhi = fn(hi)
         for _ in range(200):
             mid = 0.5 * (lo + hi)
             fmid = fn(mid)
@@ -131,7 +130,6 @@ def approximate_Q_T(
                 return float(mid)
             if flo * fmid <= 0.0:
                 hi = mid
-                fhi = fmid
             else:
                 lo = mid
                 flo = fmid
@@ -358,7 +356,7 @@ class SwingOptionEnv(gym.Env):
     Reward: Immediate payoff from exercise: q_t * max(S_t - K, 0)
     """
     
-    def __init__(self, 
+    def __init__(self,
                  contract: SwingContract,
                  hhk_params: Dict,
                  dataset:Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
@@ -376,12 +374,12 @@ class SwingOptionEnv(gym.Env):
 
         self.contract = contract
         self.hhk_params = hhk_params
-        
+
         # Unpack dataset into individual components for easier access
         self.t, self.S, self.X, self.Y = dataset
         self.max_episode_steps = self.contract.n_rights
         self.obs_dtype = np.dtype(obs_dtype) if obs_dtype is not None else np.float32
-        
+
         # Action space: normalized exercise quantity [0, 1]
         self.action_space = Box(
             low=0.0, 
@@ -477,7 +475,7 @@ class SwingOptionEnv(gym.Env):
 
         next_obs = self._get_observation()
         return next_obs, total_reward, terminated, truncated, info
-    
+
     def _get_feasible_action(self, q_proposed: float) -> float:
         """
         Ensure action satisfies all constraints
@@ -590,9 +588,9 @@ class SwingOptionEnv(gym.Env):
         path_idx = self._episode_counter
         self.time_path = self.t[path_idx] if self.t.ndim > 1 else self.t
         self.spot_path = self.S[path_idx]
-        self.X_path = self.X[path_idx] 
+        self.X_path = self.X[path_idx]
         self.Y_path = self.Y[path_idx]
-        
+
         # Initialize episode state
         self.current_step = 0
         self.q_exercised = 0.0

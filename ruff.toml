@@ -1,0 +1,17 @@
+# ruff configuration for DRL-Swing-Options
+# Enforces real correctness errors only; style/formatting is a future pass.
+# Run: ruff check src/ tools/ run.py evaluate_saved_agent.py
+
+line-length = 120
+
+[lint]
+select = [
+    "E9",    # syntax errors
+    "F821",  # undefined name
+    "F841",  # local variable assigned but never used
+    "W605",  # invalid escape sequence in string literal
+]
+# F401 (unused imports) and E402 (import order) excluded until a dedicated clean-up pass.
+
+[lint.per-file-ignores]
+"tools/*.py" = ["E402"]

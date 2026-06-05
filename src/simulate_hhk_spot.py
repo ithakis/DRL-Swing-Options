@@ -1,7 +1,5 @@
 from typing import Callable, Optional, Tuple
 
-import bootstrapped.bootstrap as bs
-import bootstrapped.stats_functions as bs_stats
 import numpy as np
 from scipy.stats import norm, qmc
 from tqdm import tqdm
@@ -13,11 +11,15 @@ def _stratify(
     S: np.ndarray,
     X: np.ndarray,
     Y: np.ndarray,
-    batch_size: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    batch_size: int,
+    return_perm: bool = False,
+):
     """
     Reorder paths such that each chunk of size `batch_size` has a representative
     distribution of terminal spot prices (stratified sampling).
+
+    If return_perm=True, also returns the new_order permutation array
+    such that out_S[i] == in_S[new_order[i]].
 
     Method:
     1. Sort all paths by their terminal spot price S_T.
@@ -28,6 +30,8 @@ def _stratify(
     """
     n_paths = S.shape[0]
     if n_paths < batch_size:
+        if return_perm:
+            return t, S, X, Y, np.arange(n_paths, dtype=np.int64)
         return t, S, X, Y
 
     # 1. Sort indices by terminal spot price
@@ -54,6 +58,8 @@ def _stratify(
         current_idx += count
 
     # Apply reordering
+    if return_perm:
+        return t, S[new_order], X[new_order], Y[new_order], new_order
     return t, S[new_order], X[new_order], Y[new_order]
 
 
@@ -193,6 +199,11 @@ def bootstrap_moments(data: np.ndarray):
         Tuple of (mean_results, std_results) where each result is a list
         containing the value, lower bound, and upper bound of the statistic.
     """
+    # Optional diagnostic dependency (used only by validation notebooks, not by the
+    # training/eval pipeline) — imported lazily so the module loads without it.
+    import bootstrapped.bootstrap as bs
+    import bootstrapped.stats_functions as bs_stats
+
     # First Moment: Mean - E[X]
     mean_results = bs.bootstrap(data, stat_func=bs_stats.mean, is_pivotal=False,
                                 iteration_batch_size=128, num_iterations=128*4*16, num_threads=-1)

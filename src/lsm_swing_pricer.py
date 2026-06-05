@@ -16,8 +16,6 @@ from .swing_contract import SwingContract
 @jit(nopython=True)
 def _fill_basis(X_poly, x, basis_code, degree):
     # basis_code: 0=power, 1=laguerre, 2=hermite, 3=chebyshev
-    n_samples = x.shape[0]
-
     if basis_code == 0:  # Power
         X_poly[:, 0] = 1.0
         for k in range(1, degree + 1):

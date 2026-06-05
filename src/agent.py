@@ -1,5 +1,4 @@
-import copy
-import math
+import contextlib
 import random
 from typing import Optional, Tuple
 
@@ -9,19 +8,19 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 try:
-    from .networks import IQN, Actor, Critic, HHKInputLayer
-    from .replay_buffer import CircularReplayBuffer, PrioritizedReplay
+    from .networks import Actor, Critic, HHKInputLayer
+    from .replay_buffer import CircularReplayBuffer
 except ImportError:
-    from networks import IQN, Actor, Critic, HHKInputLayer
-    from replay_buffer import CircularReplayBuffer, PrioritizedReplay
+    from networks import Actor, Critic, HHKInputLayer
+    from replay_buffer import CircularReplayBuffer
 
 
 class Agent:
     """
     Stable Agent implementation with diagnostics and lightweight defaults (2×64 MLPs).
-    Defaults: single-step TD targets, IQN and Munchausen are opt-in (off by default),
-    gradient clipping is disabled unless thresholds are provided, actor/critic weight
-    decay defaults to 5e-5/1e-4, and target updates use a smoother tau=0.002.
+    Defaults: single-step TD targets, gradient clipping is disabled unless thresholds
+    are provided, actor/critic weight decay defaults to 5e-5/1e-4, and target updates
+    use a smoother tau=0.002.
     """
 
     def __init__(
@@ -29,9 +28,6 @@ class Agent:
         state_size,
         action_size,
         n_step,
-        per,
-        munchausen,
-        distributional,
         random_seed,
         hidden_size: int = 64,
         actor_hidden_size: Optional[int] = None,
@@ -52,50 +48,35 @@ class Agent:
         LEARN_NUMBER=1,
         device="cpu",
         min_replay_size=None,
-        per_alpha=0.6,
-        per_beta_start=0.4,
-        per_beta_frames=100000,
-        per_priority_floor: float = 1e-6,
-        per_priority_clip_pct: float = 0.0,
-        per_priority_scheme: str = "standard",
-        per_huber_kappa: float = 1.0,
-        per_alpha_final: Optional[float] = None,
-        per_alpha_ramp_start: int = 0,
-        per_alpha_ramp_end: int = 0,
-        per_beta_final: Optional[float] = None,
-        per_alpha_sigmoid: bool = False,
         final_lr_fraction=1.0,
         total_episodes=None,
         warmup_frac: float = 0.05,
         warmup_episodes: Optional[int] = None,
         min_lr=1e-7,
         lr_schedule_episodes: Optional[int] = None,
-        actor_grad_clip: float = 0.0,
-        critic_grad_clip: float = 0.0,
-        actor_grad_clip_type: str = "none",
-        critic_grad_clip_type: str = "none",
-        grad_clip_norm_type: float = 2.0,
         noise_sigma0: float = 1.0,
         noise_floor: float = 0.05,
         noise_plateau: int = 0,
-        critic_ema_decay: float = 0.0,
-        target_policy_noise: float = 0.1,
-        target_policy_clip: float = 0.25,
         activation: str = "silu",
         norm_type: str = "layernorm",
         init_method: str = "orthogonal",
         use_compile: bool = False,
         log_interval_scale: float = 1.0,
         replay_memmap: bool = False,
-        actor_type: str = "standard",
+        single_critic_step: bool = True,    # v63 audit E4: single critic step is now canonical
         critic_warmup_episodes: int = 0,
         adaptive_noise_scale: float = 0.0,
+        # Task 2 — scheduler simplification (all default to current behavior).
+        noise_schedule: str = "hyperbolic",   # {hyperbolic, const_floor, linear}
+        noise_decay_episodes: Optional[int] = None,  # horizon for the 'linear' noise decay
+        weight_averaging: str = "off",         # {off, ema}; eval-only EMA of actor weights
+        ema_decay: float = 0.999,
         warmup_noise_fraction: float = 1.0,  # v60: reduce noise during critic warmup
-        target_noise_decay_start: int = 0,    # v60: episode to start decaying target policy noise
-        target_noise_floor: float = 0.02,     # v60: minimum target policy noise after decay
         action_output: str = "tanh01",        # v60: actor output activation
         use_robust_normalization: bool = False, # v62: Robust HHK Normalization
         strike: float = 100.0,
+        expected_target_kernel=None,           # feat/semi-analytical-bootstrap
+        expected_target_chunk_size: Optional[int] = None,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -107,9 +88,6 @@ class Agent:
         self.device = device
         self.state_size = state_size
         self.action_size = action_size
-        self.per = per
-        self.munchausen = munchausen
-        self.distributional = distributional
         self.GAMMA = GAMMA
         self.t = t
         self.n_step = n_step
@@ -117,14 +95,6 @@ class Agent:
         self.BATCH_SIZE = BATCH_SIZE
         self.LEARN_EVERY = LEARN_EVERY
         self.LEARN_NUMBER = LEARN_NUMBER
-        self.per_alpha_final = per_alpha_final
-        self.per_alpha_ramp_start = max(0, int(per_alpha_ramp_start))
-        self.per_alpha_ramp_end = max(0, int(per_alpha_ramp_end))
-        self.per_beta_final = per_beta_final
-        self.per_alpha_sigmoid = per_alpha_sigmoid
-        self.per_priority_scheme = (per_priority_scheme or "standard").lower()
-        self.per_huber_kappa = float(per_huber_kappa)
-        self.per_priority_clip_pct = float(per_priority_clip_pct)
         random.seed(random_seed)
         torch.manual_seed(random_seed)
 
@@ -134,7 +104,7 @@ class Agent:
         critic_hidden_size = critic_hidden_size or hidden_size
         if actor_layers < 1:
             raise ValueError(f"actor_layers must be >= 1, got {actor_layers}")
-        if critic_layers < 2 and not distributional:
+        if critic_layers < 2:
             raise ValueError("critic_layers must be >= 2 when using the standard critic")
 
         self.activation = (activation or "silu").lower()
@@ -185,29 +155,36 @@ class Agent:
         self.noise_sigma0 = float(noise_sigma0)
         self.noise_floor = float(noise_floor)
         self.noise_plateau = max(0, int(noise_plateau))
-        self.target_policy_noise = target_policy_noise
-        # Clipping functionality is intentionally disabled; keep attribute for backward-compat.
-        self.target_policy_clip = None
+        # Task 2 — noise/LR/weight-averaging schedule knobs (defaults = current behavior).
+        self.noise_schedule = (noise_schedule or "hyperbolic").lower()
+        if self.noise_schedule not in {"hyperbolic", "const_floor", "linear"}:
+            raise ValueError(f"Unsupported noise_schedule '{noise_schedule}'.")
+        self._noise_decay_episodes_arg = noise_decay_episodes
+        self.weight_averaging = (weight_averaging or "off").lower()
+        if self.weight_averaging not in {"off", "ema"}:
+            raise ValueError(f"Unsupported weight_averaging '{weight_averaging}'.")
+        self.ema_decay = float(ema_decay)
         self.log_interval_scale = (
             max(1, int(round(log_interval_scale))) if log_interval_scale and log_interval_scale > 0 else 1
         )
         # Diagnostics/logging cadence (skip most steps to cut overhead; does not affect training)
         base_diag_interval = max(100, int(self.LEARN_EVERY * 50))
-        base_td_interval = max(100, int(self.LEARN_EVERY * 50))
-        base_per_stats_interval = max(self.LEARN_EVERY * 200, base_diag_interval)
         self.diagnostics_interval = int(base_diag_interval * self.log_interval_scale)
-        self.per_stats_interval = int(base_per_stats_interval * self.log_interval_scale)
-        self.td_quantile_interval = int(base_td_interval * self.log_interval_scale)
         self.per_step_log_interval = int(max(1, self.LEARN_EVERY * self.log_interval_scale))
         self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
-        self.actor_type = (actor_type or "standard").lower()
+        self.single_critic_step = bool(single_critic_step)
         self.action_output = (action_output or "tanh01").lower()  # v60: store action output activation
-        if self.actor_type == "finance_informed":
-            from .networks import FinanceInformedActor
-            actor_cls = FinanceInformedActor
-        else:
-            actor_cls = Actor
+        actor_cls = Actor
+        critic_cls = Critic
+
+        # ── Semi-analytical TD target (feat/semi-analytical-bootstrap, H1) ──
+        self._strike = float(strike)
+        self.expected_target_kernel = expected_target_kernel
+        self.expected_target_chunk_size = expected_target_chunk_size
+        if self.expected_target_kernel is not None and n_step != 1:
+            print(f"Agent: expected_target_kernel set; forcing n_step=1 (was {n_step}).")
+            self.n_step = 1
 
         # Configure Input Preprocessor if enabled
         input_preprocessor = None
@@ -269,55 +246,29 @@ class Agent:
             betas=self.actor_betas,
         )
 
-        if distributional:
-            self.N = 32
-            self.critic_local = IQN(
-                state_size,
-                action_size,
-                layer_size=critic_hidden_size,
-                seed=random_seed,
-                dueling=False,
-                N=self.N,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            ).to(self.device)
-            self.critic_target = IQN(
-                state_size,
-                action_size,
-                layer_size=critic_hidden_size,
-                seed=random_seed,
-                dueling=False,
-                N=self.N,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            ).to(self.device)
-            self.critic_target.load_state_dict(self.critic_local.state_dict())
-        else:
-            self.critic_local = Critic(
-                state_size,
-                action_size,
-                random_seed,
-                hidden_size=critic_hidden_size,
-                n_layers=critic_layers,
-                activation=self.activation,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            )
-            self.critic_target = Critic(
-                state_size,
-                action_size,
-                random_seed,
-                hidden_size=critic_hidden_size,
-                n_layers=critic_layers,
-                activation=self.activation,
-                norm_type=self.norm_type,
-                init_method=self.init_method,
-                input_preprocessor=input_preprocessor,
-            )
-            self.critic_target.load_state_dict(self.critic_local.state_dict())
+        self.critic_local = critic_cls(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=critic_hidden_size,
+            n_layers=critic_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+            init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        self.critic_target = critic_cls(
+            state_size,
+            action_size,
+            random_seed,
+            hidden_size=critic_hidden_size,
+            n_layers=critic_layers,
+            activation=self.activation,
+            norm_type=self.norm_type,
+            init_method=self.init_method,
+            input_preprocessor=input_preprocessor,
+        )
+        self.critic_target.load_state_dict(self.critic_local.state_dict())
 
         if self.use_compile and hasattr(torch, "compile"):
             try:
@@ -334,8 +285,6 @@ class Agent:
             weight_decay=weight_decay_critic,
             betas=self.critic_betas,
         )
-        self.critic_ema_decay = critic_ema_decay
-        self.critic_ema_state = None if critic_ema_decay <= 0 else copy.deepcopy(self.critic_local.state_dict())
 
         # Cache parameter lists and data views to reduce per-step iteration overhead
         self._actor_params = list(self.actor_local.parameters())
@@ -346,6 +295,13 @@ class Agent:
         self._critic_target_data = [p.data for p in self._critic_target_params]
         self._actor_local_data = [p.data for p in self._actor_params]
         self._critic_local_data = [p.data for p in self._critic_params]
+        # Eval-only EMA shadow of actor weights (Task 2 L_ema). A plain tensor list
+        # (not a module) avoids torch.compile aliasing; swapped into actor_local at
+        # eval time via averaged_eval_actor(). None unless weight_averaging=='ema'.
+        self._actor_ema_data = (
+            [p.detach().clone() for p in self._actor_local_data]
+            if self.weight_averaging == "ema" else None
+        )
 
         actor_params = sum(p.numel() for p in self.actor_local.parameters())
         critic_params = sum(p.numel() for p in self.critic_local.parameters())
@@ -359,49 +315,31 @@ class Agent:
             f"Actor params: {actor_params:,} | hidden_size={actor_hidden_size} | layers={actor_layers} | activation={self.activation}"
         )
         print(
-            f"Critic params: {critic_params:,} | hidden_size={critic_hidden_size} | layers={'IQN' if distributional else critic_layers} | activation={self.activation if not distributional else 'relu'}"
+            f"Critic params: {critic_params:,} | hidden_size={critic_hidden_size} | layers={critic_layers} | activation={self.activation}"
         )
 
-        self.entropy_tau = 0.03
-        self.lo = -1.0
-        self.alpha = 0.9
-
-        if per:
-            self.memory = PrioritizedReplay(
-                BUFFER_SIZE,
-                BATCH_SIZE,
-                device=device,
-                seed=random_seed,
-                gamma=GAMMA,
-                n_step=n_step,
-                parallel_env=1,
-                alpha=per_alpha,
-                beta_start=per_beta_start,
-                beta_frames=per_beta_frames,
-                use_memmap=bool(replay_memmap),
-            )
-            # Configure PER priority stability
-            try:
-                self.memory.min_priority = per_priority_floor
-            except Exception:
-                pass
-        else:
-            self.memory = CircularReplayBuffer(
-                buffer_size=BUFFER_SIZE,
-                batch_size=BATCH_SIZE,
-                n_step=n_step,
-                parallel_env=1,
-                device=device,
-                seed=random_seed,
-                gamma=GAMMA,
-                use_memmap=bool(replay_memmap) or BUFFER_SIZE > 500000,
-            )
-        self._per_update_priorities = bool(per) and hasattr(self.memory, "update_priorities")
-        self._per_has_priority_stats = bool(per) and hasattr(self.memory, "get_priority_stats")
+        self.memory = CircularReplayBuffer(
+            buffer_size=BUFFER_SIZE,
+            batch_size=BATCH_SIZE,
+            n_step=n_step,
+            parallel_env=1,
+            device=device,
+            seed=random_seed,
+            gamma=GAMMA,
+            use_memmap=bool(replay_memmap) or BUFFER_SIZE > 500000,
+        )
 
         self.final_lr_fraction = final_lr_fraction
         schedule_horizon = lr_schedule_episodes if lr_schedule_episodes is not None else total_episodes
         self.total_episodes = max(1, int(schedule_horizon)) if schedule_horizon is not None else 65000
+        # Horizon for the 'linear' noise decay (Task 2 N_fulldecay). Defaults to the
+        # LR schedule horizon, but the real training horizon (n_paths) should be passed
+        # explicitly so the decay actually completes within the run.
+        self.noise_decay_episodes = (
+            max(1, int(self._noise_decay_episodes_arg))
+            if self._noise_decay_episodes_arg
+            else self.total_episodes
+        )
         self.warmup_frac = warmup_frac
         self.warmup_episodes = (
             max(1, int(warmup_episodes))
@@ -410,53 +348,33 @@ class Agent:
         )
         self.min_lr = min_lr
 
-        # Clipping functionality (grad clipping) is intentionally disabled.
-        self.grad_clip_norm_type = grad_clip_norm_type
-        self.actor_grad_clip = None
-        self.actor_grad_clip_type = "none"
-        self.critic_grad_clip = None
-        self.critic_grad_clip_type = "none"
+        # Gradient clipping was removed in v63: with the deterministic kernel TD
+        # target (--use_expected_target=1), TD errors are bounded and clipping
+        # never triggered. The clip args were already overwritten to None and
+        # learn_() never called clip_grad_norm_, so every v63 result is clip-free.
 
         # v59/v60 parameters
         self.critic_warmup_episodes = int(critic_warmup_episodes)
         self.adaptive_noise_scale = float(adaptive_noise_scale)
         # v60: warmup noise reduction - reduce exploration noise during critic warmup to preserve calibration
         self.warmup_noise_fraction = float(warmup_noise_fraction)
-        # v60: target policy noise decay - decay target noise late for cleaner Q-targets
-        self.target_noise_decay_start = int(target_noise_decay_start)
-        self.target_noise_floor = float(target_noise_floor)
-        self.target_policy_noise_initial = target_policy_noise  # store initial value for decay
-        
-        def lr_lambda(step: int, init_lr: float):
-            if final_lr_fraction >= 1.0:
-                return 1.0
-            episode = step + 1  # align scheduler step with 1-based episode indexing
-            if episode <= self.warmup_episodes:
-                scale = episode / self.warmup_episodes
-            elif episode < self.total_episodes:
-                t = (episode - self.warmup_episodes) / max(1, self.total_episodes - self.warmup_episodes)
-                cosine = 0.5 * (1.0 + math.cos(math.pi * t))
-                scale = final_lr_fraction + (1.0 - final_lr_fraction) * cosine
-            else:
-                scale = final_lr_fraction
-            return max(min_lr / init_lr, scale)
 
+        # LR is CONSTANT. The cosine/linear LR-decay schedule was removed (Task 2 Screen B,
+        # HPT "Task 2 — scheduler simplification"): at the 4096-ep horizon decay was
+        # neutral-to-harmful (cosine drifted negative; linear decay-to-0 FAILED nocost),
+        # so constant LR is canonical and the most C++-port-friendly choice. The
+        # final_lr_fraction / lr_schedule_episodes / min_lr args are still accepted for
+        # script/config compatibility but are now INERT (they no longer affect the LR).
+        self.actor_scheduler = None
+        self.critic_scheduler = None
         if final_lr_fraction < 1.0:
-            self.actor_scheduler = optim.lr_scheduler.LambdaLR(
-                self.actor_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_ACTOR)
-            )
-            self.critic_scheduler = optim.lr_scheduler.LambdaLR(
-                self.critic_optimizer, lr_lambda=lambda s: lr_lambda(s, LR_CRITIC)
-            )
-        else:
-            self.actor_scheduler = None
-            self.critic_scheduler = None
+            print("Agent: LR decay was removed (Task 2); final_lr_fraction<1 is now inert — "
+                  "running CONSTANT LR.")
 
-        self.learn = self.learn_distribution if distributional else self.learn_
+        self.learn = self.learn_
         self.step_counter = 0
         self._last_td_percentiles = None
         self._last_target_drift = None
-        self._last_iqn_spread = None
         self._episode_count = 0
 
     def _build_optimizer(
@@ -502,9 +420,8 @@ class Agent:
             return optim_cls(param_groups, **optim_kwargs)
 
     def update_episode_count(self, episode: int):
-        """Update internal episode counter (used for PER beta annealing in caller)."""
+        """Update internal episode counter (drives noise/warmup schedules)."""
         self._episode_count = episode
-        self._maybe_update_per_schedule()
 
     def step_lr_schedulers(self, episode: int):
         if self.actor_scheduler:
@@ -535,13 +452,24 @@ class Agent:
         """
         e = max(1, self._episode_count)
         plateau = max(0, self.noise_plateau)
+        sched = self.noise_schedule
         if plateau > 0 and e < plateau:
+            # All schedules hold sigma0 during the plateau.
             sigma = self.noise_sigma0
+        elif sched == "const_floor":
+            # Task 2 N_const: hard step to the floor after the plateau (no tail).
+            sigma = self.noise_floor
+        elif sched == "linear":
+            # Task 2 N_fulldecay: linear sigma0->floor over [plateau, horizon].
+            horizon = max(plateau + 1, self.noise_decay_episodes)
+            frac = min(1.0, max(0.0, (e - plateau) / max(1, horizon - plateau)))
+            sigma = self.noise_sigma0 + (self.noise_floor - self.noise_sigma0) * frac
         else:
+            # hyperbolic (default, unchanged)
             t = e - plateau if plateau > 0 else e
             denom = 1.0 + (t / max(1, plateau if plateau > 0 else 1))
             sigma = self.noise_floor + (self.noise_sigma0 - self.noise_floor) / denom
-        
+
         # v61: Gradual warmup noise ramp (was flat fraction in v60)
         # Ramp from warmup_noise_fraction to 1.0 over the critic warmup period
         if e <= self.critic_warmup_episodes and self.warmup_noise_fraction < 1.0:
@@ -551,25 +479,6 @@ class Agent:
             sigma *= current_fraction
         
         return sigma
-
-    def _get_target_policy_noise(self) -> float:
-        """Get current target policy noise with optional late-stage decay.
-        
-        v60: After target_noise_decay_start, linearly decay target policy noise
-        toward target_noise_floor. This reduces variance in Q-targets late in
-        training when the policy should be refining rather than exploring.
-        """
-        if self.target_noise_decay_start <= 0:
-            return self.target_policy_noise  # no decay
-        
-        e = self._episode_count
-        if e < self.target_noise_decay_start:
-            return self.target_policy_noise_initial
-        
-        # Linear decay from initial to floor over same duration as decay started
-        decay_duration = self.target_noise_decay_start  # decay over same period
-        progress = min(1.0, (e - self.target_noise_decay_start) / max(1, decay_duration))
-        return self.target_noise_floor + (self.target_policy_noise_initial - self.target_noise_floor) * (1.0 - progress)
 
     def _squash(self, preact: torch.Tensor) -> torch.Tensor:
         """Map pre-activation values to action space matching actor output activation."""
@@ -587,33 +496,6 @@ class Agent:
     def _should_log(self, timestamp: int, interval: int) -> bool:
         interval = max(1, int(interval))
         return timestamp % interval == 0
-
-    def _compute_base_priorities(
-        self,
-        td_or_loss: torch.Tensor,
-        *,
-        floor: float,
-        clip_pct: float,
-        scheme: str,
-        huber_kappa: float,
-        is_loss: bool = False,
-    ) -> torch.Tensor:
-        if is_loss:
-            priorities = td_or_loss.detach()
-        elif scheme == "lap":
-            priorities = calculate_huber_loss(td_or_loss, k=huber_kappa).detach()
-        else:
-            priorities = td_or_loss.detach().abs()
-
-        floor_f = float(floor)
-        priorities = torch.nan_to_num(priorities, nan=floor_f, posinf=1e6, neginf=floor_f)
-        priorities = priorities.clamp_min(floor_f)
-        if clip_pct and clip_pct > 0:
-            q = float(clip_pct) / 100.0
-            thr = torch.quantile(priorities.flatten(), q)
-            priorities = priorities.clamp_max(thr)
-            priorities = priorities.clamp_min(floor_f)
-        return priorities
 
     def act(self, state: np.ndarray, add_noise: bool = True):
         self._maybe_init_profitability_params()
@@ -666,17 +548,10 @@ class Agent:
             writer.add_scalar("Actor_loss", losses[1], log_step)
         if last_batch and writer_available and self._should_log(timestamp, self.per_step_log_interval):
             self._log_batch_diagnostics(last_batch, log_step, writer)
-        if (
-            self._per_has_priority_stats
-            and writer_available
-            and self._should_log(timestamp, self.per_stats_interval)
-        ):
-            for k, v in self.memory.get_priority_stats().items():
-                writer.add_scalar(f"PER/{k}", v, log_step)
 
     def learn_(self, experiences, gamma) -> Tuple[float, float]:
         self._maybe_init_profitability_params()
-        states, actions, rewards, next_states, dones, idx, weights = experiences
+        states, actions, rewards, next_states, dones, _idx, _weights = experiences
         if states.device.type != self.device.type or actions.device.type != self.device.type:
             raise RuntimeError(
                 f"Device mismatch: batch on {states.device}/{actions.device}, agent on {self.device}"
@@ -687,190 +562,60 @@ class Agent:
             or dones.device.type != self.device.type
         ):
             raise RuntimeError("Device mismatch: replay buffer returned CPU tensors for a non-CPU agent")
-        if weights is not None and weights.device.type != self.device.type:
-            raise RuntimeError("Device mismatch: PER weights not on agent device")
 
         with torch.no_grad():
-            next_actions = self.actor_target(next_states)
-            current_target_noise = self._get_target_policy_noise()
-            if current_target_noise and current_target_noise > 0:
-                # v60: Target policy noise decays late for cleaner Q-targets
-                noise = torch.randn_like(next_actions) * current_target_noise
-                next_actions = next_actions + noise
-                next_actions = torch.clamp(next_actions, 0.0, 1.0)
-                apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
-                if apply_gate is not None:
-                    next_actions = apply_gate(q_raw=next_actions, state=next_states)
-            q_next = self.critic_target(next_states, next_actions)
-            if not self.munchausen:
-                q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
-            else:
-                logsum = torch.logsumexp(q_next / self.entropy_tau, dim=1, keepdim=True)
-                tau_log_pi_next = q_next - self.entropy_tau * logsum
-                pi = F.softmax(q_next / self.entropy_tau, dim=1)
-                q_target = rewards + (self.GAMMA**self.n_step) * (
-                    pi * (q_next - tau_log_pi_next) * (1 - dones.float())
+            if self.expected_target_kernel is not None:
+                # Variance-reduced bootstrap via the precomputed quadrature kernel.
+                from .transition_kernel import expected_critic_target
+                q_next = expected_critic_target(
+                    self.critic_target, self.actor_target,
+                    states=states, next_states=next_states,
+                    kernel=self.expected_target_kernel,
+                    strike=self._strike,
+                    chunk_size=self.expected_target_chunk_size,
                 )
+                q_target = rewards + (gamma ** self.n_step) * q_next * (1 - dones.float())
+            else:
+                next_actions = self.actor_target(next_states)
+                q_next = self.critic_target(next_states, next_actions)
+                q_target = rewards + (gamma**self.n_step) * q_next * (1 - dones.float())
         q_expected = self.critic_local(states, actions)
-        if self.per:
-            td = q_target - q_expected
-            critic_loss = (td.pow(2) * weights).mean()
-            if self.step_counter % self.td_quantile_interval == 0:
-                with torch.no_grad():
-                    abs_td = td.detach().abs().flatten()
-                    if abs_td.numel() > 10:
-                        self._last_td_percentiles = (
-                            torch.quantile(abs_td, 0.5).item(),
-                            torch.quantile(abs_td, 0.9).item(),
-                            torch.quantile(abs_td, 0.99).item(),
-                        )
-            floor = float(getattr(self.memory, "min_priority", 1e-6))
-            priorities = self._compute_base_priorities(
-                td,
-                floor=floor,
-                clip_pct=self.per_priority_clip_pct,
-                scheme=self.per_priority_scheme,
-                huber_kappa=self.per_huber_kappa,
-            )
-        else:
-            critic_loss = F.mse_loss(q_expected, q_target)
-            priorities = None
+        critic_loss = (q_expected - q_target).pow(2).mean()
+
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        self.critic_optimizer.step()
-        
+        # v63 audit E4: a legacy duplicate self.critic_optimizer.step() lived here
+        # (un-zeroed grad => ~2 effective critic steps/learn). A 12-seed x 3-regime
+        # screen (lr_c=3e-4) showed single-step strictly beats the double-step on
+        # mean Δ%, seed std, AND worst-case in every regime — so single-step is now
+        # the default. single_critic_step=False restores the legacy double-step only
+        # to reproduce pre-fix v63 numbers. See HPT.md "v63 Runtime Feature Audit".
+        if not self.single_critic_step:
+            self.critic_optimizer.step()
+
         actor_loss_val = 0.0
-        # Fix 1: Critic Warmup - Skip actor updates until critic is stable (warmup episodes complete)
+        # Critic warmup: skip actor updates until the critic is stable.
         if self._episode_count > self.critic_warmup_episodes:
              actions_pred = self.actor_local(states)
              q_val = self.critic_local(states, actions_pred)
              actor_loss = -q_val.mean()
-             
+
              self.actor_optimizer.zero_grad(set_to_none=True)
              actor_loss.backward()
              self.actor_optimizer.step()
              actor_loss_val = actor_loss.item()
              self.soft_update(self.actor_local, self.actor_target)
-             
+             if self._actor_ema_data is not None:
+                 self._update_ema()
+
         self._updates_done += 1
         if self.step_counter % 200 == 0:
             with torch.no_grad():
                 tgt_q = self.critic_target(states, self.actor_target(states))
                 self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
         self.soft_update(self.critic_local, self.critic_target)
-        self._update_ema_buffers()
-        if self._per_update_priorities and priorities is not None:
-            self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        return critic_loss.item(), actor_loss_val
-
-    def learn_distribution(self, experiences, gamma) -> Tuple[float, float]:
-        self._maybe_init_profitability_params()
-        states, actions, rewards, next_states, dones, idx, weights = experiences
-        if states.device.type != self.device.type or actions.device.type != self.device.type:
-            raise RuntimeError(
-                f"Device mismatch: batch on {states.device}/{actions.device}, agent on {self.device}"
-            )
-        if (
-            rewards.device.type != self.device.type
-            or next_states.device.type != self.device.type
-            or dones.device.type != self.device.type
-        ):
-            raise RuntimeError("Device mismatch: replay buffer returned CPU tensors for a non-CPU agent")
-        if weights is not None and weights.device.type != self.device.type:
-            raise RuntimeError("Device mismatch: PER weights not on agent device")
-
-        with torch.no_grad():
-            next_actions = self.actor_target(next_states)
-            current_target_noise = self._get_target_policy_noise()
-            if current_target_noise and current_target_noise > 0:
-                # v60: Target policy noise decays late for cleaner Q-targets
-                noise = torch.randn_like(next_actions) * current_target_noise
-                next_actions = next_actions + noise
-                next_actions = torch.clamp(next_actions, 0.0, 1.0)
-                apply_gate = getattr(self.actor_target, "apply_profitability_gate", None)
-                if apply_gate is not None:
-                    next_actions = apply_gate(q_raw=next_actions, state=next_states)
-            qt_next, _ = self.critic_target(next_states, next_actions, self.N)
-            qt_next = qt_next.transpose(1, 2)
-            if not self.munchausen:
-                q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * qt_next * (
-                    1 - dones.float().unsqueeze(-1)
-                )
-            else:
-                q_mean = qt_next.mean(-1)
-                logsum = torch.logsumexp(q_mean / self.entropy_tau, dim=1, keepdim=True)
-                tau_log_pi_next = (q_mean - self.entropy_tau * logsum).unsqueeze(1)
-                pi_target = F.softmax(q_mean / self.entropy_tau, dim=1).unsqueeze(1)
-                q_targets = rewards.unsqueeze(-1) + (self.GAMMA**self.n_step) * (
-                    pi_target * (qt_next - tau_log_pi_next) * (1 - dones.float().unsqueeze(-1))
-                )
-        q_expected, taus = self.critic_local(states, actions, self.N)
-        td_error = q_targets - q_expected
-        huber = calculate_huber_loss(td_error, 1.0)
-        quantile_loss = (torch.abs(taus - (td_error.detach() < 0).float()) * huber).sum(dim=1).mean(dim=1)
-        if self.per:
-            critic_loss = (quantile_loss.unsqueeze(1) * weights).mean()
-        else:
-            critic_loss = quantile_loss.mean()
-        self.critic_optimizer.zero_grad(set_to_none=True)
-        critic_loss.backward()
-        self.critic_optimizer.step()
-
-        self.critic_optimizer.step()
-        
-        actor_loss_val = 0.0
-        if self._episode_count > self.critic_warmup_episodes:
-             actions_pred = self.actor_local(states)
-             q_pred, _ = self.critic_local(states, actions_pred, self.N)
-             actor_loss = -q_pred.mean()
-                 
-             self.actor_optimizer.zero_grad(set_to_none=True)
-             actor_loss.backward()
-             self.actor_optimizer.step()
-             actor_loss_val = actor_loss.item()
-             self.soft_update(self.actor_local, self.actor_target)
-             
-        self._updates_done += 1
-        if self._per_update_priorities:
-            floor = float(getattr(self.memory, "min_priority", 1e-6))
-            if self.per_priority_scheme == "lap":
-                huber_pr = calculate_huber_loss(td_error, k=self.per_huber_kappa)
-                quantile_pr = (
-                    torch.abs(taus - (td_error.detach() < 0).float()) * huber_pr
-                ).sum(dim=1).mean(dim=1)
-                priorities = self._compute_base_priorities(
-                    quantile_pr,
-                    floor=floor,
-                    clip_pct=self.per_priority_clip_pct,
-                    scheme=self.per_priority_scheme,
-                    huber_kappa=self.per_huber_kappa,
-                    is_loss=True,
-                )
-            else:
-                td_proxy = td_error.mean(dim=(1, 2))
-                priorities = self._compute_base_priorities(
-                    td_proxy,
-                    floor=floor,
-                    clip_pct=self.per_priority_clip_pct,
-                    scheme=self.per_priority_scheme,
-                    huber_kappa=self.per_huber_kappa,
-                )
-            self.memory.update_priorities(idx, priorities.cpu().numpy().flatten())
-        if self.step_counter % self.td_quantile_interval == 0:
-            with torch.no_grad():
-                flat = q_targets.view(q_targets.size(0), -1)
-                q10 = torch.quantile(flat, 0.1, dim=1).mean().item()
-                q50 = torch.quantile(flat, 0.5, dim=1).mean().item()
-                q90 = torch.quantile(flat, 0.9, dim=1).mean().item()
-                self._last_iqn_spread = (q10, q50, q90, (q90 - q10))
-        if self.step_counter % self.diagnostics_interval == 0:
-            with torch.no_grad():
-                tgt_q, _ = self.critic_target(states, self.actor_target(states), self.N)
-                self._last_target_drift = (q_expected - tgt_q).abs().mean().item()
-        self.soft_update(self.critic_local, self.critic_target)
-        self._update_ema_buffers()
         return critic_loss.item(), actor_loss_val
 
     @property
@@ -900,59 +645,36 @@ class Agent:
     def _compute_tau(self) -> float:
         return self.t
 
-    def _update_ema_buffers(self):
-        if self.critic_ema_decay <= 0 or self.critic_ema_state is None:
-            return
+    def _update_ema(self) -> None:
+        """EMA-blend the actor-weight shadow toward the current local actor (Task 2 L_ema).
+        ema <- decay*ema + (1-decay)*local. Eval-only: never feeds training/target nets."""
+        d = self.ema_decay
         with torch.no_grad():
-            for name, param in self.critic_local.named_parameters():
-                if name in self.critic_ema_state:
-                    self.critic_ema_state[name].mul_(self.critic_ema_decay).add_(
-                        param.data, alpha=1.0 - self.critic_ema_decay
-                    )
+            try:
+                torch._foreach_mul_(self._actor_ema_data, d)
+                torch._foreach_add_(self._actor_ema_data, self._actor_local_data, alpha=1.0 - d)
+            except Exception:
+                for ep, lp in zip(self._actor_ema_data, self._actor_local_data):
+                    ep.mul_(d)
+                    ep.add_(lp, alpha=1.0 - d)
 
-    def _maybe_update_per_schedule(self):
-        """Dynamically adjust PER alpha/beta to mimic uniform early and ramp later."""
-        if not self.per or not hasattr(self, "memory") or not isinstance(self.memory, PrioritizedReplay):
+    @contextlib.contextmanager
+    def averaged_eval_actor(self):
+        """Context manager: temporarily load the EMA actor weights into actor_local for
+        evaluation, restoring the training weights afterward. No-op unless EMA is on."""
+        if self.weight_averaging != "ema" or self._actor_ema_data is None:
+            yield
             return
-        # If no schedule configured, keep defaults
-        if self.per_alpha_final is None or self.per_alpha_ramp_end <= self.per_alpha_ramp_start:
-            return
-        start = self.per_alpha_ramp_start
-        end = self.per_alpha_ramp_end
-        ep = self._episode_count
-        if ep <= start:
-            alpha = 0.0
-        elif ep >= end:
-            alpha = self.per_alpha_final
-        else:
-            frac = (ep - start) / max(1, end - start)
-            if self.per_alpha_sigmoid:
-                k = 8.0 / max(1.0, end - start)
-                mid = 0.5 * (start + end)
-                alpha = self.per_alpha_final / (1.0 + math.exp(-k * (ep - mid)))
-            else:
-                alpha = frac * self.per_alpha_final
-        beta_final = self.per_beta_final if self.per_beta_final is not None else 1.0
-        if ep <= start:
-            beta = 1.0
-        elif ep >= end:
-            beta = beta_final
-        else:
-            frac = (ep - start) / max(1, end - start)
-            if self.per_alpha_sigmoid:
-                k = 8.0 / max(1.0, end - start)
-                mid = 0.5 * (start + end)
-                frac_sig = 1.0 / (1.0 + math.exp(-k * (ep - mid)))
-                beta = 1.0 + (beta_final - 1.0) * frac_sig
-            else:
-                beta = 1.0 + (beta_final - 1.0) * frac
-        # Apply to memory and invalidate caches so sampling uses updated alpha
-        self.memory.alpha = alpha
-        self.memory.beta_start = beta
-        self.memory.beta_frames = int(1e9)  # effectively constant beta
-        self.memory.set_frame_count(0)
-        self.memory._cache_valid = False
-        self.memory._cumsum_valid = False
+        backup = [p.detach().clone() for p in self._actor_local_data]
+        try:
+            with torch.no_grad():
+                for dst, src in zip(self._actor_local_data, self._actor_ema_data):
+                    dst.copy_(src)
+            yield
+        finally:
+            with torch.no_grad():
+                for dst, b in zip(self._actor_local_data, backup):
+                    dst.copy_(b)
 
     def _maybe_init_profitability_params(self) -> None:
         """Best-effort init of Actor profitability gate params from an env/contract in the call stack.
@@ -1014,8 +736,8 @@ class Agent:
         self._profitability_params_initialized = True
 
     def get_critic_eval_state(self):
-        """Return EMA-smoothed critic parameters for evaluation if available."""
-        return self.critic_ema_state if self.critic_ema_state is not None else self.critic_local.state_dict()
+        """Return critic parameters for evaluation."""
+        return self.critic_local.state_dict()
 
     def _log_batch_diagnostics(self, batch, ts, writer):
         if ts % self.diagnostics_interval != 0:
@@ -1050,12 +772,6 @@ class Agent:
             writer.add_scalar("TD_Error/p99", p99, ts)
         if self._last_target_drift and self.step_counter % 200 == 0:
             writer.add_scalar("Stability/Target_drift", self._last_target_drift, ts)
-        if self.distributional and self._last_iqn_spread and self.step_counter % 200 == 0:
-            q10, q50, q90, spread = self._last_iqn_spread
-            writer.add_scalar("IQN/q10", q10, ts)
-            writer.add_scalar("IQN/q50", q50, ts)
-            writer.add_scalar("IQN/q90", q90, ts)
-            writer.add_scalar("IQN/q90_minus_q10", spread, ts)
 
     def calibrate_bias(
         self,
@@ -1066,11 +782,21 @@ class Agent:
         target_std: float = 0.005,
         tolerance_percent: float = 0.001,
         epsilon_scale: float = 0.01,
+        mode: str = "closed_form",
     ) -> None:
         """
-        Optimizes Actor bias using Rprop to maximize the Swing Option Price on the warmup dataset.
-        This provides a high-quality initial guess for the policy.
+        Warm-start the Actor output bias on the warmup dataset.
+
+        mode="closed_form" (default): O(1)-pass myopic warm-start from the convex-cost
+            FOC, averaged over the warmup spots (samples of the HHK/kernel density).
+        mode="rprop": legacy 20-iteration Rprop finite-difference loop (bit-identical to
+            the pre-change path; ~60+ batch price rollouts).
         """
+        mode = (mode or "closed_form").lower()
+        if mode not in {"closed_form", "rprop"}:
+            raise ValueError(f"Unsupported calibrate_bias mode '{mode}'. Choose 'closed_form' or 'rprop'.")
+        if mode == "closed_form":
+            return self._calibrate_bias_closed_form(env, n_episodes, target_std=target_std)
         print(f"\n🧪 Calibrating Actor (Batch={n_episodes}, MaxIter={max_iterations}, Eps={epsilon_scale})...")
         
         # --- Step 1: Scaling ---
@@ -1184,6 +910,99 @@ class Agent:
 
         _, final_q, final_price, _ = self._evaluate_batch_price(env, n_episodes)
         print(f"DONE: Final Price={final_price:.4f} | Mean Q={final_q:.3f}")
+
+    def _output_slope(self, out_mean: float) -> float:
+        """Local derivative d(output)/d(preact) of the actor output activation at a
+        given mean output level. Used as the one-Newton-step gain for the closed-form
+        bias shift (invert the squash locally instead of a magic constant)."""
+        a = self._actor_action_output
+        m = float(min(max(out_mean, 1e-3), 1.0 - 1e-3))
+        if a == "tanh01":
+            # out = 0.5*(tanh(z)+1) -> d/dz = 0.5*(1-tanh^2) = 2*m*(1-m)
+            return 2.0 * m * (1.0 - m)
+        if a == "sigmoid":
+            return m * (1.0 - m)
+        if a.startswith("beta_sigmoid"):
+            beta = getattr(self.actor_local, "_output_beta", 2.0)
+            return beta * m * (1.0 - m)
+        # plain tanh maps to [-1,1]; treat m as a (0,1) proxy
+        return max(1e-3, 1.0 - (2.0 * m - 1.0) ** 2)
+
+    def _calibrate_bias_closed_form(self, env, n_episodes: int, target_std: float = 0.005) -> None:
+        """Closed-form myopic warm-start (replaces the Rprop loop).
+
+        Sets the actor output bias so the mean normalized exercise matches the myopic
+        convex-cost optimum averaged over the warmup dataset spots (which ARE samples of
+        the HHK/kernel density), budget-capped by Q_max/n_rights. Two batch passes total
+        (variance scale + bias inversion) instead of ~20 Rprop iterations.
+
+        Myopic FOC:  q*(S) = clip( ((S-K)+/(c*gamma))^(1/(gamma-1)), q_min, q_max )
+          gamma=2 -> (S-K)+/(2c);  gamma=1 (linear cost) -> bang-bang on (S-K)>c;
+          c=0      -> bang-bang on S>K.
+        """
+        print(f"\n🧪 Calibrating Actor (closed-form myopic, Batch={n_episodes})...")
+
+        # Unwrap to access the vectorized warmup paths / contract.
+        base = env
+        if not hasattr(base, "S") and hasattr(base, "unwrapped"):
+            base = base.unwrapped
+        c = getattr(env, "contract", None) or getattr(base, "contract")
+
+        q_min = float(c.q_min)
+        q_max = float(c.q_max)
+        c_cost = float(c.c_cost)
+        gamma_cost = float(c.gamma_cost)
+        strike = float(c.strike)
+        denom = (q_max - q_min) if (q_max > q_min) else 1.0
+
+        # --- Step 1: variance scaling (unchanged one-shot) ---
+        current_std, _, _, _ = self._evaluate_batch_price(env, n_episodes)
+        if current_std > 1e-9:
+            scale_factor = target_std / current_std
+            with torch.no_grad():
+                self.actor_local.fc4.weight.mul_(scale_factor)
+                self.actor_target.fc4.weight.mul_(scale_factor)
+
+        # --- Step 2: closed-form myopic target mean action ā ---
+        if hasattr(base, "S") and len(getattr(base, "S")) >= 1:
+            n = min(n_episodes, len(base.S))
+            n_rights = int(c.n_rights)
+            S = np.asarray(base.S, dtype=np.float64)[:n]
+            S_dec = S[:, :n_rights] if S.ndim >= 2 else S
+            itm = np.maximum(S_dec - strike, 0.0)
+            if c_cost <= 0.0:
+                q_star = np.where(S_dec > strike, q_max, q_min)
+            elif abs(gamma_cost - 1.0) < 1e-9:
+                # Linear cost: marginal profit (S-K)-c is constant in q -> bang-bang.
+                q_star = np.where(itm > c_cost, q_max, q_min)
+            else:
+                cg = max(c_cost * gamma_cost, 1e-12)
+                base_q = np.power(itm / cg, 1.0 / (gamma_cost - 1.0))
+                q_star = np.clip(base_q, q_min, q_max)
+            a_myopic = float(np.mean((q_star - q_min) / denom))
+        else:
+            a_myopic = 0.5
+
+        # Budget cap (same form as the legacy heuristic at the old Step 2).
+        target_q = c.Q_max / c.n_rights
+        target_q_budget = (target_q - q_min) / denom if denom > 0 else 0.5
+        a_target = min(a_myopic, target_q_budget)
+        a_target = float(np.clip(a_target, 0.05, 0.95))
+
+        # --- Step 3: single bias shift via local squash inversion ---
+        _, m0, _, _ = self._evaluate_batch_price(env, n_episodes)
+        slope = max(self._output_slope(m0), 0.05)
+        delta = float(np.clip((a_target - m0) / slope, -4.0, 4.0))
+        with torch.no_grad():
+            self.actor_local.fc4.bias.add_(delta)
+            self.actor_target.fc4.bias.add_(delta)
+
+        _, final_q, final_price, _ = self._evaluate_batch_price(env, n_episodes)
+        print(
+            f"DONE (closed-form): ā_myopic={a_myopic:.3f} budget={target_q_budget:.3f} "
+            f"-> target ā={a_target:.3f} | m0={m0:.3f} | Δbias={delta:+.3f} | "
+            f"Final Q={final_q:.3f} Price={final_price:.4f}"
+        )
 
     def _evaluate_batch_price(self, env, n_episodes):
         """
@@ -1349,22 +1168,3 @@ class Agent:
     def reset(self):
         """Reset agent state between episodes (placeholder for future use)."""
         return
-
-
-def calculate_huber_loss(td_errors, k=1.0):
-    return torch.where(td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k))
-
-
-def calc_fraction_loss(FZ_, FZ, taus, weights=None):
-    gradients1 = FZ - FZ_[:, :-1]
-    gradients2 = FZ - FZ_[:, 1:]
-    flag_1 = FZ > torch.cat([FZ_[:, :1], FZ[:, :-1]], dim=1)
-    flag_2 = FZ < torch.cat([FZ[:, 1:], FZ_[:, -1:]], dim=1)
-    gradients = (
-        torch.where(flag_1, gradients1, -gradients1) + torch.where(flag_2, gradients2, -gradients2)
-    ).view(taus.shape[0], 31)
-    if weights is not None:
-        loss = ((gradients * taus[:, 1:-1]).sum(dim=1) * weights).mean()
-    else:
-        loss = (gradients * taus[:, 1:-1]).sum(dim=1).mean()
-    return loss
