@@ -137,13 +137,6 @@ transition kernel**, making the TD target deterministic. Bit-identical to v61 wh
 the sole controlling accuracy axis (`M_x=2` is a hard fast plateau). See `src/transition_kernel.py`
 and notebook 7.
 
-### Function Approximators (`--approximator`)
-
-With a deterministic target, the actor/critic front-end becomes the main lever for speed and
-C++-portability. `--approximator` swaps the `2×64 SiLU+LayerNorm` net for a curated feature map +
-linear head (`poly`/`rff`/`rbf`/`tiny_nn`). The `nn` default is bit-identical. See `src/networks.py`,
-`tools/test_approximators.py`, and notebook 8.
-
 ### Risk Management: Delta / Gamma & Hedging
 
 `src/greeks.py` computes **pathwise Delta and Gamma** via Common-Random-Number bump-and-revalue:
@@ -239,18 +232,26 @@ make train ARGS=' \
 
 ### Key CLI Flags
 
-| Flag | Default | Description |
+Defaults below are the **v64 canonical** — `python run.py` with no flags reproduces a v64 focal run.
+
+| Flag | v64 default | Description |
 |------|---------|-------------|
-| `-n_paths` | 10000 | Training episodes |
+| `-n_paths` | 10000 | Training episodes (the study scripts override to 32768) |
 | `-eval_every` | 1000 | Evaluation frequency |
 | `-n_paths_eval` | 1 | Paths per evaluation |
-| `--c_cost` | 0.0 | Convex cost coefficient |
-| `--gamma_cost` | 1.0 | Convex cost exponent |
+| `--c_cost` | 0.04 | Convex cost coefficient (focal cell) |
+| `--gamma_cost` | 2.0 | Convex cost exponent (focal cell) |
 | `-seed` | 0 | Random seed |
-| `-layer_size` | 64 | Network hidden size |
-| `--use_expected_target` | 0 | Replace the single-sample TD bootstrap with the analytical HHK transition-kernel expectation (deterministic target). Bit-identical to v61 when 0 |
-| `--kernel_M_x` | 4 | Gauss–Hermite nodes on the OU transition (sole controlling accuracy axis; `2` is the fast plateau) |
-| `--approximator` | nn | Actor/critic front-end: `nn` (default, bit-identical) or a curated feature map + linear head (`poly`/`rff`/`rbf`/`tiny_nn`) for C++-portable speed |
+| `--use_expected_target` | 1 | Analytical HHK transition-kernel expectation (deterministic TD target) |
+| `--kernel_M_x` | 2 | Gauss–Hermite nodes on the OU transition (sole accuracy axis; `2` is the fast plateau) |
+| `--actor_layers` / `--critic_layers` | 3 | Net depth (v64 Stage-C winner; was 2) |
+| `-learn_number` | 2 | Gradient steps per interaction (v64 Stage-C winner; was 1) |
+| `--actor_output_activation` | beta_sigmoid_1.5 | Softer squash (v64 Stage-C winner; was 3.0). **Eval-critical** |
+| `-lr_a` / `-lr_c` | 3e-4 / 6e-4 | Actor / critic learning rates |
+| `--noise_schedule` | linear | σ0→floor over the horizon |
+| `--weight_averaging` | ema | Eval-only EMA of actor weights |
+| `--critic_warmup_episodes` | 512 | Freeze actor for the first 512 episodes |
+| `--use_robust_normalization` | 1 | Log-moneyness + median/IQR input scaling |
 
 > A fuller flag reference lives in `CLAUDE.md`. The config is being simplified on the
 > `refactor/simplify-config` branch — several legacy/ablation knobs are slated for removal
@@ -299,7 +300,7 @@ make train ARGS=' \
 | `5: Convex Costs LSM vs RL` | **Main results analysis** | Rerun (paper figures) |
 | `6: Convex costs 0.04 Analysis` | Case study; generates Figures 1–3 (HHK paths, main results, Bang-Bangness) | Rerun (paper figures) |
 | `7: Phase 1 Findings — Semi-Analytical Kernel` | Statistical summary of the kernel study (M_x isolation, hypothesis tests) | Frozen research record |
-| `8: Approximator Comparison` | Speed/correctness/screening of the `--approximator` contenders | Frozen research record |
+| `8: Approximator Comparison` | Historical study of curated-feature approximators (removed in v64 — all lost to the NN) | Frozen research record |
 | `Hedging` | Pathwise Delta/Gamma (CRN bump) + forward-hedge backtest | New |
 
 > The paper-figure notebooks (4–6) need a rerun once the simplified kernel-on canonical config
@@ -325,13 +326,13 @@ DRL-Swing-Options/
 ├── src/
 │   ├── agent.py                # D4PG agent implementation
 │   ├── swing_env.py            # Gymnasium environment
-│   ├── networks.py             # Actor/Critic + curated-feature approximators
+│   ├── networks.py             # Actor (profitability-gated STE) + Critic
 │   ├── transition_kernel.py    # Analytical HHK transition kernel (deterministic TD target)
 │   ├── greeks.py               # Pathwise Delta/Gamma (CRN bump-and-revalue)
 │   ├── hedging_utils.py        # HHK forward price, P&L risk metrics, trace helpers
 │   ├── lsm_swing_pricer.py     # LSM_minimal and LSM_full benchmarks
 │   ├── simulate_hhk_spot.py    # HHK simulation
-│   └── replay_buffer.py        # PER and circular buffers
+│   └── replay_buffer.py        # circular (uniform) replay buffer
 ├── Jupyter Notebooks/          # Analysis and validation
 ├── tools/
 │   ├── build_latex.sh                    # Local paper build script
@@ -355,15 +356,18 @@ The algorithm has evolved through v1–v63 plus a post-v62 research phase (see `
 - **v42**: Profitability-gated actor with STE
 - **v59**: Critic warmup + adaptive noise
 - **v61**: Paper configuration for convex costs (IQN off, standard critic)
-- **Post-v62**: Semi-analytical kernel (deterministic TD target), function approximators, and the
-  deterministic-target retune (closed-form warm-start, linear noise + eval-only EMA, faster critic LR)
+- **v63**: Semi-analytical kernel (deterministic TD target) + deterministic-target retune
+  (closed-form warm-start, linear noise + eval-only EMA, faster critic LR); PER and TD3 target
+  smoothing removed
+- **v64** (current default): the v63 kernel-on canonical + the Mega-campaign Stage-C winners —
+  depth-3 net, `learn_number=2`, `beta_sigmoid_1.5` (see `HPT.md` → "Mega campaign")
 
-### Architecture Summary
+### Architecture Summary (v64 defaults)
 
-- **Networks**: 2×64 MLPs, SiLU activation, LayerNorm (or a curated feature map via `--approximator`)
-- **PER**: Soft alpha ramp (0.1 → 0.2), beta ≈ 1.0
-- **Noise**: Pre-squash Gaussian; canonical schedule is full-horizon **linear** σ0→floor decay
-- **Output**: β-sigmoid(3.0) for softer saturation
+- **Networks**: 3×64 MLPs, SiLU activation, LayerNorm
+- **Replay**: uniform (PER removed in v63)
+- **Noise**: Pre-squash Gaussian; full-horizon **linear** σ0→floor decay + eval-only EMA
+- **Output**: β-sigmoid(1.5) for softer saturation (interior exercise under convex cost)
 
 ---
 
