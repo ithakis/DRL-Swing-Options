@@ -123,7 +123,6 @@ def approximate_Q_T(
         if brentq is not None:
             return float(brentq(fn, lo, hi, maxiter=200))
         flo = fn(lo)
-        fhi = fn(hi)
         for _ in range(200):
             mid = 0.5 * (lo + hi)
             fmid = fn(mid)
@@ -131,7 +130,6 @@ def approximate_Q_T(
                 return float(mid)
             if flo * fmid <= 0.0:
                 hi = mid
-                fhi = fmid
             else:
                 lo = mid
                 flo = fmid

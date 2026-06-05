@@ -1,24 +1,15 @@
-"""Statistical analysis framework for the semi-analytical bootstrap sweeps.
+"""Pure-statistics utilities for D4PG sweep analysis.
 
-This module deduplicates sweep rows across resume CSVs, aggregates per-seed
-Delta% results, and exposes both mean-focused and variance-focused inference:
+Provides mean/variance inference, paired-seed tests, Holm–Bonferroni correction,
+and conservative Pareto selection over GroupStats objects. Consumes rows with
+columns: label, contract, n_paths, seed, eval_price, lsm_price, wall_seconds, status.
 
-  * Welch's two-sample t-test for mean differences.
-  * Levene (center=mean) and Brown-Forsythe (center=median) tests for scale.
-  * Variance-ratio summaries and bootstrap CIs for std / variance.
-  * Paired-seed comparisons when two configs share the same seed set.
-  * Minimum detectable effect summaries so non-significance is not mistaken
-    for strong equivalence.
-
-The functions are designed to be imported by the notebook generator as well as
-used directly from the command line.
+Delta% = 100 * (eval_price / lsm_price - 1) computed per row.
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
-import json
 import math
 import statistics
 from collections import defaultdict
@@ -35,27 +26,6 @@ try:
 except Exception:
     HAVE_SCIPY = False
 
-
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOG_DIR = ROOT / "logs" / "_sweep_h1"
-
-# Default canonical sources. Later entries take precedence when a resumed sweep
-# re-runs the same (label, seed, n_paths, contract) tuple.
-DEFAULT_SOURCES: List[Tuple[str, str, Optional[str], Optional[int]]] = [
-    ("wide1", "sweep_results_n4096.csv", "focal", 4096),
-    ("wide2", "sweep_results_n3072_wide2.csv", "focal", 3072),
-    ("phase2", "sweep_h1_phase2.csv", None, None),
-    ("phase3", "sweep_h1_phase3_n8192.csv", None, None),
-    ("h4v2", "sweep_h4_v2_n4096.csv", None, None),
-    ("h6", "sweep_h6_n2048.csv", None, None),
-    ("h789", "sweep_h789_n4096.csv", None, None),
-    ("h789r", "sweep_h789_resume_n4096.csv", None, None),
-    ("h8strat", "sweep_h8strat_n4096.csv", None, None),
-    ("paramstd", "sweep_param_study.csv", None, None),
-    ("paramstdr", "sweep_param_study_resume.csv", None, None),
-    ("varcamp", "sweep_variance_campaign_n4096.csv", None, None),
-    ("kden", "sweep_kernel_density_n4096.csv", None, None),
-]
 
 
 def _norm_ppf(prob: float) -> float:
@@ -208,51 +178,6 @@ class GroupStats:
             "var_ci_high": var_ci.get("ci_high"),
         }
 
-
-def load_sources(
-    sources: Optional[Iterable[Tuple[str, str, Optional[str], Optional[int]]]] = None,
-    log_dir: Path = DEFAULT_LOG_DIR,
-    dedupe: bool = True,
-) -> List[Dict[str, str]]:
-    if sources is None:
-        sources = DEFAULT_SOURCES
-
-    rows: List[Dict[str, str]] = []
-    unique_rows: Dict[Tuple[str, int, int, str], Dict[str, str]] = {}
-    for tag, fname, default_contract, default_n_paths in sources:
-        path = log_dir / fname
-        if not path.exists():
-            continue
-        with open(path) as handle:
-            for row in csv.DictReader(handle):
-                if row.get("status") != "ok":
-                    continue
-                if not row.get("contract"):
-                    row["contract"] = default_contract or ""
-                if not row.get("n_paths"):
-                    row["n_paths"] = str(default_n_paths) if default_n_paths is not None else ""
-                row["_source"] = tag
-                if not dedupe:
-                    rows.append(row)
-                    continue
-                key = (
-                    row.get("label", ""),
-                    _safe_int(row.get("seed")),
-                    _safe_int(row.get("n_paths")),
-                    row.get("contract", "") or default_contract or "focal",
-                )
-                unique_rows[key] = row
-    if dedupe:
-        rows = list(unique_rows.values())
-    rows.sort(
-        key=lambda row: (
-            row.get("contract", ""),
-            _safe_int(row.get("n_paths")),
-            row.get("label", ""),
-            _safe_int(row.get("seed")),
-        )
-    )
-    return rows
 
 
 def per_seed_delta(row: Dict[str, str]) -> Optional[float]:
@@ -594,39 +519,6 @@ def comparisons_against_reference(
     return rows
 
 
-def build_payload(
-    contract: str = "focal",
-    n_paths: int = 4096,
-    reference_label: str = "H1_only",
-    n_bootstrap: int = 4000,
-) -> Dict[str, object]:
-    rows = load_sources()
-    groups = summarize_groups(rows)
-    filtered = filter_groups(groups, contract=contract, n_paths=n_paths, min_seeds=2)
-    payload = {
-        "rows_loaded": len(rows),
-        "groups": [group.to_payload(n_bootstrap=n_bootstrap) for group in filtered],
-        "pairwise_vs_reference": [],
-        "pareto": [group.to_payload(n_bootstrap=n_bootstrap) for group in conservative_pareto(filtered)],
-    }
-    for row in comparisons_against_reference(
-        filtered, reference_label=reference_label, n_bootstrap=n_bootstrap
-    ):
-        group = row["group"]
-        comparison = row["comparison"]
-        payload["pairwise_vs_reference"].append(
-            {
-                "label": group.label,
-                "n_seeds": group.n_seeds,
-                "mean": group.mean,
-                "std": group.std,
-                "se": group.se,
-                "wall_mean": group.wall_mean,
-                **comparison,
-            }
-        )
-    return payload
-
 
 def print_summary(groups: Sequence[GroupStats], title: str = "") -> None:
     if title:
@@ -679,49 +571,3 @@ def print_pairwise(groups: Sequence[GroupStats], reference_label: str, n_bootstr
             f"{group.label:<24} {gap:>+8.3f} {p_mean:>8.3f} {comparison['variance_reduction_pct']:>+9.1f} {p_bf:>8.3f} "
             f"{pairs:>5d} {p_pair:>8.3f} {mde_ind_val:>8.3f} {mde_pair_val:>9.3f}"
         )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--filter_contract", type=str, default="focal")
-    parser.add_argument("--filter_npaths", type=int, default=4096)
-    parser.add_argument("--reference_label", type=str, default="H1_only")
-    parser.add_argument("--bootstrap", type=int, default=4000)
-    parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
-
-    rows = load_sources()
-    groups = summarize_groups(rows)
-    filtered = filter_groups(groups, contract=args.filter_contract, n_paths=args.filter_npaths, min_seeds=2)
-
-    if args.json:
-        print(
-            json.dumps(
-                build_payload(
-                    contract=args.filter_contract,
-                    n_paths=args.filter_npaths,
-                    reference_label=args.reference_label,
-                    n_bootstrap=args.bootstrap,
-                ),
-                indent=2,
-            )
-        )
-        return
-
-    print(f"Loaded {len(rows)} deduplicated OK rows from disk")
-    print_summary(groups, title="ALL groups")
-    print_summary(filtered, title=f"FILTERED: contract={args.filter_contract}, n_paths={args.filter_npaths}")
-    print_pairwise(filtered, reference_label=args.reference_label, n_bootstrap=args.bootstrap)
-
-    pareto = conservative_pareto(filtered)
-    if pareto:
-        print("\n=== Pareto frontier (conservative Δ% vs wall-clock) ===")
-        for group in pareto:
-            print(
-                f"  {group.label:<28} conservative={group.conservative:+.3f}% "
-                f"std={group.std:.3f} wall={group.wall_mean:.0f}s n={group.n_seeds}"
-            )
-
-
-if __name__ == "__main__":
-    main()

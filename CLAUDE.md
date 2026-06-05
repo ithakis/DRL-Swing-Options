@@ -80,9 +80,9 @@ See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for t
 ## Deterministic-Target Canonical (Tasks 1–3)
 
 Once the kernel makes the TD target deterministic, three retunes were screened (3-seed → 12-seed,
-regimes cc_g1/cc_g2/nocost, kernel-on fast M_x=2, 4096 ep; harness `tools/sweep_v63_audit.py`, now
-with a `--resume` flag) and **adopted into the kernel-on canonical** (see HPT.md “Deterministic-target
-retune”).  Each is flag-guarded to the prior default; `pytest tools/test_approximators.py` stays 37/37.
+regimes cc_g1/cc_g2/nocost, kernel-on fast M_x=2, 4096 ep) and **adopted into the kernel-on
+canonical** (see HPT.md “Deterministic-target retune”). These three changes are now baked into
+the v64 `run.py` defaults; no extra flags are needed.
 
 ```bash
 # Kernel-on canonical after Tasks 1–3 (add to the kernel flags above):
@@ -136,28 +136,20 @@ identical randomness — the bump is the near-deterministic multiplicative shift
   variance-reducing, saved-run sanity).  `Jupyter Notebooks/Hedging.ipynb`: 9-pt revalued PV/Δ/Γ grid
   (RL vs LSM), daily hedge, RL-vs-LSM regression hedge, P&L with VaR/ES lines.
 
-## CLI flag cleanup (refactor/simplify-config) — status
+## CLI flag status (v64)
 
-Done (this branch): deleted `logs/` (3.6 GB, reproducible), stale `Convex Costs Results 1–6/8.csv`,
-and the stale `.claude/worktrees/...` worktree.  IQN is already gone from `networks.py`.
+The `Convex Cost Experiments/*.sh` sweep scripts were regenerated to v64 in `chore/repo-debloat` —
+they now only set the study budget, per-cell `(c, gamma)`, and seeds; everything else is a `run.py`
+default. The following flags remain in `run.py` for backward compatibility with saved-run JSONs:
 
-**Potential CLI removals — need sign-off (entangled with the canonical retrain).**  These are all
-*eval-safe* (evaluation uses `add_noise=False` and the saved-run JSONs don't pass them), so removing
-them does **not** change re-evaluation of the 6843 saved agents — but they are wired into the existing
-`Convex Cost Experiments/*.sh`, so prune them **together with** regenerating those scripts under a
-frozen kernel-on canonical:
-- Inert (documented no-op): `--final_lr_fraction`, `--lr_schedule_episodes`, `--min_lr`; dead `--compile`.
-- Training-only ablation knobs that lost: `--adaptive_noise_scale`, `--warmup_noise_fraction`,
-  `--single_critic_step` (drop the `=0` double-step), `--calibrate_bias_mode` (keep `closed_form`),
-  `--actor_type` (keep `standard`; `finance_informed` is already ignored at eval), and collapse
-  `--noise_schedule` to `linear` (drop `hyperbolic`/`const_floor`).
-
-**Do NOT remove without a retrain (eval-critical):** `--use_robust_normalization` and
-`--actor_output_activation` change the **actor forward pass** and are read from each saved run's JSON
-by `tools/rebuild_results_v7.build_agent`; the paper agents were trained with `use_robust_normalization=1`
-and `beta_sigmoid_3.0`.  Likewise keep `--weight_averaging` default `off` (an `ema` default would make
-`build_agent` use uninitialized EMA weights at eval).  Retire these only after re-baselining the paper
-runs on the new canonical.
+- **Inert (no-op at v64 defaults):** `--final_lr_fraction 1.0`, `--lr_schedule_episodes`, `--min_lr`,
+  `--compile 0`, `--single_critic_step 1` (canonical; `=0` only reproduces pre-fix v63 numbers).
+- **Still live and canonical:** `--adaptive_noise_scale 0.6`, `--warmup_noise_fraction 0.3/0.4`
+  (per-regime), `--noise_schedule linear`, `--calibrate_bias_mode closed_form`.
+- **Eval-critical (keep):** `--use_robust_normalization`, `--actor_output_activation`,
+  `--weight_averaging` — read from each saved run's `.json` by `rebuild_results_v7`. The v64 defaults
+  (`use_robust_normalization=1`, `beta_sigmoid_1.5`, `weight_averaging=ema`) differ from the v61 paper
+  agents; always use the saved JSON to reconstruct the correct agent.
 
 ## Architecture
 

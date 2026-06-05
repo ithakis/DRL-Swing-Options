@@ -47,8 +47,6 @@ def main():
     eval_env.reset(seed=parameters.seed)
     setattr(eval_env, "n_paths_eval", args.runs)
 
-    action_high = eval_env.action_space.high[0]
-    action_low = eval_env.action_space.low[0]
     state_size = eval_env.observation_space.shape[0]
     action_size = eval_env.action_space.shape[0]
 

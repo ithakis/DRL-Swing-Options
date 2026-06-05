@@ -16,6 +16,7 @@ dependencies:
   - numba
   - pyarrow
   - pytest
+  - ruff
   - pytorch
   - torchvision
   - torchaudio

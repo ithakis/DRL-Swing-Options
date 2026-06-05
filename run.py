@@ -183,7 +183,7 @@ class ConfigManager:
             "--q_min", type=float, default=0.0, help="Minimum exercise quantity per period, default = 0.0"
         )
         parser.add_argument(
-            "--q_max", type=float, default=2.0, help="Maximum exercise quantity per period, default = 1.0"
+            "--q_max", type=float, default=2.0, help="Maximum exercise quantity per period, default = 2.0 (v64 focal)"
         )
         parser.add_argument(
             "--Q_min", type=float, default=0.0, help="Global minimum total volume, default = 0.0"
@@ -193,9 +193,9 @@ class ConfigManager:
         )
         parser.add_argument("--strike", type=float, default=1.0, help="Strike price K, default = 100.0")
         parser.add_argument(
-            "--maturity", type=float, default=0.0833, help="Time to maturity in years, default = 1.0"
+            "--maturity", type=float, default=0.0833, help="Time to maturity in years, default = 0.0833 (v64 focal ~1 month)"
         )
-        parser.add_argument("--n_rights", type=int, default=22, help="Number of decision dates, default = 250")
+        parser.add_argument("--n_rights", type=int, default=22, help="Number of decision dates, default = 22 (v64 focal)")
         parser.add_argument(
             "--risk_free_rate", type=float, default=0.05, help="Risk-free rate for discounting, default = 0.05"
         )
@@ -224,7 +224,7 @@ class ConfigManager:
             type=str,
             default="chebyshev",
             choices=["power", "laguerre", "hermite", "chebyshev"],
-            help="Basis family for the LSM regression (default: power).",
+            help="Basis family for the LSM regression (default: chebyshev).",
         )
         parser.add_argument(
             "--lsm_degree",
@@ -254,13 +254,13 @@ class ConfigManager:
 
         # HHK Stochastic Process Parameters
         parser.add_argument("--S0", type=float, default=1.0, help="Initial spot price, default = 100.0")
-        parser.add_argument("--alpha", type=float, default=12.0, help="Mean reversion speed, default = 7.0")
-        parser.add_argument("--sigma", type=float, default=1.2, help="Volatility of OU process, default = 1.4")
-        parser.add_argument("--beta", type=float, default=150.0, help="Jump decay rate, default = 200.0")
+        parser.add_argument("--alpha", type=float, default=12.0, help="Mean reversion speed, default = 12.0 (v64 HHK)")
+        parser.add_argument("--sigma", type=float, default=1.2, help="Volatility of OU process, default = 1.2 (v64 HHK)")
+        parser.add_argument("--beta", type=float, default=150.0, help="Jump decay rate, default = 150.0 (v64 HHK)")
         parser.add_argument(
-            "--lam", type=float, default=6.0, help="Jump intensity (jumps per year), default = 4.0"
+            "--lam", type=float, default=6.0, help="Jump intensity (jumps per year), default = 6.0 (v64 HHK)"
         )
-        parser.add_argument("--mu_J", type=float, default=0.3, help="Mean jump size, default = 0.4")
+        parser.add_argument("--mu_J", type=float, default=0.3, help="Mean jump size, default = 0.3 (v64 HHK)")
 
         # D4PG Algorithm Parameters
         # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
@@ -463,7 +463,7 @@ class ConfigManager:
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
-            "-t", "--t", type=float, default=0.0032, help="Softupdate factor t (Polyak tau), default is 2e-3"
+            "-t", "--t", type=float, default=0.0032, help="Softupdate factor t (Polyak tau), default is 3.2e-3 (v64)"
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
         parser.add_argument(
@@ -501,7 +501,7 @@ class ConfigManager:
             type=int,
             default=0,
             choices=[0, 1],
-            help="Use torch.compile for model optimization, default=0 (NO!)",
+            help="Use torch.compile for model optimization, default=0 (disabled).",
         )
         parser.add_argument(
             "--fp32",

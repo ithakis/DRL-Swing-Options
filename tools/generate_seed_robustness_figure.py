@@ -107,7 +107,7 @@ def main():
     )
 
     # Box plot (horizontal) underneath
-    bp = ax.boxplot(
+    ax.boxplot(
         seed_prices,
         vert=False,
         positions=[0],
