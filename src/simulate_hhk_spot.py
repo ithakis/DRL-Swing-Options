@@ -1,7 +1,5 @@
 from typing import Callable, Optional, Tuple
 
-import bootstrapped.bootstrap as bs
-import bootstrapped.stats_functions as bs_stats
 import numpy as np
 from scipy.stats import norm, qmc
 from tqdm import tqdm
@@ -201,6 +199,11 @@ def bootstrap_moments(data: np.ndarray):
         Tuple of (mean_results, std_results) where each result is a list
         containing the value, lower bound, and upper bound of the statistic.
     """
+    # Optional diagnostic dependency (used only by validation notebooks, not by the
+    # training/eval pipeline) — imported lazily so the module loads without it.
+    import bootstrapped.bootstrap as bs
+    import bootstrapped.stats_functions as bs_stats
+
     # First Moment: Mean - E[X]
     mean_results = bs.bootstrap(data, stat_func=bs_stats.mean, is_pivotal=False,
                                 iteration_batch_size=128, num_iterations=128*4*16, num_threads=-1)
