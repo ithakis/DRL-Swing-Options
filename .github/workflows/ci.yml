@@ -16,13 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
-        with:
-          src: |
-            src
-            tools
-            run.py
-            evaluate_saved_agent.py
+      - run: pipx run ruff check src/ tools/ run.py evaluate_saved_agent.py
 
   test:
     name: tests + v64 smoke
