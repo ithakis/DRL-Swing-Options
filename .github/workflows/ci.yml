@@ -41,8 +41,6 @@ jobs:
           activate-environment: EP11
           miniforge-version: latest
           use-mamba: true
-          cache-environment: true          # cache the solved env by environment.yml hash
-          cache-environment-key: conda-${{ runner.os }}-${{ hashFiles('environment.yml') }}
 
       - name: Show environment
         run: |
