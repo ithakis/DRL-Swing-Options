@@ -63,7 +63,6 @@ class Agent:
         use_compile: bool = False,
         log_interval_scale: float = 1.0,
         replay_memmap: bool = False,
-        actor_type: str = "standard",
         single_critic_step: bool = True,    # v63 audit E4: single critic step is now canonical
         critic_warmup_episodes: int = 0,
         adaptive_noise_scale: float = 0.0,
@@ -78,11 +77,6 @@ class Agent:
         strike: float = 100.0,
         expected_target_kernel=None,           # feat/semi-analytical-bootstrap
         expected_target_chunk_size: Optional[int] = None,
-        # Approximator injection: drop-in replacements for Actor/Critic. When
-        # provided they must honor the same call signature (see BasisActor/
-        # BasisCritic). Default None keeps the NN path bit-identical.
-        actor_factory=None,
-        critic_factory=None,
         **kwargs,
     ):
         # kwargs absorbs unexpected legacy params (e.g., 'paths') without breaking
@@ -180,16 +174,9 @@ class Agent:
         self.collection_progress_interval = int(1000 * self.log_interval_scale)
 
         self.single_critic_step = bool(single_critic_step)
-        self.actor_type = (actor_type or "standard").lower()
         self.action_output = (action_output or "tanh01").lower()  # v60: store action output activation
-        if actor_factory is not None:
-            actor_cls = actor_factory
-        elif self.actor_type == "finance_informed":
-            from .networks import FinanceInformedActor
-            actor_cls = FinanceInformedActor
-        else:
-            actor_cls = Actor
-        critic_cls = critic_factory if critic_factory is not None else Critic
+        actor_cls = Actor
+        critic_cls = Critic
 
         # ── Semi-analytical TD target (feat/semi-analytical-bootstrap, H1) ──
         self._strike = float(strike)

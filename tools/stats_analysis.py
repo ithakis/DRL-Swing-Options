@@ -481,6 +481,50 @@ def paired_minimum_detectable_effect(
     }
 
 
+def holm_bonferroni(
+    pvalues: Dict[str, float],
+    alpha: float = 0.05,
+) -> Dict[str, Dict[str, object]]:
+    """Holm–Bonferroni step-down correction over a family of raw p-values.
+
+    Returns, keyed by the same labels, dicts with:
+      p_raw, p_adj (monotone-enforced adjusted p), reject (bool at FWER=alpha), rank.
+    NaN p-values are carried through as non-rejections (rank last) so a missing test
+    never spuriously "passes". No behaviour change to existing functions.
+    """
+    items = list(pvalues.items())
+    # Sort ascending by p; NaN sorts last.
+    def _key(kv):
+        p = kv[1]
+        return (1, 0.0) if (p is None or not math.isfinite(p)) else (0, float(p))
+
+    ordered = sorted(items, key=_key)
+    m = len(ordered)
+    out: Dict[str, Dict[str, object]] = {}
+    running_max = 0.0
+    still_rejecting = True
+    for rank, (label, p) in enumerate(ordered):  # rank 0-based
+        finite = p is not None and math.isfinite(p)
+        if finite:
+            p_adj = min(1.0, (m - rank) * float(p))
+            p_adj = max(p_adj, running_max)  # enforce monotonicity
+            running_max = p_adj
+            reject = still_rejecting and (p_adj < alpha)
+            if not reject:
+                still_rejecting = False  # Holm stops at the first non-rejection
+        else:
+            p_adj = float("nan")
+            reject = False
+            still_rejecting = False
+        out[label] = {
+            "p_raw": (float(p) if finite else float("nan")),
+            "p_adj": p_adj,
+            "reject": bool(reject),
+            "rank": rank + 1,
+        }
+    return out
+
+
 def pairwise_compare(
     group_a: GroupStats,
     group_b: GroupStats,

@@ -987,4 +987,173 @@ else:  # Convex costs (continuous optimal)
 
 ---
 
-*Document last updated: v63 (May 2026)*
+## Mega campaign — closing the kernel-on ↔ LSM-D gap (June 2026)
+
+**Goal.** Find a new frozen, flag-guarded kernel-on canonical that, at the **same 4096-ep budget**,
+reaches focal `cc_g2` Δ% ≥ 0 vs LSM-D M=5 and ≥ −0.2 vs M=17, with no guard regression
+(`nocost`, `cc_g1`, `cc_g15`) and held/improved seed-std. Unifying hypothesis: the v61 recipe was
+tuned to fight single-sample TD variance the kernel has removed, so pieces are now neutral-to-harmful.
+Full pre-registration: `logs/_mega/PREREG.md` (written before any training). Harness
+`tools/sweep_mega.py` (+`tools/mega_eval.py`, `tools/mega_report.py`); rigorous eval on the common
+test set (seed=999, 65536 paths; LSM-D Chebyshev degree-2 full-state, trained seed=998) at **M=5
+(primary)** and **M=17 (gate)**. Stats via `tools/stats_analysis.py` (added `holm_bonferroni`).
+
+**Status: Stage A complete (204 runs), Stage B complete (240 runs), Stage C screen pending.** No new
+canonical is frozen yet — the v63 Task-1/2/3 canonical stands until the Stage-C finalist is chosen.
+Headline so far: there is **no kernel gap** (H7), and the residual focal gap yields to **more depth,
+more gradient updates, and a softer (constant) squash** — three orthogonal, Holm-significant levers.
+
+### Anchor reproduction (control)
+
+The mega anchor = v63 Task-1/2/3 canonical reproduced its documented focal performance, validating the
+harness and the new `cc_g15` regime:
+
+| regime | Δ%(M5) mean ± std (n=3) | Δ%(M17) | note |
+|---|---|---|---|
+| `cc_g2` (focal) | **−0.389 ± 0.065** | −0.738 | matches documented "Task-2 retune −0.42 ± 0.10" |
+| `cc_g15` (new) | −0.352 ± 0.094 | −0.468 | new regime; sensibly between g1 and g2 |
+| `cc_g1` | −0.335 ± 0.018 | −0.336 | γ=1 → M5≈M17 (bang-bang, discretization-insensitive) |
+| `nocost` | −0.509 ± 0.069 | −0.509 | γ=1 → M5≈M17 |
+
+Targets to clear at focal: **+0.39 pp** (M5 ≥ 0) and **+0.54 pp** (M17 ≥ −0.2).
+
+### H7 — kernel fidelity (RAN FIRST; complete, 4 regimes × 3 seeds): **no kernel gap**
+
+The pre-registered first move was to separate a *tuning* gap from a *kernel* gap. Result is
+unambiguous — the accurate kernel does **not** lift the focal price:
+
+| arm | flag delta | focal Δ%(M5) ± std | Δ vs anchor (paired) | 95% CI | verdict |
+|---|---|---|---|---|---|
+| `H7a_kM36` | `M_x=4,M_per_k=4,N_max=2` | −0.399 ± 0.064 | **−0.009 pp** | [−0.03, +0.02] | kill |
+| `H7b_kMx3` | `M_x=3` | −0.447 ± 0.125 | −0.058 pp | [−0.13, +0.01] | kill |
+
+**Conclusion: the focal −0.39% gap is a pure optimization/tuning gap, not a kernel-fidelity ceiling.**
+The accurate M=36 kernel is statistically indistinguishable from the fast M_x=2 kernel at focal
+(paired CI tight around 0), and M_x=3 is if anything slightly worse with wider dispersion — consistent
+with the established M_x≥2 plateau. This **refutes H7** and, by the contingency rule, leaves the
+**H7(c) Richardson code variant unmotivated** (not implemented). Interpreting every other lever as a
+tuning move (not a kernel move) is therefore justified.
+
+### Stage-A full screen (17 arms × 4 regimes × 3 seeds = 204 runs; focal cc_g2 Δ% vs anchor)
+
+| arm | focal Δ vs anchor | guard worst | promote (≥+0.15 & no guard < −0.15)? |
+|---|---|---|---|
+| `H4b_beta15` (β 3.0→1.5) | **+0.158** | −0.135 (nocost) | **PROMOTE** |
+| `H3b_ln2` (learn_number 2) | +0.145 | +0.095 | near-miss (focal < 0.15) |
+| `H10b_3x64` (depth 3) | +0.128 | +0.126 | near-miss |
+| `H10a_2x128` (width 128) | +0.055 | +0.060 | kill |
+| `H4a_beta2` | +0.040 | −0.099 | kill |
+| `H9b_tau1e2` | +0.034 | −0.006 | kill |
+| `H3a_le1` (learn_every 1) | +0.029 | +0.073 | kill |
+| `H3c_bs256` | +0.010 | +0.011 | kill |
+| `H6a_w256` | +0.006 | −0.175 | kill |
+| `H1a_lrc12e4` / `H1b_lrc9e4` / `H1c_lra6e4` | −0.003 / −0.005 / −0.006 | ~0 | kill (no critic-LR headroom) |
+| `H7a_kM36` / `H7b_kMx3` | −0.009 / −0.058 | ~0 | kill (no kernel gap) |
+| `H9a_tau5e3` | −0.030 | −0.061 | kill |
+| `H6b_w1024` | −0.040 | −0.143 | kill |
+
+Strict rule promoted only **H4b** (eval-critical, with a 3-seed −0.135 `nocost` wobble). But two
+non-eval-critical near-misses — **H3b (more updates)** and **H10b (more depth)** — lifted **all four
+regimes** and missed only by 0.005 / 0.022 pp (within 3-seed noise). All three carried to Stage B.
+**H1 (LR) and H9 (tau) are flat; H6 longer-warmup hurts; H7 confirms no kernel gap.** Figures
+`figs/mega_forest_A.png`, `figs/mega_focal_strip_A.png`.
+
+### Stage-B confirmation (family of 3 + anchor × 4 regimes × 12 seeds = 240 runs; Holm–Bonferroni)
+
+| arm | focal Δ vs anchor [95% CI] | Holm p_adj | guard worst | per-regime Δ%(M5): g2 / g1.5 / g1 / nocost | verdict |
+|---|---|---|---|---|---|
+| `H10b_3x64` | **+0.165** [+0.08, +0.25] | 0.004 | **+0.146** | −0.261 / −0.153 / −0.226 / −0.380 | **WIN** |
+| `H4b_beta15` | +0.143 [+0.10, +0.19] | 0.0001 | +0.008 | −0.282 / −0.350 / −0.347 / −0.615 | **WIN** (eval-critical) |
+| `H3b_ln2` | +0.085 [+0.05, +0.12] | 0.001 | +0.102 | −0.340 / −0.200 / −0.270 / −0.325 | **WIN** |
+| `H4c_anneal` (β 3.0→1.5 sched) | −1.388 [−1.45, −1.33] | 0.000 | −0.443 | **−1.813** / −0.700 / −0.589 / −1.086 | **FAIL** |
+
+anchor focal (12 seeds) = −0.425 ± 0.079. Three orthogonal, Holm-significant, guard-non-inferior
+winners; H4b's 3-seed `nocost` wobble vanished at 12 seeds (guard worst +0.008). The **β-anneal code
+variant (H4c) failed catastrophically** — annealing β stiff→soft during training drives a bad basin
+the soft endpoint can't escape; the *constant* soft β (H4b) is what helps. **Lesson: it is the final
+squash temperature, not a schedule, that matters — the β-anneal code is being removed.** No single arm
+reaches focal Δ% ≥ 0 (best −0.261), so Stage C stacks the orthogonal winners. Figures
+`figs/mega_forest_B.png`, `figs/mega_focal_strip_B.png`.
+
+### Stage C — finalist (stacks of the 3 orthogonal winners)
+
+Screened `C1=depth3+ln2`, `C2=depth3+ln2+β1.5`, `C3=depth3+β1.5` + anchor on the **fast** kernel (12
+seeds; fast justified by H7), then confirmed the leader **C2** + anchor at 24 seeds (seeds 23–34 on the
+accurate **M=36** kernel; seeds 11–22 reused from the fast screen — the resume dedupe key omits the
+kernel, so the confirm only re-ran the new seeds. H7 licenses pooling; the two splits agree to 0.02 pp).
+
+Conservative-Pareto leader = **C2 (full stack)**, the only config crossing **focal Δ%(M5) ≥ 0**:
+
+| split | C2 focal Δ%(M5) | conservative | C2 focal Δ%(M17) | paired Δ vs anchor | anchor Δ%(M5) |
+|---|---|---|---|---|---|
+| accurate M=36 (seeds 23–34, n=12) | **+0.006 ± 0.085** | −0.042 | −0.344 | +0.427 (p≈0) | −0.421 |
+| pooled 24 seeds (11–34) | **+0.028 ± 0.086** | −0.006 | −0.323 | +0.451 (p≈0) | −0.423 |
+
+Per-regime (pooled) C2 vs anchor, all improved, none regressed: cc_g2 +0.45, cc_g15 +0.28, cc_g1
++0.17, nocost +0.38; focal seed-std held (0.086 vs 0.088). Figures `figs/mega_forest_C.png`,
+`figs/mega_focal_strip_C.png`.
+
+### New frozen kernel-on canonical (mega) = anchor + 3 flag deltas
+
+```
+# vs the v63 Task-1/2/3 kernel-on canonical, add ONLY these three (all pre-existing flags — no new code):
+--actor_layers 3 --critic_layers 3     # H10b: depth 2->3   (focal +0.165 at 12 seeds, all regimes up)
+-learn_number 2                        # H3b : 1->2 grad steps/interaction (focal +0.085, ~1.x wall)
+--actor_output_activation beta_sigmoid_1.5   # H4b: softer squash (focal +0.143; EVAL-CRITICAL)
+```
+
+**Result:** focal Δ%(M5) moves from −0.42 (anchor) to ≈ **+0.01 / +0.03** (M=36 / pooled) — the gap to
+LSM-D M=5 is **essentially closed** at the **same 4096-ep budget** (+0.43–0.45 pp, p≈0), with every
+guard regime improved and seed-std held. The kernel was never the bottleneck (H7).
+
+**⚠️ Caveats / not-fully-met:** (1) the *conservative* (mean−1.96·SE) focal bound sits **at parity with
+0** (−0.04 to −0.01), so "≥0" holds in mean but is not robustly bounded above zero — a larger-seed run
+would tighten it. (2) The stricter **M17 ≥ −0.2 target is NOT met** at focal (M17 ≈ −0.33, though up
+from −0.77); the guard regimes sit right at the M17 gate (≈ −0.18 to −0.23). (3) **Eval-critical /
+rebaseline:** the canonical changes `actor_output_activation` (β 3.0→1.5) **and** the architecture
+(2→3 layers), so it is **not comparable to the 6843 saved paper agents** and would require a full
+re-baseline before adoption — it is documented here, **not** silently promoted into the paper configs.
+Re-evaluating saved C2 agents needs `mega_eval.build_agent_full` (stock `rebuild_results_v7.build_agent`
+hardcodes 2 layers and would shape-mismatch).
+
+### Hypotheses resolved without running (premise already satisfied in v63)
+
+- **H2 (PER mis-specified):** PER was already removed in v63 (uniform replay canonical; no `--per_*`
+  flags; `replay_buffer.sample()` returns `None` weights). Premise satisfied → not run.
+- **H8 (TD3 target-policy smoothing redundant):** `--target_policy_noise` does not exist in v63
+  (removed). Premise satisfied → not run.
+- **H10(c) (`--feature_use_cross` on nn path):** no-op on the `nn` path (only wired for curated
+  approximators, which already lost to the NN) → dropped.
+
+### What did not work (honest negatives)
+
+- **Kernel fidelity (H7):** the accurate M=36 kernel does not beat the fast M_x=2 kernel (paired CI
+  [−0.03, +0.02]) — the residual gap is optimization, not quadrature. The Richardson code variant was
+  therefore never built.
+- **Critic LR (H1):** no headroom beyond the Task-3 6e-4 — 9e-4 and 1.2e-3 are flat; faster actor flat.
+- **Target tracking (H9), batch size (H3c), learn_every (H3a), width (H10a):** all neutral at focal.
+- **Longer warmup (H6b):** mildly harmful and regresses nocost.
+- **β-anneal (H4c) code variant:** catastrophic (focal −1.81). A β schedule is strictly worse than a
+  constant soft β — the variant is being deleted.
+
+### Verdict
+
+The unifying hypothesis is vindicated: with the deterministic target the v61-era levers tuned against
+single-sample TD variance (critic LR, tau, PER, target smoothing, warmup length, kernel fidelity) are
+all neutral-to-resolved, while **more depth, more gradient updates, and a softer constant squash** are
+pure signal. Stacked (C2), they **close the focal gap to LSM-D M=5** at the same 4096-ep budget
+(−0.42 → ≈ +0.02, +0.45 pp, p≈0), improve every guard regime, and hold seed-std — but the conservative
+bound is only at parity with 0 and the stricter M17 target is not reached. Campaign total: **732 ok
+runs** (Stage A 204, B 240, C 288). The new canonical is a **pure flag recipe (no new code)**; the one
+code variant written (β-anneal) lost and was removed.
+
+**Adopted as v64 (chore/repo-debloat).** C2 is baked into `run.py`'s argparse DEFAULTS (so `python
+run.py` == v64 focal) + `Price_Swing_Option_v64.sh`, and the `Convex Cost Experiments/` sweep was
+migrated to v64. v64 changes eval-critical knobs vs the v61 paper agents (β 1.5 vs 3.0; 3 vs 2 layers;
+kernel ON) → **paper requires re-baselining**. Same commit removed dead code (approximator subsystem,
+FinanceInformedActor, MultiPro) and ~25 one-off experiment scripts; `logs/`+`runs/` are gitignored
+artifacts and the raw `findings.csv` was not retained (this summary is the record).
+
+---
+
+*Document last updated: v63 (May 2026); mega-campaign complete (Stages A/B/C) — June 2026*

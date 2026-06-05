@@ -127,13 +127,6 @@ class ConfigManager:
         """Create and configure argument parser"""
         parser = argparse.ArgumentParser(description="Swing Option Pricing with D4PG")
 
-        parser.add_argument(
-            "--actor_type",
-            type=str,
-            default="standard",
-            choices=["standard", "finance_informed"],
-            help="Type of actor architecture. 'finance_informed' uses a greedy baseline.",
-        )
         # Replay Buffer Parameters
         parser.add_argument(
             "-n_paths",
@@ -190,19 +183,19 @@ class ConfigManager:
             "--q_min", type=float, default=0.0, help="Minimum exercise quantity per period, default = 0.0"
         )
         parser.add_argument(
-            "--q_max", type=float, default=1.0, help="Maximum exercise quantity per period, default = 1.0"
+            "--q_max", type=float, default=2.0, help="Maximum exercise quantity per period, default = 1.0"
         )
         parser.add_argument(
             "--Q_min", type=float, default=0.0, help="Global minimum total volume, default = 0.0"
         )
         parser.add_argument(
-            "--Q_max", type=float, default=10.0, help="Global maximum total volume, default = 10.0"
+            "--Q_max", type=float, default=20.0, help="Global maximum total volume, default = 10.0"
         )
-        parser.add_argument("--strike", type=float, default=100.0, help="Strike price K, default = 100.0")
+        parser.add_argument("--strike", type=float, default=1.0, help="Strike price K, default = 100.0")
         parser.add_argument(
-            "--maturity", type=float, default=1.0, help="Time to maturity in years, default = 1.0"
+            "--maturity", type=float, default=0.0833, help="Time to maturity in years, default = 1.0"
         )
-        parser.add_argument("--n_rights", type=int, default=250, help="Number of decision dates, default = 250")
+        parser.add_argument("--n_rights", type=int, default=22, help="Number of decision dates, default = 250")
         parser.add_argument(
             "--risk_free_rate", type=float, default=0.05, help="Risk-free rate for discounting, default = 0.05"
         )
@@ -215,13 +208,13 @@ class ConfigManager:
         parser.add_argument(
             "--c_cost",
             type=float,
-            default=0.0,
+            default=0.04,
             help="Convex cost coefficient c for per-unit exercise cost (0 disables the cost).",
         )
         parser.add_argument(
             "--gamma_cost",
             type=float,
-            default=1.0,
+            default=2.0,
             help="Convex cost exponent gamma for per-unit exercise cost.",
         )
 
@@ -229,14 +222,14 @@ class ConfigManager:
         parser.add_argument(
             "--lsm_basis",
             type=str,
-            default="power",
+            default="chebyshev",
             choices=["power", "laguerre", "hermite", "chebyshev"],
             help="Basis family for the LSM regression (default: power).",
         )
         parser.add_argument(
             "--lsm_degree",
             type=int,
-            default=3,
+            default=2,
             help="Polynomial degree for LSM basis functions (default: 3).",
         )
         parser.add_argument(
@@ -260,14 +253,14 @@ class ConfigManager:
         )
 
         # HHK Stochastic Process Parameters
-        parser.add_argument("--S0", type=float, default=100.0, help="Initial spot price, default = 100.0")
-        parser.add_argument("--alpha", type=float, default=7.0, help="Mean reversion speed, default = 7.0")
-        parser.add_argument("--sigma", type=float, default=1.4, help="Volatility of OU process, default = 1.4")
-        parser.add_argument("--beta", type=float, default=200.0, help="Jump decay rate, default = 200.0")
+        parser.add_argument("--S0", type=float, default=1.0, help="Initial spot price, default = 100.0")
+        parser.add_argument("--alpha", type=float, default=12.0, help="Mean reversion speed, default = 7.0")
+        parser.add_argument("--sigma", type=float, default=1.2, help="Volatility of OU process, default = 1.4")
+        parser.add_argument("--beta", type=float, default=150.0, help="Jump decay rate, default = 200.0")
         parser.add_argument(
-            "--lam", type=float, default=4.0, help="Jump intensity (jumps per year), default = 4.0"
+            "--lam", type=float, default=6.0, help="Jump intensity (jumps per year), default = 4.0"
         )
-        parser.add_argument("--mu_J", type=float, default=0.4, help="Mean jump size, default = 0.4")
+        parser.add_argument("--mu_J", type=float, default=0.3, help="Mean jump size, default = 0.4")
 
         # D4PG Algorithm Parameters
         # CPU-only project: no device selector (CUDA/MPS intentionally unsupported).
@@ -275,13 +268,13 @@ class ConfigManager:
         parser.add_argument(
             "-noise_sigma0",
             type=float,
-            default=1.0,
+            default=1.30,
             help="Initial pre-squash noise std (applied before action squashing)",
         )
         parser.add_argument(
             "-noise_floor",
             type=float,
-            default=0.05,
+            default=0.26,
             help="Minimum pre-squash noise std after decay",
         )
         parser.add_argument(
@@ -293,7 +286,7 @@ class ConfigManager:
         parser.add_argument(
             "--critic_warmup_episodes",
             type=int,
-            default=0,
+            default=512,
             help="Number of episodes to freeze actor updates (default: 0). Recommended: 1024 (matches min_replay_size approx).",
         )
         parser.add_argument(
@@ -306,20 +299,20 @@ class ConfigManager:
         parser.add_argument(
             "--adaptive_noise_scale",
             type=float,
-            default=0.0,
+            default=0.6,
             help="Scale factor for pre-activation noise relative to |u|. Default: 0.0 (off). Recommended: 0.5.",
         )
         # v60 parameters
         parser.add_argument(
             "--warmup_noise_fraction",
             type=float,
-            default=1.0,
+            default=0.3,
             help="v60: Fraction of normal noise to use during critic warmup (0.0-1.0). Default: 1.0 (no reduction). Recommended: 0.2",
         )
         parser.add_argument(
             "--actor_output_activation",
             type=str,
-            default="tanh01",
+            default="beta_sigmoid_1.5",
             help="v60: Actor output activation {tanh01, sigmoid, beta_sigmoid, beta_sigmoid_X}. Default: tanh01",
         )
         parser.add_argument(
@@ -334,7 +327,7 @@ class ConfigManager:
             "--noise_schedule",
             type=str,
             choices=["hyperbolic", "const_floor", "linear"],
-            default="hyperbolic",
+            default="linear",
             help="Exploration-noise schedule after the plateau: 'hyperbolic' (default), 'const_floor' (hard step to floor), or 'linear' (sigma0->floor over the horizon).",
         )
         parser.add_argument(
@@ -347,7 +340,7 @@ class ConfigManager:
             "--weight_averaging",
             type=str,
             choices=["off", "ema"],
-            default="off",
+            default="ema",
             help="Eval-only weight averaging: 'off' (default) or 'ema' (EMA of actor weights used for evaluation only).",
         )
         parser.add_argument(
@@ -367,12 +360,12 @@ class ConfigManager:
         parser.add_argument(
             "-lr_c",
             type=float,
-            default=3e-4,
+            default=6e-4,
             help="Critic learning rate of adapting the network weights, default is 3e-4",
         )
-        parser.add_argument("-learn_every", type=int, default=1, help="Learn every x interactions, default = 1")
+        parser.add_argument("-learn_every", type=int, default=2, help="Learn every x interactions, default = 1")
         parser.add_argument(
-            "-learn_number", type=int, default=1, help="Learn x times per interaction, default = 1"
+            "-learn_number", type=int, default=2, help="Learn x times per interaction, default = 1"
         )
         parser.add_argument(
             "-layer_size",
@@ -395,13 +388,13 @@ class ConfigManager:
         parser.add_argument(
             "--actor_layers",
             type=int,
-            default=2,
+            default=3,
             help="Number of hidden layers in the actor network (default: 2)",
         )
         parser.add_argument(
             "--critic_layers",
             type=int,
-            default=2,
+            default=3,
             help="Number of hidden layers in the critic network (default: 2; must be >=2)",
         )
         parser.add_argument(
@@ -470,7 +463,7 @@ class ConfigManager:
         )
         parser.add_argument("-bs", "--batch_size", type=int, default=128, help="Batch size, default is 128")
         parser.add_argument(
-            "-t", "--t", type=float, default=2e-3, help="Softupdate factor t (Polyak tau), default is 2e-3"
+            "-t", "--t", type=float, default=0.0032, help="Softupdate factor t (Polyak tau), default is 2e-3"
         )
         parser.add_argument("-g", "--gamma", type=float, default=1, help="discount factor gamma, default is 1")
         parser.add_argument(
@@ -521,7 +514,7 @@ class ConfigManager:
             "--use_robust_normalization",
             type=int,
             choices=[0, 1],
-            default=0,
+            default=1,
             help="Enable Robust HHK Normalization (Log-moneyness + Median/IQR scaling). Default: 0 (disabled).",
         )
         # ── Semi-analytical / expected-target flags (feat/semi-analytical-bootstrap) ──
@@ -529,54 +522,23 @@ class ConfigManager:
             "--use_expected_target",
             type=int,
             choices=[0, 1],
-            default=0,
+            default=1,
             help="If 1, replace the critic's single-sample bootstrap with a quadrature-"
             "integrated expectation over the analytical HHK transition kernel. "
             "Forces n_step=1. Default: 0 (off; bit-identical to v61).",
         )
-        parser.add_argument("--kernel_M_x", type=int, default=4,
+        parser.add_argument("--kernel_M_x", type=int, default=2,
                             help="Gauss-Hermite nodes on the OU X transition (default 4; "
                             "M1-friendly. Bump to 6-8 for higher accuracy at ~2x cost).")
-        parser.add_argument("--kernel_M_per_k", type=int, default=4,
+        parser.add_argument("--kernel_M_per_k", type=int, default=1,
                             help="QMC nodes per nonzero jump count in the Y mesh (default 4).")
-        parser.add_argument("--kernel_N_max", type=int, default=2,
+        parser.add_argument("--kernel_N_max", type=int, default=1,
                             help="Truncate Poisson jump count at this many jumps (default 2; "
                             "captures > 99.96%% of mass at lambda*dt ~= 0.024).")
         parser.add_argument("--kernel_chunk_M", type=int, default=0,
                             help="If >0, evaluate the per-batch critic on chunks of this size in the M "
                             "axis to bound peak memory. 0 = no chunking.")
 
-        # ── Function approximator (actor/critic front-end) ──
-        parser.add_argument("--approximator", type=str, default="nn",
-                            choices=["nn", "poly", "rff", "rbf", "tiny_nn"],
-                            help="Actor/critic approximator. 'nn' = current 2x64 SiLU+LN net "
-                            "(bit-identical default). poly/rff/rbf/tiny_nn use a curated feature "
-                            "map + linear head (faster, C++-portable).")
-        parser.add_argument("--feature_use_cross", type=int, choices=[0, 1], default=1,
-                            help="Include domain cross-terms (moneyness*inventory, ttm*inventory, X*Y) "
-                            "in the curated feature vector. Default 1.")
-        # poly
-        parser.add_argument("--poly_degree", type=int, default=3,
-                            help="Chebyshev total degree for --approximator=poly (default 3).")
-        # rff
-        parser.add_argument("--rff_dim", type=int, default=256,
-                            help="Number of random Fourier features for --approximator=rff (default 256).")
-        parser.add_argument("--rff_lengthscale", type=float, default=1.0,
-                            help="RBF-kernel lengthscale for the RFF frequencies (default 1.0).")
-        parser.add_argument("--rff_learnable", type=int, choices=[0, 1], default=0,
-                            help="If 1, the RFF frequency matrix Omega is trainable (default 0, frozen).")
-        # rbf
-        parser.add_argument("--rbf_centers", type=int, default=128,
-                            help="Number of RBF centers for --approximator=rbf (default 128).")
-        parser.add_argument("--rbf_bandwidth", type=float, default=1.0,
-                            help="RBF bandwidth multiplier of sqrt(dim) for --approximator=rbf (default 1.0).")
-        parser.add_argument("--rbf_learnable_bandwidth", type=int, choices=[0, 1], default=0,
-                            help="If 1, the RBF bandwidth is trainable (default 0).")
-        # tiny_nn
-        parser.add_argument("--tiny_width", type=int, default=32,
-                            help="Hidden width for --approximator=tiny_nn feature map (default 32).")
-        parser.add_argument("--tiny_activation", type=str, default="silu",
-                            help="Activation for --approximator=tiny_nn (default silu).")
 
         return parser
 
@@ -1402,38 +1364,6 @@ def main():
         actor_hidden_size = args.actor_hidden_size or args.layer_size
         critic_hidden_size = args.critic_hidden_size or args.layer_size
 
-        # ── Function approximator selection ──
-        actor_factory = None
-        critic_factory = None
-        approximator = (getattr(args, "approximator", "nn") or "nn").lower()
-        if approximator != "nn":
-            import functools
-            from src.networks import BasisActor, BasisCritic
-            feature_cfg = {
-                "strike": float(args.strike),
-                "use_cross": bool(int(args.feature_use_cross)),
-                # poly
-                "degree": int(args.poly_degree),
-                # rff
-                "rff_dim": int(args.rff_dim),
-                "lengthscale": float(args.rff_lengthscale),
-                "learnable": bool(int(args.rff_learnable)),
-                # rbf
-                "rbf_centers": int(args.rbf_centers),
-                "bandwidth": float(args.rbf_bandwidth),
-                "learnable_bandwidth": bool(int(args.rbf_learnable_bandwidth)),
-                # tiny_nn
-                "width": int(args.tiny_width),
-                "activation": str(args.tiny_activation),
-            }
-            actor_factory = functools.partial(
-                BasisActor, feature_kind=approximator, feature_cfg=feature_cfg
-            )
-            critic_factory = functools.partial(
-                BasisCritic, feature_kind=approximator, feature_cfg=feature_cfg
-            )
-            print(f"Approximator: {approximator} (curated feature map + linear head)")
-
         agent = Agent(
             state_size=train_env.observation_space.shape[0],
             action_size=train_env.action_space.shape[0],
@@ -1473,7 +1403,6 @@ def main():
             init_method=args.init_method,
             log_interval_scale=log_interval_scale,
             replay_memmap=bool(args.replay_memmap),
-            actor_type=args.actor_type,
             single_critic_step=bool(args.single_critic_step),
             critic_warmup_episodes=args.critic_warmup_episodes,
             adaptive_noise_scale=args.adaptive_noise_scale,
@@ -1491,9 +1420,6 @@ def main():
             # feat/semi-analytical-bootstrap
             expected_target_kernel=expected_target_kernel,
             expected_target_chunk_size=expected_target_chunk_size,
-            # Function approximator injection (None => default NN, bit-identical)
-            actor_factory=actor_factory,
-            critic_factory=critic_factory,
         )
         try:
             param_device = next(agent.actor_local.parameters()).device

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "chore/**", "refactor/**", "feat/**"]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests + v64 smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell so `conda activate` works
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up conda env (EP11)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          activate-environment: EP11
+          miniforge-version: latest
+          use-mamba: true
+
+      - name: Show environment
+        run: |
+          python --version
+          python -c "import torch, numpy, numba, gymnasium; print('torch', torch.__version__)"
+
+      - name: Import smoke (core modules)
+        run: python -c "import src.agent, src.networks, src.swing_env, src.transition_kernel, src.greeks, src.lsm_swing_pricer; print('imports OK')"
+
+      - name: Unit tests
+        run: pytest tools/test_greeks.py -q
+
+      - name: v64 default training smoke (no flags = v64 focal recipe)
+        run: |
+          python run.py -n_paths 1100 -n_paths_eval 256 -eval_every -1 \
+            -name ci_v64_smoke -seed 0 --disable_csv_logging 1 --limit_logging_frequency 1
+          test -f runs/ci_v64_smoke.pth && echo "v64 smoke trained + saved OK"

@@ -22,16 +22,27 @@ make paper                             # Build manuscript to Paper/build/
 make clean-paper                       # Remove manuscript build artifacts
 ```
 
-## Current Paper Configuration
+## v64 Canonical Configuration (current default)
 
-The paper results use **v61 hyperparameters** with IQN disabled (`-iqn=0`) and a standard (non-distributional) critic. The experiment configs in `Convex Cost Experiments/` are the canonical scripts used to generate paper results. Key choices:
-- 32768 training episodes, 65536 evaluation paths, seeds {11, 12, 13} per configuration
-- Focal robustness study: c=0.04, gamma=2, seeds 11-25 (15 seeds)
-- `--gamma=1` in D4PG because the environment reward already includes discounting
-- Profitability gate enabled (STE gradients), actor output via beta-sigmoid(3.0)
-- PER with soft alpha ramp 0.1->0.2, beta ~1.0
-- 2x64 SiLU MLPs with LayerNorm, orthogonal init
-- Convex cost sweep: c in {0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15} x gamma in {1, 1.5, 2, 3}
+**`python run.py` with no flags reproduces a v64 focal run** — the winning configuration from the
+"Mega campaign" (see HPT.md). The entire recipe lives in `run.py`'s argparse **defaults**; the
+experiment scripts only override the study budget + each cell's `(c, gamma)`. v64 = the v63 kernel-on
+canonical PLUS the three orthogonal Stage-C winners:
+- **depth-3** actor/critic (`--actor_layers 3 --critic_layers 3`)
+- **two gradient steps per interaction** (`-learn_number 2`)
+- **softer squash** (`--actor_output_activation beta_sigmoid_1.5`)
+
+On top of the inherited kernel-on canonical: semi-analytical kernel ON (fast `M_x=2`), `-lr_a 3e-4
+-lr_c 6e-4`, linear noise + eval-EMA, closed-form warm-start, `--critic_warmup_episodes 512`, single
+critic step, robust normalization, `-t 0.0032`. Contract = SwingOption_20 focal (strike 1.0, maturity
+0.0833, n_rights 22, q_max 2.0, Q_max 20.0); HHK (α12, σ1.2, β150, λ6, μ_J0.3); `--gamma=1` because the
+environment reward already includes discounting; profitability-gate STE; LSM-D benchmark = Chebyshev
+degree-2. Study: 32768 episodes, 65536 eval paths, seeds {11,12,13} (focal: 11-25). Convex-cost sweep:
+c ∈ {0.01,0.02,0.04,0.05,0.08,0.10,0.15} × gamma ∈ {1,1.5,2,3} (`Convex Cost Experiments/`).
+
+**⚠️ v64 is NOT comparable to the published v61 paper agents** (β 1.5 vs 3.0; 3 vs 2 layers; kernel
+ON). The paper requires re-baselining on v64. Reproduce old agents via their own saved-run JSONs.
+Reference: `Price_Swing_Option_v64.sh`.
 
 ## Semi-Analytical Kernel (feat/semi-analytical-bootstrap)
 
@@ -93,27 +104,13 @@ retune”).  Each is flag-guarded to the prior default; `pytest tools/test_appro
 - **Task 3 — LR magnitude**: `lr_c=6e-4` (vs 3e-4) improves worst-seed AND seed-std in all 3 regimes and
   mean on cc_g1/nocost; cc_g2 mean dip is trivial/insignificant.  `lr_a` stays 3e-4.
 
-## Function Approximators (`--approximator`)
+## Function Approximators — REMOVED (debloat, chore/repo-debloat)
 
-With the kernel making the TD target deterministic, the actor/critic **function approximator** is the remaining lever for speed and C++-portability.  `--approximator` swaps the `2x64 SiLU+LayerNorm` net for a **curated feature map + linear head** (one matmul + a cheap transform, no LayerNorm, trivially expressible as a BLAS `gemv` in C++).  All approximators are torch `nn.Module`s honoring the existing actor `(B,9)->(B,1)` / critic `((B,9),(B,1))->(B,1)` signatures, so `agent.py` and `transition_kernel.py` are unchanged.  The actor keeps the beta-sigmoid output + profitability-gate STE.
-
-```bash
---approximator nn        # default: current 2x64 SiLU+LN net (BIT-IDENTICAL to v61 when selected)
---approximator poly      # Chebyshev tensor-product basis      --poly_degree 3
---approximator rff       # Random Fourier Features             --rff_dim 256 --rff_lengthscale 1.0 [--rff_learnable 0]
---approximator rbf       # Radial Basis Function net           --rbf_centers 128 --rbf_bandwidth 1.0 [--rbf_learnable_bandwidth 0]
---approximator tiny_nn   # small 1-hidden-layer net, no LN     --tiny_width 32 --tiny_activation silu
---feature_use_cross 1    # shared: include domain cross-terms (moneyness*inv, ttm*inv, X*Y) in the curated features
-```
-
-Key facts:
-- `--approximator nn` is the bit-identical default; the new classes have zero RNG side effects on the NN path (guarded by `test_nn_path_unchanged_defaults`).
-- `--rbf_bandwidth` is a **relative multiplier of sqrt(dim)** (RBF features vanish at init if sigma is not scaled to the ~11-dim feature space).
-- The critic couples the action: poly uses `[phi_s, a*phi_s, a, a^2]`; rff/rbf/tiny_nn concatenate the scaled action into the feature input.  This keeps `dQ/da` informative (DPG-compatible).
-- **Implementation**: `src/networks.py` (`CuratedFeatures`, `Poly/RFF/RBF/MLPFeatureMap`, `BasisActor`/`BasisCritic`); injected via `actor_factory`/`critic_factory` in `agent.py`; wired in `run.py`.
-- **Correctness**: `pytest tools/test_approximators.py` (37 tests — float64 gradcheck for dQ/da, dQ/dw, da/dtheta; shape; fitting; gate; kernel compatibility; bit-identical NN guard).
-- **Sweeps**: `tools/sweep_approximators.py` (Stage A tuning -> Stage B screening 24 seeds -> Stage C finalists, accurate kernel).  CSVs land in `logs/_sweep_approx/` in the `tools/stats_analysis.py` schema.
-- **Analysis**: `Jupyter Notebooks/8: Approximator Comparison.ipynb` (speed microbenchmark, correctness, screening/finalist stats, winner selection, end-to-end C++ port plan).  Isolated single-thread microbenchmark: poly ~2.0x, rbf/tiny_nn ~1.6x, rff ~1.45x updates/sec vs the NN.
+The curated-feature approximators (`poly/rff/rbf/tiny_nn`, `BasisActor`/`BasisCritic`,
+`CuratedFeatures`, the `--approximator` family of flags, `actor_factory`/`critic_factory`, and
+`tools/{test_approximators,sweep_approximators}.py`) **all lost to the NN** and were deleted. The NN
+Actor/Critic is the only path. `FinanceInformedActor`/`--actor_type` and the unused `MultiPro.py` were
+also removed. See HPT.md "Mega campaign" for the study that motivated this.
 
 ## Risk Management: Delta / Gamma (`src/greeks.py`)
 
@@ -174,16 +171,15 @@ runs on the new canonical.
 |------|------|
 | `agent.py` | D4PG agent: actor-critic updates, exploration-noise schedules (pre-squash Gaussian; `hyperbolic`/`const_floor`/`linear`, canonical = linear σ0→floor), closed-form/Rprop `calibrate_bias` warm-start, eval-only EMA weight averaging, critic warmup, constant-LR target soft updates |
 | `swing_env.py` | Gymnasium environment: maps agent actions to exercise quantities, enforces contract constraints (q_min/q_max, Q_min/Q_max, refraction), computes discounted rewards with convex costs. Also contains `approximate_Q_T()` for HHK-based expected quantity estimation |
-| `networks.py` | Actor (profitability-gated with STE), Critic (standard TD), and the curated-feature approximators (`CuratedFeatures`, `Poly/RFF/RBF/MLPFeatureMap`, `BasisActor`/`BasisCritic`). Actor gates unprofitable exercises: `q_out = q_raw * 1[Pi(q) > 0]`. (IQN was removed — no longer present.) |
+| `networks.py` | Actor (profitability-gated with STE) and Critic (standard TD). Actor gates unprofitable exercises: `q_out = q_raw * 1[Pi(q) > 0]`. (IQN and the curated-feature approximators were removed.) |
 | `lsm_swing_pricer.py` | LSM baseline: Numba-accelerated backward induction with configurable basis functions (power/laguerre/hermite/chebyshev), polynomial degree, and regularization. Two modes: `LSM_minimal` (spot-only features) and `LSM_full` (full HHK+contract state). Net profitability gate applied at both terminal and non-terminal steps |
 | `simulate_hhk_spot.py` | HHK spot price simulation: S_t = exp(f(t) + X_t + Y_t) with mean-reverting OU diffusion and compound Poisson jumps. Uses Sobol quasi-random sequences, stratified sampling of terminal values |
 | `swing_contract.py` | Dataclass defining the swing option contract: local/global exercise bounds, strike, maturity, convex cost params (c, gamma), refraction periods |
-| `replay_buffer.py` | Circular replay buffer and Prioritized Experience Replay with Numba-accelerated Fenwick tree |
+| `replay_buffer.py` | Circular (uniform) replay buffer. (PER was removed in v63 — uniform replay is canonical.) |
 | `agent_evaluation.py` | Shared evaluation logic: batch evaluation, statistics (option price, confidence intervals, exercise stats, bang-bangness) |
 | `transition_kernel.py` | Analytical HHK transition kernel (quadrature mesh) backing `--use_expected_target=1` deterministic TD targets |
 | `greeks.py` | Pathwise Delta/Gamma via CRN bump-and-revalue (`bump_greeks`, `make_rl_price_fn`, `greeks_for_run`); central differences + Richardson, relative bump `dS=h*S0` |
 | `hedging_utils.py` | HHK forward price (`hhk_forward_price`), P&L risk metrics (`compute_pnl_risk_metrics`), trace normalization/summary helpers |
-| `MultiPro.py` | Multiprocessing wrapper for parallel environment stepping |
 
 ### Top-Level Scripts
 
@@ -191,7 +187,7 @@ runs on the new canonical.
 |------|------|
 | `run.py` | Main training orchestrator (CLI parsing, training loop, evaluation, TensorBoard logging, parquet output) |
 | `evaluate_saved_agent.py` | Standalone evaluation of a saved `.pth` model using its `.json` hyperparameters |
-| `Price_Swing_Option(s).sh` | Reference v61 config with all hyperparameters documented (no-cost regime, seeds 11-13) |
+| `Price_Swing_Option_v64.sh` | v64 canonical reference (focal c=0.04/γ=2, seeds 11-13). The recipe lives in run.py defaults; this script documents it + sets the study budget |
 | `conv_cost_exps.sh` | Sweep orchestrator: runs selected scripts from `Convex Cost Experiments/` sequentially |
 
 ### Tools (`tools/`)
@@ -203,14 +199,10 @@ runs on the new canonical.
 | `compare_lsm_state_modes.py` | Compares LSM_minimal vs LSM_full prices across all saved convex-cost configs |
 | `update_convex_costs_results.py` | Refreshes result CSVs to expose both LSM benchmark columns |
 | `tune_lsm_params.py` | Grid search over LSM hyperparameters (degree, basis, regularization) |
-| `validate_discretized_lsm.py` | Tests discretized-action LSM: backward compat, monotonicity in M, convex cost improvement |
-| `analyze_lsm_estimator_sample.py` | LSM degree sweep over a 6-config sample |
-| `compare_old_new_lsm.py` | Compares old bang-bang LSM vs new discretized-action LSM values |
+| `test_greeks.py` | Pytest suite for `src/greeks.py` (estimator exactness, Richardson, CRN-coupling, dynamic hedge, saved-run sanity) |
 | `build_latex.sh` / `clean_latex.sh` | Build/clean the LaTeX manuscript |
 | `complete_focal_study.sh` | Runs the full 15-seed focal study for c=0.04, gamma=2 |
-| `test_approximators.py` | Pytest suite for the `--approximator` feature maps (gradcheck, shape, fitting, gate, kernel compatibility, bit-identical NN guard) |
-| `sweep_approximators.py` | Orchestrates the approximator comparison: Stage A tuning -> Stage B screening (24 seeds) -> Stage C finalists (accurate kernel). Writes CSVs to `logs/_sweep_approx/` |
-| `stats_analysis.py` | Shared statistics: Welch's t, Levene/Brown-Forsythe, F-ratio, paired-seed t, MDE, conservative Pareto. Consumes sweep CSVs |
+| `stats_analysis.py` | Shared statistics utilities: Welch's t, Levene/Brown-Forsythe, F-ratio, paired-seed t, MDE, Holm–Bonferroni, conservative Pareto |
 
 ### Notebooks (`Jupyter Notebooks/`)
 
