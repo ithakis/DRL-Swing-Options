@@ -1,4 +1,4 @@
-.PHONY: help paper clean-paper sweep single-exp train eval compare-lsm-state-modes tensorboard
+.PHONY: help paper clean-paper sweep single-exp train eval compare-lsm-state-modes tensorboard v64-sweep-4k v64-sweep-32k hedging-agents
 
 PYTHON ?= python
 RUN_NAME ?=
@@ -14,6 +14,9 @@ help:
 	  '  make paper                         Build the manuscript into Paper/build/' \
 	  '  make clean-paper                   Remove generated manuscript artifacts' \
 	  '  make sweep                         Run the convex-cost experiment sweep' \
+	  '  make v64-sweep-4k                  Restartable v64 re-baseline @ 4096 episodes' \
+	  '  make v64-sweep-32k                 Restartable v64 re-baseline @ 32768 episodes' \
+	  '  make hedging-agents                Train the kernel-off focal agent for Hedging.ipynb' \
 	  '  make single-exp EXP_SCRIPT="..."    Run one experiment shell script' \
 	  '  make train ARGS="..."              Run run.py with custom arguments' \
 	  '  make eval RUN_NAME=name [RUNS=100] Evaluate a saved agent' \
@@ -28,6 +31,19 @@ clean-paper:
 
 sweep:
 	bash conv_cost_exps.sh
+
+# Restartable v64 re-baseline of the convex-cost grid (4 concurrent for 4k, 3 for 32k).
+# Skips runs whose runs/<name>.{pth,json} already exist, so it is safe to re-run.
+v64-sweep-4k:
+	$(PYTHON) tools/run_v64_sweep.py --budget 4k --concurrency 4
+
+v64-sweep-32k:
+	$(PYTHON) tools/run_v64_sweep.py --budget 32k --concurrency 3
+
+# Focal kernel-off agent for the Hedging notebook's LSM / RL / RL-kernel comparison.
+# Both variant configs are defined in tools/train_hedging_agents.py; restartable.
+hedging-agents:
+	$(PYTHON) tools/train_hedging_agents.py --variant nokernel --episodes 32768 --seeds 11
 
 single-exp:
 	bash "$(EXP_SCRIPT)"

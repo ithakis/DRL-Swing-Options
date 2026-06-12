@@ -21,6 +21,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -63,14 +64,22 @@ class dotdict(dict):
 
 
 def parse_config_key(name: str) -> Tuple[float, float]:
-    """Extract (c, gamma) from a run name like 'SwingOption_20_c0.04_gamma2_11'."""
+    """Extract (c, gamma) from a run name like 'SwingOption_20_c0.04_gamma2_11'.
+
+    Tolerant of an arbitrary suffix after the gamma value (e.g. the v64 re-baseline
+    names ``SwingOption_20_c0.04_gamma2_v64_4k_11`` / ``..._v64_32k_11``): only the
+    leading numeric token of the gamma segment is parsed.
+    """
     # Strip the seed suffix
     parts = name.rsplit("_", 1)
-    base = parts[0]  # e.g. SwingOption_20_c0.04_gamma2
+    base = parts[0]  # e.g. SwingOption_20_c0.04_gamma2  (or ..._gamma2_v64_4k)
     # Extract c and gamma
-    c_part = base.split("_c")[1]  # e.g. 0.04_gamma2
+    c_part = base.split("_c")[1]  # e.g. 0.04_gamma2  (or 0.04_gamma2_v64_4k)
     c_str, gamma_part = c_part.split("_gamma")
-    return float(c_str), float(gamma_part)
+    gamma_match = re.match(r"[0-9]+(?:\.[0-9]+)?", gamma_part)
+    if gamma_match is None:
+        raise ValueError(f"Could not parse gamma from {name!r} (segment {gamma_part!r})")
+    return float(c_str), float(gamma_match.group(0))
 
 
 def config_base_name(name: str) -> str:
@@ -113,7 +122,17 @@ def build_hhk_params(params: dotdict) -> Dict[str, Any]:
 
 
 def build_agent(params: dotdict) -> Agent:
-    """Reconstruct Agent from JSON parameters (matches evaluate_saved_agent.py)."""
+    """Reconstruct Agent from JSON parameters (architecture-complete).
+
+    Reads the full network architecture (depth, hidden sizes, norm, activation,
+    init, output squash, robust normalization) from the saved JSON so that
+    ``actor_local.load_state_dict`` matches the trained checkpoint exactly.
+
+    The defaults below are the **v64 canonical** (depth-3, beta_sigmoid_1.5,
+    robust norm on) so a v64 checkpoint rebuilds correctly even if a key is
+    missing; older v61 JSONs that explicitly stored their own (2-layer,
+    beta_sigmoid_3.0, ...) architecture still rebuild from their stored values.
+    """
     state_size = 9
     action_size = 1
     return Agent(
@@ -122,6 +141,13 @@ def build_agent(params: dotdict) -> Agent:
         n_step=params.nstep,
         random_seed=params.seed,
         hidden_size=params.layer_size,
+        # --- architecture (read from JSON; v64 defaults as fallback) ---
+        actor_layers=int(getattr(params, "actor_layers", 3)),
+        critic_layers=int(getattr(params, "critic_layers", 3)),
+        actor_hidden_size=getattr(params, "actor_hidden_size", None),
+        critic_hidden_size=getattr(params, "critic_hidden_size", None),
+        norm_type=getattr(params, "norm", "layernorm"),
+        init_method=getattr(params, "init_method", "orthogonal"),
         BATCH_SIZE=params.batch_size,
         BUFFER_SIZE=getattr(params, "max_replay_size", 200000),
         GAMMA=params.gamma,
@@ -137,8 +163,8 @@ def build_agent(params: dotdict) -> Agent:
         paths=0,
         min_replay_size=getattr(params, "min_replay_size", params.batch_size * 10),
         activation=getattr(params, "activation", "silu"),
-        action_output=getattr(params, "actor_output_activation", "tanh01"),
-        use_robust_normalization=bool(getattr(params, "use_robust_normalization", 0)),
+        action_output=getattr(params, "actor_output_activation", "beta_sigmoid_1.5"),
+        use_robust_normalization=bool(getattr(params, "use_robust_normalization", 1)),
         strike=getattr(params, "strike", 100.0),
     )
 
