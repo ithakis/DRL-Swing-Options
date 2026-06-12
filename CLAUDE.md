@@ -20,6 +20,7 @@ make compare-lsm-state-modes          # Compare reduced-state vs full-state LSM
 make tensorboard                       # Launch TensorBoard on runs/
 make paper                             # Build manuscript to Paper/build/
 make clean-paper                       # Remove manuscript build artifacts
+python export_notebooks_to_pdf.py      # Export notebooks to light-theme PDFs with codes hidden
 ```
 
 ## v64 Canonical Configuration (current default)
@@ -181,6 +182,7 @@ default. The following flags remain in `run.py` for backward compatibility with 
 | `evaluate_saved_agent.py` | Standalone evaluation of a saved `.pth` model using its `.json` hyperparameters |
 | `Price_Swing_Option_v64.sh` | v64 canonical reference (focal c=0.04/γ=2, seeds 11-13). The recipe lives in run.py defaults; this script documents it + sets the study budget |
 | `conv_cost_exps.sh` | Sweep orchestrator: runs selected scripts from `Convex Cost Experiments/` sequentially |
+| `export_notebooks_to_pdf.py` | Converts Jupyter notebooks to white-theme PDFs with code input cells hidden |
 
 ### Tools (`tools/`)
 

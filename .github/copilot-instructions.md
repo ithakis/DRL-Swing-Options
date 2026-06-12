@@ -180,6 +180,13 @@ The paper has **four figures**:
 
 Use the `paper-figure-regen` skill for the detailed notebook choreography, minimum rerun paths, and figure-specific rebuild rules. Keep the global instructions focused on the codebase and invoke the skill when the task is specifically about figure regeneration.
 
+### Notebook PDF Export (White-Theme)
+To convert the main research notebooks to white-theme (light-theme) PDFs with code input cells hidden, compile with the direct workspace command:
+```bash
+/path/to/conda run -p /path/to/EP11 python export_notebooks_to_pdf.py
+```
+Use the `notebook-pdf-export` skill when customizing or performing manual conversions to enforce publication-ready white-theme outputs regardless of user background themes.
+
 ---
 
 ## Critical Notes
