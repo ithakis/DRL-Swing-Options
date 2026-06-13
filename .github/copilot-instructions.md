@@ -77,6 +77,12 @@ make tensorboard
 | `tools/rebuild_results_v7.py` | Regenerate `Convex Costs Results 7.csv` and `Convex Costs Results 7 focal.csv` from logs |
 | `tools/generate_seed_robustness_figure.py` | Generate Figure 4 (seed robustness strip+box plot) from the focal results CSV |
 | `Jupyter Notebooks/Hedging.ipynb` | Phase-1 hedging notebook: shared-path RL/LSM liability diagnostics, proxy hedge plots, and tail-risk tables |
+| `cpp_pricer/` | Standalone C++ port of the v64 kernel-on D4PG pricer (float32 + Accelerate BLAS, hand-derived backward); ~8.8× faster than PyTorch eager on M1, price statistically matched (Welch p=0.37) |
+
+> **Extending the C++ pricer?** Read `cpp_pricer/DEVELOPMENT_NOTES.md` first — it captures the
+> architecture rationale, the optimization journey (wins: fast `exp`, BLAS forward+backward; dead ends:
+> threading the small GEMM, `__restrict__`), the bugs found, and the validation bar. `cpp_pricer/README.md`
+> has build/run/validate steps. Nothing under `src/` is modified by the port.
 
 ### Paper Layout
 - Manuscript sources live in `Paper/`
@@ -183,8 +189,10 @@ Use the `paper-figure-regen` skill for the detailed notebook choreography, minim
 ### Notebook PDF Export (White-Theme)
 To convert the main research notebooks to white-theme (light-theme) PDFs with code input cells hidden, compile with the direct workspace command:
 ```bash
-/path/to/conda run -p /path/to/EP11 python export_notebooks_to_pdf.py
+conda run -n EP11 python export_notebooks_to_pdf.py
 ```
+The script uses `nbconvert --to html --no-input` then prints via headless Chrome with `--virtual-time-budget=10000`. The virtual-time-budget flag is required — without it Chrome prints before MathJax finishes and equations appear as raw LaTeX source. The LaTeX route (`nbconvert --to pdf`) is broken on this machine due to a `tcolorbox` 6.10.0 / TeX Live 2025 kernel incompatibility.
+
 Use the `notebook-pdf-export` skill when customizing or performing manual conversions to enforce publication-ready white-theme outputs regardless of user background themes.
 
 ---

@@ -210,8 +210,24 @@ default. The following flags remain in `run.py` for backward compatibility with 
 | `6: Convex costs 0.04 Analysis` | Detailed case study; **generates Figures 1-3** for the paper (HHK paths, main results, bang-bangness) |
 | `7: Phase 1 Findings - Semi-Analytical Kernel` | Statistical summary of the semi-analytical kernel study (M_x isolation, hypothesis tests) |
 | `8: Approximator Comparison` | Compares the `--approximator` contenders: speed microbenchmark, correctness, screening/finalist stats, winner, end-to-end C++ port plan |
+| `9: C++ Pricer - Speed & Validation` | Speed/validation of the `cpp_pricer/` C++ port: parity tables, Welch price-parity vs PyTorch, optimization ladder, time-vs-paths scaling |
 | `Hedging` | **Risk management** — pathwise Delta/Gamma via CRN bump (`src/greeks.py`), value/Δ/Γ-vs-spot curves, and a static HHK-forward hedge backtest. Figures → `figs/hedging_*.png` |
 | `Convex_Costs_Relationships` | Exploration of convex cost relationships (exploratory; candidate for removal) |
+
+### C++ Pricer (`cpp_pricer/`)
+
+Standalone, isolated C++ reimplementation of the **v64 kernel-on D4PG** pricer for max CPU speed on
+Apple M1 (float32 + Accelerate BLAS + hand-derived backward). Minimizes the sum of (0→4k) train+price
+and (4k→65k) OOS eval; **~8.8× faster than PyTorch eager** with the float32 price statistically
+indistinguishable from Python (Welch p=0.37). Nothing in `src/` is modified.
+
+- **`cpp_pricer/README.md`** — build/run/validate instructions.
+- **`cpp_pricer/DEVELOPMENT_NOTES.md`** — ⚠️ **read this before extending the port.** Architecture
+  rationale, the optimization journey (what worked: fast `exp`, BLAS fwd+bwd; what didn't: threading the
+  512×64 GEMM, `__restrict__`), the bugs found (SiLU-backward buffer, resize-dangling-pointer, STE
+  gradcheck, FP32 FD noise), the validation bar, and future ideas.
+- Validate after any change to `mlp.cpp`/`kernel.cpp`/activations: FP64 `test_parity` + `test_grad`
+  (<1e-4 / <1e-5), then the float32 price Welch test via `tools/python_baseline.py`.
 
 ### Paper (`Paper/`)
 

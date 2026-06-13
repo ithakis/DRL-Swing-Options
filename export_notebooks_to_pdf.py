@@ -24,12 +24,20 @@ def find_chrome_path():
             return p
     return None
 
-# Custom CSS to inject once we purge the custom dark CSS, ensuring absolute white background and crisp dark text
+# Custom CSS to inject once we purge the custom dark CSS, ensuring absolute white background and crisp dark text.
+# IMPORTANT: td/th are deliberately excluded from background-color !important so that pandas Styler
+# inline background-gradient colors (set via element style="background-color:...") are not overridden.
 LIGHT_THEME_CSS = """
 <style>
 /* Prevent dark mode preferences from leaking into headless print */
 @media print, screen {
-  :root, html, body, div, p, pre, span, a, h1, h2, h3, h4, h5, h6, table, tr, td, th, ul, li, ol {
+  @page {
+    size: letter;
+    margin: 0.42in 0.34in;
+  }
+
+  /* CSS variables: force light theme tokens */
+  :root, html, body {
     --jp-layout-color0: #ffffff !important;
     --jp-layout-color1: #ffffff !important;
     --jp-layout-color2: #ffffff !important;
@@ -43,23 +51,125 @@ LIGHT_THEME_CSS = """
     --jp-mirror-editor-string-color: #007700 !important;
     --jp-mirror-editor-variable-color: #000000 !important;
     color-scheme: light !important;
+  }
+
+  /* White background for layout containers — NOT td/th so Styler colors survive */
+  html, body, div, p, pre, span, a, ul, li, ol {
     background-color: #ffffff !important;
     background: #ffffff !important;
     color: #000000 !important;
   }
-  
-  /* Reset container backgrounds specifically to be white */
-  #notebook, .notebook, .jp-Notebook, .jp-Cell, .jp-CellContainer, .jp-OutputArea, .jp-OutputArea-child, .jp-OutputPrompt, .jp-RenderedHTMLCommon, div.body, body.notebook_app {
+
+  /* Reset notebook-specific container backgrounds */
+  #notebook, .notebook, .jp-Notebook, .jp-Cell, .jp-CellContainer,
+  .jp-OutputArea, .jp-OutputArea-child, .jp-OutputPrompt,
+  .jp-RenderedHTMLCommon, div.body, body.notebook_app {
     background-color: #ffffff !important;
     background: #ffffff !important;
     color: #000000 !important;
   }
-  
-  /* Guarantee readable text headings */
-  h1, h2, h3, h4, h5, h6, p, pre, td, th, li, a, span {
+
+  /* Headings and prose: force dark text */
+  h1, h2, h3, h4, h5, h6, p, pre, li, a {
     color: #000000 !important;
     text-shadow: none !important;
   }
+
+  /* Tables: clean borders and readable text, but let Styler inline background-color win.
+     We do NOT set background-color here so pandas background_gradient cells keep their colors. */
+  .jp-RenderedHTMLCommon table {
+    border-collapse: collapse !important;
+    font-size: 9.5px !important;
+    line-height: 1.16 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    width: 100% !important;
+  }
+  .jp-RenderedHTMLCommon table[id^="T_"] {
+    font-size: 8.6px !important;
+  }
+  .jp-RenderedHTMLCommon table.dataframe {
+    font-size: 7.1px !important;
+  }
+  .jp-RenderedMarkdown table:not(.dataframe) {
+    font-size: 10px !important;
+  }
+  table thead tr {
+    background-color: #f1f3f5 !important;
+  }
+  th {
+    color: #000000 !important;
+    font-weight: bold !important;
+    border: 1px solid #ced4da !important;
+    font-size: inherit !important;
+    line-height: 1.16 !important;
+    overflow-wrap: anywhere !important;
+    padding: 3px 5px !important;
+    text-align: center !important;
+    white-space: normal !important;
+  }
+  td {
+    /* color falls back to the element's inline style when Styler sets it (e.g. white on red) */
+    border: 1px solid #dee2e6 !important;
+    font-size: inherit !important;
+    line-height: 1.16 !important;
+    overflow-wrap: anywhere !important;
+    padding: 3px 5px !important;
+    white-space: normal !important;
+  }
+  table.dataframe th, table.dataframe td {
+    line-height: 1.1 !important;
+    padding: 2px 3px !important;
+  }
+  /* Zebra stripes for plain (unstyled) dataframe tables */
+  table.dataframe tbody tr:nth-child(even) {
+    background-color: #f8f9fa !important;
+  }
+  table.dataframe tbody tr:nth-child(odd) {
+    background-color: #ffffff !important;
+  }
+  table.dataframe tbody tr:hover {
+    background-color: #e9ecef !important;
+  }
+  .jp-RenderedHTMLCommon table[id^="T_"] th,
+  .jp-RenderedHTMLCommon table[id^="T_"] td {
+    padding: 2px 4px !important;
+  }
+
+  /* Better proportions for four-column markdown summary tables. */
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) th:nth-child(1),
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) td:nth-child(1) {
+    width: 16% !important;
+  }
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) th:nth-child(2),
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) td:nth-child(2) {
+    width: 34% !important;
+  }
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) th:nth-child(3),
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) td:nth-child(3) {
+    width: 30% !important;
+  }
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) th:nth-child(4),
+  .jp-RenderedMarkdown table:has(thead th:nth-child(4):last-child) td:nth-child(4) {
+    width: 20% !important;
+  }
+  /* Rows with no Styler color: ensure readable dark text */
+  tr {
+    background-color: inherit;
+    color: #111111;
+  }
+
+  .jp-RenderedHTMLCommon,
+  .jp-OutputArea-output {
+    max-width: 100% !important;
+    overflow-x: visible !important;
+  }
+
+  /* Page breaks: keep tables together where possible */
+  table { page-break-inside: auto; }
+  tr    { page-break-inside: avoid; page-break-after: auto; }
 
   /* Remove headers or footers added by custom.css */
   #header, .header-bar, #tree-selector, #maintoolbar, .toolbar_info {
@@ -132,11 +242,16 @@ for nb in notebooks:
 
     # 3. Print HTML to PDF using Chrome's print engine
     pdf_path = nb_path.with_suffix(".pdf")
+    tmp_pdf_path = pdf_path.with_name(f"{pdf_path.stem}.tmp.pdf")
+    if tmp_pdf_path.exists():
+        tmp_pdf_path.unlink()
     chrome_result = subprocess.run([
         chrome_path, "--headless", "--disable-gpu",
-        "--color-scheme=light",  # browser level light theme constraint
-        f"--print-to-pdf={pdf_path}",
-        str(html_path)
+        "--color-scheme=light",
+        "--virtual-time-budget=10000",  # allow MathJax/KaTeX to finish rendering
+        "--print-to-pdf-no-header",     # strip date / title / URL / page-number decorations
+        f"--print-to-pdf={tmp_pdf_path}",
+        html_path.as_uri()
     ], capture_output=True, text=True)
 
     # 4. Clean up HTML
@@ -144,9 +259,15 @@ for nb in notebooks:
         html_path.unlink()
 
     # 5. Check if PDF creation succeeded
-    if pdf_path.exists():
+    if chrome_result.returncode == 0 and tmp_pdf_path.exists() and tmp_pdf_path.stat().st_size > 0:
+        tmp_pdf_path.replace(pdf_path)
         print(f"✓ Saved to {pdf_path}")
     else:
-        print(f"✗ Failed browser PDF generation for {nb}. Error: {chrome_result.stderr}")
+        if tmp_pdf_path.exists():
+            tmp_pdf_path.unlink()
+        print(f"✗ Failed browser PDF generation for {nb}.")
+        print(f"  Chrome exit code: {chrome_result.returncode}")
+        if chrome_result.stderr:
+            print(f"  stderr: {chrome_result.stderr}")
 
 print("\nDone! PDFs are ready to share.")
