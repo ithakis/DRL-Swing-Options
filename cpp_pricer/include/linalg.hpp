@@ -65,10 +65,14 @@ inline void linear_forward(const Real* __restrict W, const Real* __restrict b,
 #endif
 }
 
-// grad wrt input, plus accumulate grads wrt W,b.  gX may be null.
+// grad wrt input, plus (optionally) accumulate grads wrt W,b.  gX may be null.
+// H-S6 (2026-06-13): when accum_params=false, skip the gW/gb GEMM+reduction entirely.
+// Used by the DPG actor update, where the critic's param grads are computed only to be
+// discarded (the critic zero_grads before its own step) — only the action gradient (gX)
+// is consumed.  Skipping the second GEMM is bit-identical and ~halves the critic backward.
 inline void linear_backward(const Real* W, const Real* X, const Real* gY,
                             Real* gX, Real* gW, Real* gb,
-                            int B, int in, int out) {
+                            int B, int in, int out, bool accum_params = true) {
 #ifdef CPP_PRICER_ACCELERATE
     const Real one = 1, zero = 0;
   #ifdef CPP_PRICER_FP64
@@ -78,10 +82,12 @@ inline void linear_backward(const Real* W, const Real* X, const Real* gY,
   #endif
     if (gX)  // gX(B×in) = gY(B×out) · W(out×in)
         GEMM(CblasRowMajor, CblasNoTrans, CblasNoTrans, B, in, out, one, gY, out, W, in, zero, gX, in);
-    // gW(out×in) += gY^T(out×B) · X(B×in)
-    GEMM(CblasRowMajor, CblasTrans, CblasNoTrans, out, in, B, one, gY, out, X, in, one, gW, in);
+    if (accum_params) {
+        // gW(out×in) += gY^T(out×B) · X(B×in)
+        GEMM(CblasRowMajor, CblasTrans, CblasNoTrans, out, in, B, one, gY, out, X, in, one, gW, in);
+        if (gb) for (int r = 0; r < B; ++r) { const Real* gyr = gY + (size_t)r*out; for (int o = 0; o < out; ++o) gb[o] += gyr[o]; }
+    }
     #undef GEMM
-    if (gb) for (int r = 0; r < B; ++r) { const Real* gyr = gY + (size_t)r*out; for (int o = 0; o < out; ++o) gb[o] += gyr[o]; }
 #else
     if (gX) std::memset(gX, 0, sizeof(Real) * (size_t)B * in);
     for (int r = 0; r < B; ++r) {
@@ -90,11 +96,11 @@ inline void linear_backward(const Real* W, const Real* X, const Real* gY,
         Real* gxr = gX ? gX + (size_t)r * in : nullptr;
         for (int o = 0; o < out; ++o) {
             const Real g = gyr[o];
-            if (gb) gb[o] += g;
+            if (accum_params && gb) gb[o] += g;
             const Real* wo = W + (size_t)o * in;
             Real* gwo = gW + (size_t)o * in;
             for (int i = 0; i < in; ++i) {
-                gwo[i] += g * xr[i];
+                if (accum_params) gwo[i] += g * xr[i];
                 if (gxr) gxr[i] += g * wo[i];
             }
         }
@@ -121,7 +127,8 @@ inline void layernorm_forward(const Real* x, const Real* gamma, const Real* beta
 }
 
 inline void layernorm_backward(const Real* gy, const Real* gamma, const LNCache& c,
-                               Real* gx, Real* ggamma, Real* gbeta, int B, int D) {
+                               Real* gx, Real* ggamma, Real* gbeta, int B, int D,
+                               bool accum_params = true) {
     for (int r = 0; r < B; ++r) {
         const Real* gyr = gy + (size_t)r * D;
         const Real* xh = c.xhat.data() + (size_t)r * D;
@@ -131,8 +138,7 @@ inline void layernorm_backward(const Real* gy, const Real* gamma, const LNCache&
             Real dy = gyr[i] * gamma[i];
             sum_dy += dy;
             sum_dy_xhat += dy * xh[i];
-            ggamma[i] += gyr[i] * xh[i];
-            gbeta[i]  += gyr[i];
+            if (accum_params) { ggamma[i] += gyr[i] * xh[i]; gbeta[i] += gyr[i]; }
         }
         Real* gxr = gx + (size_t)r * D;
         Real invD = Real(1) / D;
@@ -143,7 +149,46 @@ inline void layernorm_backward(const Real* gy, const Real* gamma, const LNCache&
     }
 }
 
-// ---- SiLU (in place semantics handled by caller via separate buffers) ----
+// NOTE (dead end, R1 2026-06-13): fusing LayerNorm+SiLU into one row sweep was
+// MEASURED ~9% SLOWER (517 vs 476 us/step). The standalone silu_forward over a
+// flat B*H array auto-vectorizes fast_expf far better than when interleaved into
+// the row-serial LayerNorm reduction. Keep them separate.
+
+// ---- hidden activation (in place semantics handled by caller via separate buffers) ----
+// Default = SiLU.  -DPRICER_GELU swaps in exact (erf-form) GELU *under the same names*
+// (so no mlp.cpp call-site edits; test_grad_depth gradchecks whichever is compiled).
+// H-A2: one-shot accuracy probe of the smooth-gated-unit cluster; GELU is strictly
+// costlier than SiLU (erf) so it can only move accuracy, never wall-clock.
+#ifdef PRICER_GELU
+inline void silu_forward(const Real* x, Real* y, int n) {
+    for (int i = 0; i < n; ++i)
+        y[i] = x[i] * Real(0.5) * (Real(1) + std::erf(x[i] * Real(0.7071067811865476)));
+}
+inline void silu_backward(const Real* x, const Real* gy, Real* gx, int n) {
+    for (int i = 0; i < n; ++i) {
+        Real cdf = Real(0.5) * (Real(1) + std::erf(x[i] * Real(0.7071067811865476)));
+        Real pdf = Real(0.3989422804014327) * std::exp(Real(-0.5) * x[i] * x[i]);
+        gx[i] = gy[i] * (cdf + x[i] * pdf);
+    }
+}
+#elif defined(PRICER_GELU_FAST)
+// H-A2: swish-with-slope  g(x) = x·σ(β·x).  β=1.702 ≈ GELU; β=1 = SiLU.  Reuses the
+// fast_expf sigmoid (≈SiLU-cost).  β is the tunable gate steepness — set -DGELU_SLOPE=… to sweep.
+#ifndef GELU_SLOPE
+#define GELU_SLOPE 1.702
+#endif
+inline void silu_forward(const Real* x, Real* y, int n) {
+    const Real beta = Real(GELU_SLOPE);
+    for (int i = 0; i < n; ++i) y[i] = x[i] * sigmoidf(beta * x[i]);
+}
+inline void silu_backward(const Real* x, const Real* gy, Real* gx, int n) {
+    const Real beta = Real(GELU_SLOPE);
+    for (int i = 0; i < n; ++i) {
+        Real s = sigmoidf(beta * x[i]);
+        gx[i] = gy[i] * (s + beta * x[i] * s * (Real(1) - s));
+    }
+}
+#else
 inline void silu_forward(const Real* x, Real* y, int n) {
     for (int i = 0; i < n; ++i) y[i] = siluf(x[i]);
 }
@@ -154,5 +199,6 @@ inline void silu_backward(const Real* x, const Real* gy, Real* gx, int n) {
         gx[i] = gy[i] * (s * (Real(1) + x[i] * (Real(1) - s)));
     }
 }
+#endif
 
 } // namespace pricer

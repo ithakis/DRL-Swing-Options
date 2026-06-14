@@ -32,8 +32,11 @@ contract = SwingContract(q_min=0.0, q_max=2.0, Q_min=0.0, Q_max=20.0, strike=1.0
 hhk = dict(S0=1.0, alpha=12.0, sigma=1.2, beta=150.0, lam=6.0, mu_J=0.3)
 SEED = 11
 
+# N_max: 0 = H-K1 canonical (M=2, jump folded into its unconditional mean — matches config.hpp
+# default and the speedup/NN research); 1 = legacy M=4 mesh.  `export_reference.py [N_max]`.
+_NMAX = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 kp = KernelParams(alpha=hhk["alpha"], sigma=hhk["sigma"], beta=hhk["beta"], lam=hhk["lam"],
-                  mu_J=hhk["mu_J"], dt=contract.dt, M_x=2, N_max=1, M_per_k=1, f_id="no_seasonal")
+                  mu_J=hhk["mu_J"], dt=contract.dt, M_x=2, N_max=_NMAX, M_per_k=1, f_id="no_seasonal")
 kernel = precompute_kernel(kp, n_rights=contract.n_rights, f_callable=no_seasonal_function,
                            maturity=contract.maturity, force_rebuild=True)
 

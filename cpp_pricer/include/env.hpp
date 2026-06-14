@@ -64,7 +64,7 @@ inline double env_step(const SwingContract& c, const Real* Srow, double a, Episo
     int step = ep.step;
     double spot = Srow[step];
     double payoff = std::max(spot - c.strike, 0.0) * q;
-    double cost = c.c_cost * std::pow(q, c.gamma_cost);
+    double cost = c.c_cost * cost_pow(q, c.gamma_cost);
     double net = payoff - cost;
     double reward;
     if (net <= 0.0) { q = 0.0; net = 0.0; reward = 0.0; }

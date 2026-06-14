@@ -12,14 +12,15 @@ static inline void lerp(std::vector<Real>& d, const std::vector<Real>& s, Real k
     for (size_t i = 0; i < d.size(); ++i) d[i] = keep * d[i] + add * s[i];
 }
 static void actor_lerp(Actor& d, const Actor& s, Real keep, Real add) {
-    for (int i = 0; i < 3; ++i) { lerp(d.lin[i].W,s.lin[i].W,keep,add); lerp(d.lin[i].b,s.lin[i].b,keep,add);
-                                  lerp(d.ln[i].g,s.ln[i].g,keep,add); lerp(d.ln[i].b,s.ln[i].b,keep,add); }
+    for (size_t i = 0; i < s.lin.size(); ++i) { lerp(d.lin[i].W,s.lin[i].W,keep,add); lerp(d.lin[i].b,s.lin[i].b,keep,add);
+                                                lerp(d.ln[i].g,s.ln[i].g,keep,add); lerp(d.ln[i].b,s.ln[i].b,keep,add); }
     lerp(d.fc4.W,s.fc4.W,keep,add); lerp(d.fc4.b,s.fc4.b,keep,add);
 }
 static void critic_lerp(Critic& d, const Critic& s, Real keep, Real add) {
     lerp(d.se_lin.W,s.se_lin.W,keep,add); lerp(d.se_lin.b,s.se_lin.b,keep,add); lerp(d.se_ln.g,s.se_ln.g,keep,add); lerp(d.se_ln.b,s.se_ln.b,keep,add);
     lerp(d.al_lin.W,s.al_lin.W,keep,add); lerp(d.al_lin.b,s.al_lin.b,keep,add); lerp(d.al_ln.g,s.al_ln.g,keep,add); lerp(d.al_ln.b,s.al_ln.b,keep,add);
-    lerp(d.pl_lin.W,s.pl_lin.W,keep,add); lerp(d.pl_lin.b,s.pl_lin.b,keep,add); lerp(d.pl_ln.g,s.pl_ln.g,keep,add); lerp(d.pl_ln.b,s.pl_ln.b,keep,add);
+    for (size_t i = 0; i < s.pl_lin.size(); ++i) { lerp(d.pl_lin[i].W,s.pl_lin[i].W,keep,add); lerp(d.pl_lin[i].b,s.pl_lin[i].b,keep,add);
+                                                   lerp(d.pl_ln[i].g,s.pl_ln[i].g,keep,add); lerp(d.pl_ln[i].b,s.pl_ln[i].b,keep,add); }
     lerp(d.fc4.W,s.fc4.W,keep,add); lerp(d.fc4.b,s.fc4.b,keep,add);
 }
 
@@ -27,7 +28,7 @@ static inline Real gate(Real q_raw, Real s_minus_k, double c, double g, double q
     if (c == 0.0) return q_raw;
     Real payoff = std::max(s_minus_k, (Real)0);
     if (g == 1.0) return (payoff > (Real)c) ? q_raw : (Real)0;
-    Real qa = std::pow(payoff/(Real)std::max(c,1e-9), (Real)(1.0/(g-1.0)));
+    Real qa = (Real)foc_qstar((double)payoff/std::max(c,1e-9), g);
     Real qn = std::clamp((qa-(Real)qmin)/(Real)(qmax-qmin), (Real)0, (Real)1e9);
     return std::min(q_raw, qn);
 }
@@ -38,14 +39,46 @@ static void he_init(Linear& L, Rng& rng, double gain) {
     for (auto& w : L.W) w = (Real)(rng.normal() * std_);
     std::fill(L.b.begin(), L.b.end(), Real(0));
 }
-static void fc_out_init(Linear& L, Rng& rng) {
-    for (auto& w : L.W) w = (Real)((rng.uniform()*2.0 - 1.0) * 3e-3);
+static void fc_out_init(Linear& L, Rng& rng, double scale = 3e-3) {
+    for (auto& w : L.W) w = (Real)((rng.uniform()*2.0 - 1.0) * scale);
     std::fill(L.b.begin(), L.b.end(), Real(0));
+}
+
+// TRUE (semi-)orthogonal init via modified Gram-Schmidt — the dynamical-isometry init
+// (Saxe; "All you need is a good init"). The existing he_init is iid-Gaussian (mis-named
+// "orthogonal"); this de-correlates the layer's rows/cols so W is norm-preserving.
+// For W[out,in]: orthonormalize k=min(out,in) Gaussian vectors in R^{max(out,in)}, place
+// them as rows (out<=in) or columns (out>in), then scale by `gain`.
+static void orthogonal_init(Linear& L, Rng& rng, double gain) {
+    const int out = L.out, in = L.in;
+    const int d = std::max(out, in), k = std::min(out, in);
+    std::vector<std::vector<double>> v(k, std::vector<double>(d));
+    for (int i = 0; i < k; ++i) for (int j = 0; j < d; ++j) v[i][j] = rng.normal();
+    // modified Gram-Schmidt
+    for (int i = 0; i < k; ++i) {
+        for (int p = 0; p < i; ++p) {
+            double dot = 0; for (int j = 0; j < d; ++j) dot += v[i][j]*v[p][j];
+            for (int j = 0; j < d; ++j) v[i][j] -= dot*v[p][j];
+        }
+        double nrm = 0; for (int j = 0; j < d; ++j) nrm += v[i][j]*v[i][j];
+        nrm = std::sqrt(std::max(nrm, 1e-30));
+        for (int j = 0; j < d; ++j) v[i][j] /= nrm;
+    }
+    std::fill(L.b.begin(), L.b.end(), Real(0));
+    if (out <= in)  // rows orthonormal: W[i][:] = gain * v[i]
+        for (int i = 0; i < out; ++i) for (int j = 0; j < in; ++j) L.W[(size_t)i*in+j] = (Real)(gain*v[i][j]);
+    else            // columns orthonormal: W[:,j] = gain * v[j]
+        for (int i = 0; i < out; ++i) for (int j = 0; j < in; ++j) L.W[(size_t)i*in+j] = (Real)(gain*v[j][i]);
 }
 
 Agent::Agent(const AgentConfig& cfg, const SwingContract& c, const HHKParams& hhk,
              const TransitionKernel& kernel, uint64_t seed)
-    : cfg_(cfg), c_(c), hhk_(hhk), kernel_(kernel), rng_(seed) {
+    : cfg_(cfg), c_(c), hhk_(hhk), kernel_(kernel), rng_(seed),
+      actor_local_ (cfg.hidden_actor  > 0 ? cfg.hidden_actor  : cfg.hidden, cfg.actor_layers),
+      actor_target_(cfg.hidden_actor  > 0 ? cfg.hidden_actor  : cfg.hidden, cfg.actor_layers),
+      actor_ema_   (cfg.hidden_actor  > 0 ? cfg.hidden_actor  : cfg.hidden, cfg.actor_layers),
+      critic_local_ (cfg.hidden_critic > 0 ? cfg.hidden_critic : cfg.hidden, cfg.critic_layers),
+      critic_target_(cfg.hidden_critic > 0 ? cfg.hidden_critic : cfg.hidden, cfg.critic_layers) {
 
     init_orthogonal(seed);
 
@@ -76,15 +109,23 @@ Agent::Agent(const AgentConfig& cfg, const SwingContract& c, const HHKParams& hh
 
 void Agent::init_orthogonal(uint64_t seed) {
     Rng r(seed ^ 0xABCDEF01ULL);
-    const double gain = std::sqrt(2.0);   // SiLU
-    he_init(actor_local_.lin[0], r, gain);
-    he_init(actor_local_.lin[1], r, gain);
-    he_init(actor_local_.lin[2], r, gain);
-    fc_out_init(actor_local_.fc4, r);
-    he_init(critic_local_.se_lin, r, gain);
-    he_init(critic_local_.al_lin, r, gain);
-    he_init(critic_local_.pl_lin, r, gain);
-    fc_out_init(critic_local_.fc4, r);
+    const double gain = (cfg_.init_gain > 0) ? cfg_.init_gain : std::sqrt(2.0);   // SiLU default
+    const double a_out = (cfg_.actor_out_init  >= 0) ? cfg_.actor_out_init  : 3e-3;
+    const double c_out = (cfg_.critic_out_init >= 0) ? cfg_.critic_out_init : 3e-3;
+    // H-I3: hidden-layer init method. He (0, current/iid-Gaussian) preserved bit-identical;
+    // orthogonal (1) and Xavier (2) only change the hidden weights, not the fc4 / RNG-for-data.
+    auto hidden = [&](Linear& L) {
+        if      (cfg_.init_method == 1) orthogonal_init(L, r, gain);
+        else if (cfg_.init_method == 2) he_init(L, r, std::sqrt(2.0*L.in/(double)(L.in+L.out))); // Xavier: he_init std=gain/sqrt(in)=sqrt(2/(in+out))
+        else                            he_init(L, r, gain);
+    };
+    // Draw order preserved (lin[0..],fc4 ; se,al,pl[0..],fc4) so He (default) is bit-identical to v64.
+    for (size_t i = 0; i < actor_local_.lin.size(); ++i) hidden(actor_local_.lin[i]);
+    fc_out_init(actor_local_.fc4, r, a_out);
+    hidden(critic_local_.se_lin);
+    hidden(critic_local_.al_lin);
+    for (size_t i = 0; i < critic_local_.pl_lin.size(); ++i) hidden(critic_local_.pl_lin[i]);
+    fc_out_init(critic_local_.fc4, r, c_out);
 }
 
 void Agent::load_weights(const double* actor_flat, const double* critic_flat) {
@@ -132,8 +173,74 @@ Real Agent::act_single(const Real* state, bool add_noise) {
   #define PROF_ADD(acc)
 #endif
 
-void Agent::learn_step() {
+// ---- R9/H-R1: ELM critic readout via ridge regression --------------------
+// In-house Cholesky solve of an SPD P×P system (P=H+1 ≤ 65); overwrites A with its
+// factor and b with the solution. Returns false if A is not positive-definite.
+static bool chol_solve(std::vector<double>& A, std::vector<double>& b, int P) {
+    for (int i = 0; i < P; ++i) {
+        for (int j = 0; j <= i; ++j) {
+            double s = A[(size_t)i*P+j];
+            for (int k = 0; k < j; ++k) s -= A[(size_t)i*P+k]*A[(size_t)j*P+k];
+            if (i == j) { if (s <= 0) return false; A[(size_t)i*P+i] = std::sqrt(s); }
+            else A[(size_t)i*P+j] = s / A[(size_t)j*P+j];
+        }
+    }
+    for (int i = 0; i < P; ++i) {                 // forward solve L y = b
+        double s = b[i];
+        for (int k = 0; k < i; ++k) s -= A[(size_t)i*P+k]*b[k];
+        b[i] = s / A[(size_t)i*P+i];
+    }
+    for (int i = P-1; i >= 0; --i) {              // back solve L^T x = y
+        double s = b[i];
+        for (int k = i+1; k < P; ++k) s -= A[(size_t)k*P+i]*b[k];
+        b[i] = s / A[(size_t)i*P+i];
+    }
+    return true;
+}
+
+void Agent::elm_update_readout() {
     const int B = cfg_.batch;
+    const int H = critic_local_.H;
+    const int P = H + 1;                                 // [features, bias]
+    if ((int)elm_A_.size() != P*P) { elm_A_.assign((size_t)P*P, 0.0); elm_c_.assign(P, 0.0); }
+    const Real* phi = critic_local_.last_features();     // B×H, filled by the forward above
+    const double rho = cfg_.elm_forget, invB = 1.0 / B;
+    for (double& a : elm_A_) a *= rho;                   // exponential forgetting (track moving target)
+    for (double& c : elm_c_) c *= rho;
+    for (int b = 0; b < B; ++b) {                        // A += (1/B) Σ f fᵀ ,  c += (1/B) Σ f·y
+        const Real* p = phi + (size_t)b*H;
+        const double y = qtgt_[b];
+        for (int i = 0; i < H; ++i) {
+            const double fi = invB * (double)p[i];
+            double* Ai = elm_A_.data() + (size_t)i*P;
+            for (int j = 0; j < H; ++j) Ai[j] += fi * (double)p[j];
+            Ai[H] += fi;                                 // feature × bias
+            elm_c_[i] += fi * y;
+        }
+        double* AH = elm_A_.data() + (size_t)H*P;        // bias row
+        for (int j = 0; j < H; ++j) AH[j] += invB * (double)p[j];
+        AH[H] += invB;                                   // bias × bias
+        elm_c_[H] += invB * y;
+    }
+    std::vector<double> M = elm_A_, w = elm_c_;          // solve (A+λI) w = c on a copy
+    const double lam = cfg_.elm_ridge;
+    for (int i = 0; i < P; ++i) M[(size_t)i*P+i] += lam;
+    if (!chol_solve(M, w, P)) return;                    // keep previous readout if ill-conditioned
+    std::vector<Real> wf(H);
+    for (int i = 0; i < H; ++i) wf[i] = (Real)w[i];
+    critic_local_.set_readout(wf.data(), (Real)w[H]);
+}
+
+void Agent::learn_step(bool refresh_target) {
+    const int B = cfg_.batch;
+
+    // ---- sample minibatch + kernel target ----
+    // H-C1 (stale-target reuse): when refresh_target=false the previous minibatch
+    // (sb_/ab_/rb_/nsb_/db_) and its target (qtgt_) are reused for another critic+actor
+    // update.  Sound because the target nets are frozen within an interaction's learn
+    // group (they only soft-update at end of each step by tau=0.0032), so recomputing
+    // would barely move the target — we skip the dominant kernel-target forward instead.
+    if (refresh_target) {
     replay_.sample(B, rng_, sb_.data(), ab_.data(), rb_.data(), nsb_.data(), db_.data());
 
     // ---- target ----
@@ -148,14 +255,21 @@ void Agent::learn_step() {
     for (int i = 0; i < B; ++i)
         qtgt_[i] = rb_[i] + (Real)cfg_.gamma * qnext_[i] * (Real(1) - db_[i]);
     PROF_ADD(prof_kernel); }
+    }
 
     // ---- critic step ----
     { PROF_T0;
-    critic_local_.forward(sb_.data(), ab_.data(), B, qexp_.data());
-    for (int i = 0; i < B; ++i) dq_[i] = (Real)(2.0/B) * (qexp_[i] - qtgt_[i]);
-    critic_local_.zero_grad();
-    critic_local_.backward(dq_.data(), B);
-    opt_c_.step();
+    if (cfg_.elm_critic) {
+        // R9/H-R1: forward fills the random-feature map; ridge-solve the readout in closed form.
+        critic_local_.forward(sb_.data(), ab_.data(), B, qexp_.data());
+        elm_update_readout();
+    } else {
+        critic_local_.forward(sb_.data(), ab_.data(), B, qexp_.data());
+        for (int i = 0; i < B; ++i) dq_[i] = (Real)(2.0/B) * (qexp_[i] - qtgt_[i]);
+        critic_local_.zero_grad();
+        critic_local_.backward(dq_.data(), B);
+        opt_c_.step();
+    }
     PROF_ADD(prof_critic); }
 
     // ---- actor step (after critic warmup) ----
@@ -164,12 +278,27 @@ void Agent::learn_step() {
         actor_local_.forward(sb_.data(), B, apred_.data());
         critic_local_.forward(sb_.data(), apred_.data(), B, qval_.data());
         std::fill(dqv_.begin(), dqv_.end(), (Real)(-1.0/B));   // d(-mean q)/dq
-        critic_local_.backward(dqv_.data(), B, dqa_.data());   // grad wrt action (critic grads discarded)
+        // H-S6: only the action gradient is consumed here; skip the discarded critic
+        // param grads (and the dead state-encoder branch). Bit-identical, cheaper.
+        critic_local_.backward(dqv_.data(), B, dqa_.data(), /*accum_params=*/false);
         actor_local_.zero_grad();
         actor_local_.backward(dqa_.data(), B);
         opt_a_.step();
         actor_lerp(actor_target_, actor_local_, (Real)(1.0-cfg_.tau), (Real)cfg_.tau);
-        actor_lerp(actor_ema_, actor_local_, (Real)cfg_.ema_decay, (Real)(1.0-cfg_.ema_decay));
+        // Eval-actor weight averaging (H-N4): EMA (default) or SWA equal-weight tail average.
+        if (cfg_.weight_avg == 1) {                       // SWA
+            if (episode_count_ < swa_start_) {
+                actor_ema_.copy_from(actor_local_);        // track local until the SWA window opens
+            } else if (swa_count_ == 0) {
+                actor_ema_.copy_from(actor_local_); swa_count_ = 1;
+            } else {
+                Real nn = (Real)swa_count_;
+                actor_lerp(actor_ema_, actor_local_, nn/(nn+1), (Real)1/(nn+1));
+                swa_count_++;
+            }
+        } else {                                          // EMA (canonical)
+            actor_lerp(actor_ema_, actor_local_, (Real)cfg_.ema_decay, (Real)(1.0-cfg_.ema_decay));
+        }
         PROF_ADD(prof_actor);
     }
     // ---- critic soft update (always, at end) ----
@@ -181,6 +310,8 @@ void Agent::learn_step() {
 void Agent::train(const Paths& tp, int n_episodes) {
     noise_decay_episodes_ = n_episodes;
     total_steps_ = 0;
+    swa_start_ = (cfg_.swa_start >= 0) ? cfg_.swa_start : (int)(0.75 * n_episodes);  // H-N4
+    swa_count_ = 0;
     Real next_obs[STATE_DIM];
     std::vector<Real> s(STATE_DIM);
     for (int ep = 1; ep <= n_episodes; ++ep) {
@@ -199,12 +330,61 @@ void Agent::train(const Paths& tp, int n_episodes) {
             replay_.add(s.data(), a, (Real)reward, next_obs, term);
             if (replay_.size() >= cfg_.min_replay && replay_.size() > cfg_.batch &&
                 (total_steps_ % cfg_.learn_every == 0)) {
-                for (int k = 0; k < cfg_.learn_number; ++k) learn_step();
+                // H-C1: refresh the minibatch+target only on the first inner step when reuse_target.
+                for (int k = 0; k < cfg_.learn_number; ++k)
+                    learn_step(/*refresh_target=*/!cfg_.reuse_target || k == 0);
             }
             std::copy(next_obs, next_obs+STATE_DIM, s.data());
             (void)before;
             if (term) break;
         }
+    }
+}
+
+// ---- R10/H-R2: critic-free direct-policy REINFORCE (likelihood-ratio) ----
+// Treats the actor's pre-squash exploration as a Gaussian policy on the mean u_θ(s):
+// the sampled pre-activation is u' = u + σ_eff·ε, so ∇_θ log π(u') = (ε/σ_eff)·∂u/∂θ.
+// REINFORCE with a moving-average return baseline; no critic, no kernel target.
+void Agent::train_direct_policy(const Paths& tp, int n_episodes) {
+    noise_decay_episodes_ = n_episodes;
+    double baseline = 0.0; const double bl_decay = 0.99; bool bl_init = false;
+    std::vector<Real> states; std::vector<Real> eps_sig; std::vector<double> rewards;
+    std::vector<Real> tmp_u, du;
+    Real s[STATE_DIM], u1;
+    for (int ep = 1; ep <= n_episodes; ++ep) {
+        episode_count_ = ep;
+        int pidx = (ep - 1) % tp.n_paths;
+        const Real* Sr = tp.Srow(pidx); const Real* Xr = tp.Xrow(pidx); const Real* Yr = tp.Yrow(pidx);
+        EpisodeState es; build_obs(c_, Sr, Xr, Yr, es, s);
+        states.clear(); eps_sig.clear(); rewards.clear();
+        const double sigma = pre_noise_sigma();
+        while (true) {
+            actor_local_.forward_preact(s, 1, &u1);
+            double scale = 1.0 + cfg_.adaptive_noise_scale * std::abs((double)u1);
+            double seff = sigma * scale;
+            double eps = rng_.normal();
+            Real u_sample = u1 + (Real)(seff > 0 ? seff * eps : 0.0);
+            Real qraw = sigmoidf(ACTOR_BETA * u_sample);
+            Real q = std::clamp(gate(qraw, s[0], c_.c_cost, c_.gamma_cost, c_.q_min, c_.q_max), (Real)0, (Real)1);
+            for (int d = 0; d < STATE_DIM; ++d) states.push_back(s[d]);
+            eps_sig.push_back((Real)(seff > 0 ? eps / seff : 0.0));   // ∂logπ/∂u at the mean
+            bool term = false; double r = env_step(c_, Sr, q, es, &term);
+            rewards.push_back(r);
+            build_obs(c_, Sr, Xr, Yr, es, s);
+            if (term) break;
+        }
+        int T = (int)rewards.size();
+        double R = 0; for (double r : rewards) R += r;            // rewards already discounted
+        double adv = bl_init ? (R - baseline) : 0.0;
+        baseline = bl_init ? bl_decay * baseline + (1 - bl_decay) * R : R; bl_init = true;
+        if (T == 0) continue;
+        tmp_u.resize(T); du.resize(T);
+        actor_local_.forward_preact(states.data(), T, tmp_u.data());  // repopulate caches at B=T
+        for (int t = 0; t < T; ++t) du[t] = (Real)(-(adv / T) * (double)eps_sig[t]);  // ascend J ⇒ descend -J
+        actor_local_.zero_grad();
+        actor_local_.backward_from_u(du.data(), T);
+        opt_a_.step();
+        actor_lerp(actor_ema_, actor_local_, (Real)cfg_.ema_decay, (Real)(1.0 - cfg_.ema_decay));
     }
 }
 
@@ -282,8 +462,12 @@ void Agent::bench_prepare(const Paths& tp) {
 }
 
 double Agent::bench_learn(int K) {
+    // Mirror the train loop's refresh cadence so H-C1 (reuse_target) is benchmarked
+    // faithfully: refresh the minibatch+target only at the start of each learn_number group.
+    const int ln = std::max(1, cfg_.learn_number);
     auto t0 = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < K; ++i) learn_step();
+    for (int i = 0; i < K; ++i)
+        learn_step(/*refresh_target=*/!cfg_.reuse_target || (i % ln == 0));
     auto t1 = std::chrono::high_resolution_clock::now();
     return std::chrono::duration<double>(t1 - t0).count();
 }
@@ -306,7 +490,7 @@ void Agent::calibrate_bias(const Paths& w) {
                 double q = std::clamp(q_prop, c_.q_min, c_.q_max);
                 q = std::min(q, c_.Q_max - es[b].q_exercised);
                 double spot = w.Srow(b)[std::min(step,c_.n_rights-1)];
-                double net = q*std::max(spot-c_.strike,0.0) - c_.c_cost*std::pow(q,c_.gamma_cost);
+                double net = q*std::max(spot-c_.strike,0.0) - c_.c_cost*cost_pow(q,c_.gamma_cost);
                 if (net <= 0.0) q = 0.0;
                 es[b].q_exercised += q;
                 if (q > 1e-6) es[b].last_exercise_step = step;
@@ -337,7 +521,7 @@ void Agent::calibrate_bias(const Paths& w) {
             if (c_.c_cost <= 0.0) qstar = (Sr[k] > c_.strike) ? c_.q_max : c_.q_min;
             else if (std::abs(c_.gamma_cost-1.0) < 1e-9) qstar = (itm > c_.c_cost) ? c_.q_max : c_.q_min;
             else { double cg = std::max(c_.c_cost*c_.gamma_cost, 1e-12);
-                   qstar = std::clamp(std::pow(itm/cg, 1.0/(c_.gamma_cost-1.0)), c_.q_min, c_.q_max); }
+                   qstar = std::clamp(foc_qstar(itm/cg, c_.gamma_cost), c_.q_min, c_.q_max); }
             sum_a += (qstar - c_.q_min)/denom; ++cnt;
         }
     }

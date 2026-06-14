@@ -45,13 +45,21 @@ TransitionKernel TransitionKernel::build_fast(const HHKParams& hhk, const SwingC
     // Gauss-Hermite (probabilist) M_x=2: nodes ±1, weights 0.5.
     if (kp.M_x == 2) { k.z_X = {-1.0, 1.0}; k.w_X = {0.5, 0.5}; }
     else throw std::runtime_error("build_fast only supports M_x=2; supply a mesh file");
-    // Jump mesh, N_max=1: node0 = no jump; node1 = conditional mean increment.
     double rate = hhk.lam * dt;
-    double pmf0 = std::exp(-rate), pmf1 = pmf0 * rate;
-    double tail = 1.0 - (pmf0 + pmf1); if (tail > 0) pmf1 += tail;
     double Edecay = (1.0 - std::exp(-hhk.beta*dt)) / (hhk.beta*dt);  // E[exp(-beta(dt-U))]
-    double d1 = hhk.mu_J * Edecay;
-    k.delta_Y = {0.0, d1}; k.w_Y = {pmf0, pmf1};
+    if (kp.N_max <= 0) {
+        // H-K1: M_y=1 — fold the *unconditional* mean jump increment into a single
+        // deterministic Y node. E[ΔY_jump] = E[N]·E[J]·E[decay] = (λdt)·μ_J·Edecay.
+        // Halves the mesh (M=4→2) and the kernel-target GEMM rows.
+        double mean_incr = rate * hhk.mu_J * Edecay;
+        k.delta_Y = {mean_incr}; k.w_Y = {1.0};
+    } else {
+        // N_max=1: node0 = no jump; node1 = conditional mean increment.
+        double pmf0 = std::exp(-rate), pmf1 = pmf0 * rate;
+        double tail = 1.0 - (pmf0 + pmf1); if (tail > 0) pmf1 += tail;
+        double d1 = hhk.mu_J * Edecay;
+        k.delta_Y = {0.0, d1}; k.w_Y = {pmf0, pmf1};
+    }
     k.exp_f_grid.assign(c.n_rights + 1, 1.0);   // f == 0
     k.finalize();
     return k;

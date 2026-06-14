@@ -12,6 +12,7 @@ endif()
 option(CPP_PRICER_FP64 "Build in double precision (for gradient/parity checks)" OFF)
 option(CPP_PRICER_ACCELERATE "Link Apple Accelerate BLAS for the layer GEMMs" ON)
 option(CPP_PRICER_NATIVE "Tune for the host CPU (-mcpu=apple-m1 / -march=native)" ON)
+option(PRICER_PROFILE "Emit the per-block learn-step timing split in bench_train" OFF)
 
 # ---- Optimization flags --------------------------------------------------
 add_library(pricer_flags INTERFACE)
@@ -27,6 +28,9 @@ if(CPP_PRICER_NATIVE)
 endif()
 if(CPP_PRICER_FP64)
   target_compile_definitions(pricer_flags INTERFACE CPP_PRICER_FP64=1)
+endif()
+if(PRICER_PROFILE)
+  target_compile_definitions(pricer_flags INTERFACE PRICER_PROFILE=1)
 endif()
 
 find_package(Threads REQUIRED)
@@ -67,3 +71,8 @@ add_test(NAME sim COMMAND test_sim)
 add_executable(test_grad tests/test_grad.cpp)
 target_link_libraries(test_grad PRIVATE pricer_core)
 add_test(NAME grad COMMAND test_grad ${PRICER_DATA})
+
+# Fixture-free gradcheck of the runtime-depth nets (O2/H-N1/H-N2). No data needed.
+add_executable(test_grad_depth tests/test_grad_depth.cpp)
+target_link_libraries(test_grad_depth PRIVATE pricer_core)
+add_test(NAME grad_depth COMMAND test_grad_depth)
