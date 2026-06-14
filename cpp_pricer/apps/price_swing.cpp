@@ -9,6 +9,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <fstream>
 #include <sys/resource.h>
 
 using namespace pricer;
@@ -33,7 +34,10 @@ int main(int argc, char** argv) {
     int threads = (int)std::thread::hardware_concurrency();
     if (threads <= 0) threads = 4;
     std::string kernel_path = "data/kernel_v64.bin";
+    std::string trace_path;   // if set, dump per-(path,step) eval trace as a binary blob for NB6
+    std::string eval_paths_out; // if set, dump the eval S/X/Y paths so Python LSM prices the SAME set
     bool quiet = false;
+    bool kernel_off = false;   // NB3/Hedging "RL (no kernel)": empty mesh => single-sample TD target
     int n_max = 0;   // H-K1 canonical: M_y=1 (jump folded into mean). --n_max 1 reproduces old M=4.
     int hidden = H_DEFAULT;   // R5/H-A1: hidden width. 64 = v64 canonical.
     int hidden_actor = -1;    // H-W1: per-net actor width (-1 => use --hidden)
@@ -64,6 +68,9 @@ int main(int argc, char** argv) {
         else if (a == "--eval_batch") eval_batch = std::stoi(next());
         else if (a == "--threads") threads = std::stoi(next());
         else if (a == "--kernel") kernel_path = next();
+        else if (a == "--trace") trace_path = next();
+        else if (a == "--dump_eval_paths") eval_paths_out = next();
+        else if (a == "--kernel_off") kernel_off = true;
         else if (a == "--n_max") n_max = std::stoi(next());
         else if (a == "--hidden") hidden = std::stoi(next());
         else if (a == "--hidden_actor") hidden_actor = std::stoi(next());
@@ -103,11 +110,13 @@ int main(int argc, char** argv) {
     if (c_cost >= 0) c.c_cost = c_cost;          // cross-regime cost override
     if (gamma_cost >= 0) c.gamma_cost = gamma_cost;
 
-    TransitionKernel kernel;
-    try { kernel = TransitionKernel::load(kernel_path); }
-    catch (...) {
-        if (!quiet) std::fprintf(stderr, "[warn] no kernel mesh at %s; building fast mesh in C++\n", kernel_path.c_str());
-        kernel = TransitionKernel::build_fast(hhk, c, kp);
+    TransitionKernel kernel;   // default => M()==0 => single-sample TD (kernel-off)
+    if (!kernel_off) {
+        try { kernel = TransitionKernel::load(kernel_path); }
+        catch (...) {
+            if (!quiet) std::fprintf(stderr, "[warn] no kernel mesh at %s; building fast mesh in C++\n", kernel_path.c_str());
+            kernel = TransitionKernel::build_fast(hhk, c, kp);
+        }
     }
 
     AgentConfig cfg; cfg.n_threads = threads; cfg.hidden = hidden;
@@ -154,8 +163,35 @@ int main(int argc, char** argv) {
     simulate_hhk(hhk, c, n_eval, seed + 777, /*stratify*/false, 0, threads, eval_paths);
     auto t_sim_eval = clk::now();
 
-    EvalResult res = agent.evaluate(eval_paths, eval_batch);
+    // Dump the eval S/X/Y so the Python LSM can price the IDENTICAL OOS set (valid per-path
+    // RL-vs-LSM merge in NB6). Layout: int32 magic('SXYP'), n_paths, T, then float32 S,X,Y [n*T].
+    if (!eval_paths_out.empty()) {
+        std::ofstream f(eval_paths_out, std::ios::binary);
+        int32_t magic = 0x53585950 /*'SXYP'*/, np = eval_paths.n_paths, tt = eval_paths.T;
+        f.write((char*)&magic, 4); f.write((char*)&np, 4); f.write((char*)&tt, 4);
+        size_t sz = (size_t)np * tt;
+        f.write((char*)eval_paths.S.data(), sz*sizeof(Real));
+        f.write((char*)eval_paths.X.data(), sz*sizeof(Real));
+        f.write((char*)eval_paths.Y.data(), sz*sizeof(Real));
+    }
+
+    EvalTrace trace;
+    EvalResult res = agent.evaluate(eval_paths, eval_batch, trace_path.empty() ? nullptr : &trace);
     auto t2 = clk::now();
+
+    // Per-(path,step) trace blob for the analysis notebooks (NB6). Layout:
+    //   int32 magic('SWTR'), int32 n_paths, int32 T, then 4 float32[n_paths*T] arrays
+    //   in order q, reward, cost(undisc.), gross(undisc.). Python: tools/cpp_trace_to_parquet.py
+    if (!trace_path.empty()) {
+        std::ofstream f(trace_path, std::ios::binary);
+        int32_t magic = 0x53575452 /*'SWTR'*/, np = trace.n_paths, tt = trace.T;
+        f.write((char*)&magic, 4); f.write((char*)&np, 4); f.write((char*)&tt, 4);
+        size_t sz = (size_t)np * tt;
+        f.write((char*)trace.q.data(),      sz*sizeof(float));
+        f.write((char*)trace.reward.data(), sz*sizeof(float));
+        f.write((char*)trace.cost.data(),   sz*sizeof(float));
+        f.write((char*)trace.gross.data(),  sz*sizeof(float));
+    }
 
     double t_zero_to_4k = secs(t0, t1);
     double t_4k_to_65k  = secs(t1, t2);
@@ -166,6 +202,7 @@ int main(int argc, char** argv) {
         "  \"ci95\": %.6f,\n"
         "  \"std\": %.6f,\n"
         "  \"avg_exercised\": %.4f,\n"
+        "  \"bangbang\": %.6f,\n"
         "  \"seed\": %llu,\n"
         "  \"n_train\": %d,\n"
         "  \"n_eval\": %d,\n"
@@ -184,7 +221,7 @@ int main(int argc, char** argv) {
         "  \"t_4k_to_65k\": %.4f,\n"
         "  \"t_total\": %.4f\n"
         "}\n",
-        res.price, res.ci95, res.std, res.avg_exercised,
+        res.price, res.ci95, res.std, res.avg_exercised, res.bangbang,
         (unsigned long long)seed, n_train, n_eval, hidden, actor_layers, critic_layers, threads,
         (sizeof(Real)==8 ? "fp64" : "fp32"),
         secs(t0, t_sim_train), secs(t_sim_train, t_calib), secs(t_calib, t1), cpu_train,

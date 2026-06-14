@@ -55,7 +55,20 @@ struct AgentConfig {
     double elm_forget = 0.99;   // forgetting factor on the running Phi^T Phi accumulator
 };
 
-struct EvalResult { double price; double ci95; double std; double avg_exercised; };
+struct EvalResult { double price; double ci95; double std; double avg_exercised; double bangbang; };
+
+// Optional per-(path,step) capture for the analysis notebooks (NB6). Row-major [path*T + step].
+// q = post-gate exercised qty; reward = discounted net; cost = undiscounted c*q^gamma;
+// gross = undiscounted q*(S-K)+.  Steps after early termination stay 0 (NB6 reindexes with 0).
+struct EvalTrace {
+    int n_paths = 0, T = 0;
+    std::vector<float> q, reward, cost, gross;
+    void init(int n, int t) {
+        n_paths = n; T = t;
+        size_t sz = (size_t)n * t;
+        q.assign(sz, 0.f); reward.assign(sz, 0.f); cost.assign(sz, 0.f); gross.assign(sz, 0.f);
+    }
+};
 
 class Agent {
 public:
@@ -66,7 +79,7 @@ public:
     void train(const Paths& train_paths, int n_episodes);     // 0 -> n_episodes
     // R10/H-R2: critic-free likelihood-ratio (REINFORCE) direct-policy trainer (Warin-style).
     void train_direct_policy(const Paths& train_paths, int n_episodes);
-    EvalResult evaluate(const Paths& eval_paths, int eval_batch);
+    EvalResult evaluate(const Paths& eval_paths, int eval_batch, EvalTrace* trace = nullptr);
 
     // Load PyTorch-exported weights into local+target (for parity tests).
     void load_weights(const double* actor_flat, const double* critic_flat);
@@ -77,6 +90,7 @@ public:
     double prof_kernel=0, prof_critic=0, prof_actor=0, prof_soft=0;  // accumulated seconds
 
     Actor& actor_local_ref() { return actor_local_; }
+    Actor& actor_eval_ref() { return actor_ema_; }   // EMA/SWA eval actor (used by evaluate + hedging)
     Critic& critic_local_ref() { return critic_local_; }
     Actor& actor_target_ref() { return actor_target_; }
     Critic& critic_target_ref() { return critic_target_; }

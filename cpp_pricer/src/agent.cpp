@@ -388,47 +388,65 @@ void Agent::train_direct_policy(const Paths& tp, int n_episodes) {
     }
 }
 
-EvalResult Agent::evaluate(const Paths& ep, int eval_batch) {
+EvalResult Agent::evaluate(const Paths& ep, int eval_batch, EvalTrace* trace) {
     const int n = ep.n_paths;
+    const int T = c_.n_rights;
     if (eval_batch > n) eval_batch = n;
     std::vector<double> returns(n, 0.0), exercised(n, 0.0);
     int nthreads = std::max(1, cfg_.n_threads);
+    if (trace) trace->init(n, T);
+    // Bang-bangness (matches rebuild_results_v7): among exercises with full remaining room
+    // (q_remaining >= q_max), the fraction with q >= 0.95*q_max. Per-thread accumulators.
+    std::vector<long> th_fullcap(nthreads, 0), th_bang(nthreads, 0);
 
-    auto worker = [&](int lo, int hi, Actor actor) {
+    auto worker = [&](int lo, int hi, Actor actor, int tid) {
+        long fullcap = 0, bang = 0;
         for (int start = lo; start < hi; start += eval_batch) {
             int B = std::min(eval_batch, hi - start);
             std::vector<EpisodeState> es(B);
             std::vector<char> done(B, 0);
             std::vector<Real> state((size_t)B*STATE_DIM), qg(B);
-            for (int step = 0; step < c_.n_rights; ++step) {
+            for (int step = 0; step < T; ++step) {
                 for (int b = 0; b < B; ++b)
                     build_obs(c_, ep.Srow(start+b), ep.Xrow(start+b), ep.Yrow(start+b), es[b],
                               state.data()+(size_t)b*STATE_DIM);
                 actor.forward(state.data(), B, qg.data());
                 for (int b = 0; b < B; ++b) {
                     if (done[b]) continue;
+                    double q_rem = c_.Q_max - es[b].q_exercised;   // room BEFORE this exercise
                     Real a = std::clamp(qg[b], (Real)0, (Real)1);
-                    bool term=false;
-                    double r = env_step(c_, ep.Srow(start+b), a, es[b], &term);
+                    bool term=false; double q=0, gross=0, cost=0;
+                    double r = env_step(c_, ep.Srow(start+b), a, es[b], &term, &q, &gross, &cost);
                     returns[start+b] += r;
+                    if (q > 1e-6 && q_rem >= c_.q_max - 1e-6) {
+                        ++fullcap;
+                        if (q >= 0.95 * c_.q_max) ++bang;
+                    }
+                    if (trace) {
+                        size_t idx = (size_t)(start+b) * T + step;
+                        trace->q[idx] = (float)q; trace->reward[idx] = (float)r;
+                        trace->cost[idx] = (float)cost; trace->gross[idx] = (float)gross;
+                    }
                     if (term) done[b] = 1;
                 }
             }
             for (int b = 0; b < B; ++b) exercised[start+b] = es[b].q_exercised;
         }
+        th_fullcap[tid] = fullcap; th_bang[tid] = bang;
     };
 
     if (nthreads == 1) {
-        worker(0, n, actor_ema_);
+        worker(0, n, actor_ema_, 0);
     } else {
         std::vector<std::thread> pool;
         int chunk = (n + nthreads - 1) / nthreads;
         // round chunk to multiple of eval_batch for clean batching
         chunk = ((chunk + eval_batch - 1) / eval_batch) * eval_batch;
+        int tid = 0;
         for (int t = 0; t < nthreads; ++t) {
             int lo = t*chunk, hi = std::min(n, lo+chunk);
             if (lo >= hi) break;
-            pool.emplace_back(worker, lo, hi, actor_ema_);
+            pool.emplace_back(worker, lo, hi, actor_ema_, tid++);
         }
         for (auto& th : pool) th.join();
     }
@@ -437,7 +455,10 @@ EvalResult Agent::evaluate(const Paths& ep, int eval_batch) {
     double var=0; for (double x : returns) { double d=x-mean; var += d*d; } var /= (n>1?(n-1):1);
     double sd = std::sqrt(var);
     double avg_ex=0; for (double x : exercised) avg_ex += x; avg_ex /= n;
-    return { mean, 1.96*sd/std::sqrt((double)n), sd, avg_ex };
+    long fullcap=0, bang=0;
+    for (int t=0;t<nthreads;++t){ fullcap+=th_fullcap[t]; bang+=th_bang[t]; }
+    double bb = (fullcap > 0) ? (double)bang / (double)fullcap : std::nan("");
+    return { mean, 1.96*sd/std::sqrt((double)n), sd, avg_ex, bb };
 }
 
 void Agent::bench_prepare(const Paths& tp) {

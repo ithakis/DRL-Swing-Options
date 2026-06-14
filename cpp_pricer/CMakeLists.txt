@@ -52,6 +52,9 @@ endif()
 add_executable(price_swing apps/price_swing.cpp)
 target_link_libraries(price_swing PRIVATE pricer_core)
 
+add_executable(hedge_swing apps/hedge_swing.cpp)
+target_link_libraries(hedge_swing PRIVATE pricer_core)
+
 # ---- Training micro-benchmark -------------------------------------------
 add_executable(bench_train bench/bench_train.cpp)
 target_link_libraries(bench_train PRIVATE pricer_core)

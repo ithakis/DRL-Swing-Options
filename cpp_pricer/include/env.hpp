@@ -57,8 +57,14 @@ inline double feasible_action(const SwingContract& c, double q_proposed, const E
 
 // One env step given normalized action a in [0,1]. Returns discounted reward and
 // advances ep. (Net-profitability gate applied: q forced to 0 if net<=0.)
+// Optional out-params (q_out, gross_out, cost_out) report the POST-GATE actual exercised
+// quantity and its UNDISCOUNTED gross payoff q*(S-K)+ and convex cost c*q^gamma — these are
+// the per-step columns the analysis notebooks (NB6) consume. They do not alter any control
+// flow, so passing them is bit-identical to the no-trace call.
 inline double env_step(const SwingContract& c, const Real* Srow, double a, EpisodeState& ep,
-                       bool* terminated = nullptr) {
+                       bool* terminated = nullptr,
+                       double* q_out = nullptr, double* gross_out = nullptr,
+                       double* cost_out = nullptr) {
     double q_proposed = c.denormalize_action(a);
     double q = feasible_action(c, q_proposed, ep);
     int step = ep.step;
@@ -67,8 +73,11 @@ inline double env_step(const SwingContract& c, const Real* Srow, double a, Episo
     double cost = c.c_cost * cost_pow(q, c.gamma_cost);
     double net = payoff - cost;
     double reward;
-    if (net <= 0.0) { q = 0.0; net = 0.0; reward = 0.0; }
+    if (net <= 0.0) { q = 0.0; net = 0.0; reward = 0.0; payoff = 0.0; cost = 0.0; }
     else reward = std::pow(c.discount_factor(), step) * net;
+    if (q_out)     *q_out = q;
+    if (gross_out) *gross_out = payoff;   // undiscounted q*(S-K)+ (post-gate)
+    if (cost_out)  *cost_out = cost;      // undiscounted c*q^gamma (post-gate)
     if (q > 1e-6) ep.last_exercise_step = step;
     ep.q_exercised += q;
     ep.step += 1;
