@@ -80,9 +80,20 @@ If you need to manually print or customize any other notebook to a PDF with hidd
 
 3. **Convert modern HTML to PDF using a headless chromium browser print engine:**
    ```bash
-   # On macOS
-   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu --color-scheme=light --print-to-pdf="path/to/output.pdf" "path/to/notebook.html"
+   # On macOS — the --virtual-time-budget flag is REQUIRED for MathJax/KaTeX to finish
+   # rendering equations before Chrome prints; without it, equations appear as raw LaTeX source
+   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu --color-scheme=light --virtual-time-budget=10000 --print-to-pdf="path/to/output.pdf" "path/to/notebook.html"
    ```
+
+   > **Why `--virtual-time-budget=10000`?** Chrome's `--print-to-pdf` fires before MathJax finishes
+   > its asynchronous rendering pass. The virtual-time-budget allocates 10 seconds of simulated
+   > execution time so all JS (including MathJax type-setting) completes before the PDF is written.
+   > Without this flag, all `$$...$$` and `$...$` blocks appear as unrendered LaTeX source text.
+
+   > **Note on the LaTeX route (`nbconvert --to pdf`):** This route is currently broken on this
+   > machine — `tcolorbox 6.10.0` (2026) in `~/Library/texmf` calls `\NewStructureName` which
+   > requires a bleeding-edge LaTeX kernel not shipped in stable TeX Live 2025. Use the
+   > Chrome+`--virtual-time-budget` pipeline above instead.
 
 4. **Clean up:** Delete the intermediate `.html` file after the PDF has been successfully written on the disk.
 

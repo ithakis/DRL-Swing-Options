@@ -1156,4 +1156,78 @@ artifacts and the raw `findings.csv` was not retained (this summary is the recor
 
 ---
 
+### v65: C++ NN-Architecture Round-2 — the activation breakthrough (June 2026)
+
+Conducted in `cpp_pricer/` (the v64 kernel-on C++ port) on the adopted **a2c4/w48** net. Re-opened the
+levers the Round-1 plan had dismissed by *argument* not measurement: **activation, initialization, batch
+size, learning rates, actor/critic RL space, and non-NN estimators.** All paired-CRN; new test protocol:
+parallel runs, **4 threads each**, **load-independent `cpu_train`** (getrusage user-sec, robust to CPU
+contention; wall-clock only for idle headline timing), and validation **across all 3 cost regimes**
+(nocost c=0 / linear γ=1 / convex γ=2). Cheap screen (1 difficult config + 8 seeds) → winners re-tested at
+3 regimes × 15 seeds. Tooling: `tools/research_equiv.py` (TOST + 1-sided superiority + Pitman-Morgan +
+bootstrap std-ratio; **fixed** a wrong-for-small-t incomplete-beta CF and an inverted variance label),
+`tools/drive_*.sh`. New flags (all default-bit-identical): `--c_cost/--gamma_cost`, `--hidden_actor/
+--hidden_critic`, `--init_method` (0 He/1 orthogonal/2 Xavier), `--batch/--lr_a/--lr_c/--tau/--noise_*/
+--adaptive_noise_scale/--critic_warmup/--ema_decay`; swish-slope via `-DPRICER_GELU_FAST -DGELU_SLOPE=β`.
+
+**★ Headline — activation is a real, significant accuracy lever (Round-1 "GELU≈SiLU wash" was WRONG).**
+Generalized the hidden activation to **swish-with-slope g(x)=x·σ(β·x)** (β=1 ⇒ SiLU, β≈1.702 ⇒ GELU,
+β→∞ ⇒ ReLU). There is an **interior optimum at β≈3.0**, well above SiLU, and it is the **only lever in
+either round that raises accuracy without widening seed variance.** β-sweep (focal, 8s, t4):
+SiLU < 1.4 < 1.702 < 2.0 < 2.5 < **3.0 (+0.0044, t=10.25)** > 3.5. erf-form GELU = same gain but 3.7×
+slower (std::erf) ⇒ use the cheap sigmoid form (reuses fast_expf, ~+3% compute). FP64 gradcheck PASS.
+**Cross-regime (β=3, 15s, t4): significant in ALL THREE** — nocost +0.00095 (p=0.033), γ1 +0.00065
+(p=0.025), γ2 +0.00327 (p=0.0002); largest where the exercise boundary is sharpest. Real, not bias: OOS
+price = mean discounted payoff, convex cost penalizes over-exercise, so ↑price ⇒ strictly better policy.
+
+**Other levers (all paired-CRN):**
+- **Actor width 48→32 = free speed.** Accuracy EXACTLY neutral (Δ+0.00001, 15s, p=0.97); var +10%
+  (ensemble-recoverable). The policy is a simple monotone FOC map (shallow-net theory).
+- **Init = NULL (rigorous).** Discovered the C++ `init_orthogonal` was mis-named **iid He-normal, never QR**
+  — so HPT's "orthogonal>He" was never actually in the port. Implemented TRUE orthogonal (modified
+  Gram-Schmidt, orthonormality 1e-15, separate init-RNG ⇒ no confound) + Xavier. He ≈ orthogonal (Δ−0.0004
+  n.s., var n.s.), Xavier slightly worse. ⇒ init washed out by LayerNorm — **empirically confirmed, keep He.**
+- **Batch+LR = the speed dial.** Train cost ∝ B (kernel target on B·M rows, fixed #steps). Batch 64 is
+  1.7–1.8× cheaper but −0.0030 at base LR; **lowering lr_c recovers it** (half-batch→half-LR): lr_c 6e-4→
+  **5e-4** ⇒ −0.0012 n.s. at 1.72×. (3e-4 overshoots/sig-worse; 8e-4 worse.)
+- **RL space: continuous knobs at optimum BUT batch-64 needs `learn_number` ↑ (the batch-coupled retune).**
+  First screen (lr_a, lr_c, tau, σ0, adaptive_noise_scale, critic_warmup ×2, focal 8s) found 0/12 improve
+  and tau/σ0/lr_c 6e-4/ans 0.8 all significantly degrade — so those continuous knobs are optimal.
+  **BUT it wrongly held `learn_number=2` fixed.** A second screen (the batch-coupled knobs) shows
+  **smaller batch needs MORE gradient updates**: at batch 64, **learn_number 3 closes the −0.0029 gap to
+  batch 128 (Δ+0.0032, p=0.025) at 1.19× LESS compute** (b64/ln3 = 192 sample-steps vs b128/ln2 = 256 ⇒
+  smaller batch is *more* sample-efficient); learn_number 4 (Δ+0.0046) and learn_every 1 (Δ+0.0040) *beat*
+  batch 128. ⇒ **the real lever is total sample-steps (batch × learn_number); small-batch-more-updates is
+  the efficient frontier.** Validating ln3/ln4 across 3 regimes × 15 seeds.
+- **Non-NN estimator (ELM critic, frozen random features + ridge readout) = DEAD.** Collapses to 1.62
+  (−18%) **and** is not faster (ridge solve ≈ backprop cost). Confirms a critic must *train* its features;
+  frozen-random Q(s,a) cannot. ⇒ task-2 viable direction is NN *reduction*, not feature-map replacement.
+- **NN reduction (task 2) = no free win; the net is minimal.** actor 24/16 and actor depth-1 all
+  **significantly hurt with ~no speedup** (actor 24 is even *slower* — width-32 is the SIMD-aligned sweet
+  spot; the actor is already a tiny fraction of compute). critic-width 32 gives 1.29× but −0.0055 (sig) —
+  just another speed-dial at an accuracy cost, like batch. ⇒ **actor32/critic48 is the minimal viable NN.**
+
+**★ v65 Pareto frontier (focal g2, accuracy vs ORIGINAL v64-port SiLU/a48/b128/ln2; clean idle wall, t8).**
+Updated after the `learn_number` retune — batch-64 with learn_number 3 matches batch-128 accuracy at LESS
+compute (192 vs 256 sample-steps), so it dominates the old batch-128 accuracy tier:
+
+| config | Δacc vs orig | sig | wall | speedup |
+|---|---|---|---|---|
+| ORIGINAL SiLU + a48 + b128/ln2 | — | — | 26.2 s | 1.00× |
+| GELU β3 + a32 + b128/ln2 (old acc tier) | +0.173% | p<1e-4 | 24.9 s | 1.05× |
+| **GELU β3 + a32 + b64/ln3** (★ balanced — recommended) | **+0.173%** (= b128) | p<1e-4 | **21.6 s** | **1.21×** |
+| GELU β3 + a32 + b64/**ln4** (accuracy champion) | **+0.26%** (beats b128, p=0.014) | — | 27.2 s | 0.96× |
+| GELU β3 + a32 + b64/ln2 (fast) | +0.04% | n.s. | 14.5 s | 1.81× |
+
+Cross-regime (15s, t2): ln4 beats b128 in g2 (+0.0017, p=0.014) and γ1 (+0.0005, p=0.09), matches nocost;
+ln3 matches b128 everywhere (γ1 marginally soft −0.0006 p=0.09). **The real training knob is total
+sample-steps = batch × learn_number; small-batch-more-updates is the efficient frontier** (the user's
+skepticism — that batch-64 needs retuning — was correct; `learn_number` was the missing batch-coupled knob).
+
+**v65 = v64 + swish-β3 hidden activation + actor-width 32 + batch64/learn_number3 (balanced) — or ln4 for
+max accuracy, ln2 for max speed; He init; continuous RL knobs unchanged (confirmed optimal).** Publishable
+core change = **SiLU → swish-β3** (+0.17% accuracy, cross-regime, variance-neutral). Recommended default
+**b64/ln3: +0.17% accuracy AND 1.21× faster than the v64-port baseline** — faster *and* more accurate.
+Task-2 NN-reduction: null (actor32/critic48 already minimal; ELM/frozen-feature critic dead).
+
 *Document last updated: v63 (May 2026); mega-campaign complete (Stages A/B/C) — June 2026*
