@@ -92,6 +92,7 @@ def trace_to_parquet(blob, out_parquet, spot_S, Q_max):
         "exercise_cost": cost.reshape(-1), "payoff": gross.reshape(-1),
         "payoff_gross": gross.reshape(-1),
         "q_exercised_so_far": q_excl.reshape(-1), "q_remaining_norm": q_rem_norm.reshape(-1),
+        "q_exercised_norm": (q_excl / Q_max).reshape(-1),
     })
     Path(out_parquet).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_parquet, index=False)
