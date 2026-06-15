@@ -241,7 +241,10 @@ void Agent::learn_step(bool refresh_target) {
     // group (they only soft-update at end of each step by tau=0.0032), so recomputing
     // would barely move the target — we skip the dominant kernel-target forward instead.
     if (refresh_target) {
-    replay_.sample(B, rng_, sb_.data(), ab_.data(), rb_.data(), nsb_.data(), db_.data());
+    if (cfg_.replay_mode != 0)
+        replay_.sample_weighted(B, rng_, sb_.data(), ab_.data(), rb_.data(), nsb_.data(), db_.data());
+    else
+        replay_.sample(B, rng_, sb_.data(), ab_.data(), rb_.data(), nsb_.data(), db_.data());
 
     // ---- target ----
     { PROF_T0;
@@ -307,11 +310,23 @@ void Agent::learn_step(bool refresh_target) {
     PROF_ADD(prof_soft); }
 }
 
+// Task 3 (A4): coverage-flattening replay bins the (step, log-spot) plane.
+static constexpr int COV_SPOT_BINS = 16;
+static inline int cov_spot_bin(double spot) {
+    // log-spot mapped to [0,COV_SPOT_BINS) over roughly [exp(-1), exp(1)] ~ S in [0.37, 2.72].
+    double u = (std::log(std::max(spot, 1e-6)) + 1.0) / 2.0;   // [0,1] for log-spot in [-1,1]
+    int b = (int)(u * COV_SPOT_BINS);
+    return std::clamp(b, 0, COV_SPOT_BINS - 1);
+}
+
 void Agent::train(const Paths& tp, int n_episodes) {
     noise_decay_episodes_ = n_episodes;
     total_steps_ = 0;
     swa_start_ = (cfg_.swa_start >= 0) ? cfg_.swa_start : (int)(0.75 * n_episodes);  // H-N4
     swa_count_ = 0;
+    const int T = c_.n_rights;
+    if (cfg_.replay_mode != 0) replay_.enable_weighted();
+    if (cfg_.replay_mode == 2) cov_count_.assign((size_t)T * COV_SPOT_BINS, 0);
     Real next_obs[STATE_DIM];
     std::vector<Real> s(STATE_DIM);
     for (int ep = 1; ep <= n_episodes; ++ep) {
@@ -327,7 +342,16 @@ void Agent::train(const Paths& tp, int n_episodes) {
             double reward = env_step(c_, Sr, a, es, &term);
             build_obs(c_, Sr, Xr, Yr, es, next_obs);
             total_steps_++;
-            replay_.add(s.data(), a, (Real)reward, next_obs, term);
+            if (cfg_.replay_mode == 1) {                       // A2: time-graded
+                double w = std::pow((double)(before.step + 1) / (double)T, cfg_.step_density);
+                replay_.add_w(s.data(), a, (Real)reward, next_obs, term, w);
+            } else if (cfg_.replay_mode == 2) {                // A4: coverage-flattening
+                size_t bin = (size_t)before.step * COV_SPOT_BINS + cov_spot_bin(Sr[before.step]);
+                long cnt = ++cov_count_[bin];
+                replay_.add_w(s.data(), a, (Real)reward, next_obs, term, 1.0 / std::sqrt((double)cnt));
+            } else {
+                replay_.add(s.data(), a, (Real)reward, next_obs, term);
+            }
             if (replay_.size() >= cfg_.min_replay && replay_.size() > cfg_.batch &&
                 (total_steps_ % cfg_.learn_every == 0)) {
                 // H-C1: refresh the minibatch+target only on the first inner step when reuse_target.

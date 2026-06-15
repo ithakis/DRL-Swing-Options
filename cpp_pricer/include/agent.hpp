@@ -53,6 +53,11 @@ struct AgentConfig {
     bool   elm_critic = false;
     double elm_ridge  = 1e-2;   // ridge lambda on the (H+1)x(H+1) normal equations
     double elm_forget = 0.99;   // forgetting factor on the running Phi^T Phi accumulator
+    // Task 3 (sample efficiency) — replay-distribution arms. 0 = uniform (v65 canonical,
+    // bit-identical). 1 = time-graded weighting (A2): weight ∝ ((t+1)/T)^step_density.
+    // 2 = coverage-flattening (A4): weight ∝ 1/sqrt(count(step, log-spot bin)+1).
+    int    replay_mode = 0;
+    double step_density = 1.0;   // A2 exponent (>1 => denser toward maturity)
 };
 
 struct EvalResult { double price; double ci95; double std; double avg_exercised; double bangbang; };
@@ -113,6 +118,8 @@ private:
     long total_steps_ = 0;
     int swa_start_ = 1 << 30;   // H-N4: effective SWA start episode (set in train())
     long swa_count_ = 0;        // H-N4: # snapshots accumulated into actor_ema_
+
+    std::vector<long> cov_count_;   // Task 3 A4: (step, log-spot) bin counts for coverage replay
 
     // batch scratch
     std::vector<Real> sb_, ab_, rb_, nsb_, db_, qexp_, qtgt_, qnext_, apred_, qval_, dqa_, dq_, dqv_;

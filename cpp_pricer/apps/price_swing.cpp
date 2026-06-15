@@ -57,6 +57,9 @@ int main(int argc, char** argv) {
     int learn_number = -1, learn_every = -1, critic_warmup = -1;  // H-T: train-cadence (-1 = default)
     double c_cost = -1, gamma_cost = -1;   // cross-regime: nocost(c=0)/linear(g=1)/convex(g=2). -1=default focal.
     int init_method = 0;   // H-I3: 0=He(default), 1=orthogonal, 2=Xavier
+    std::string sampler_s = "mc";   // Task 3: training scenario generator {mc, arqmc}
+    std::string replay_s = "uniform"; // Task 3: replay distribution {uniform, time, coverage}
+    double step_density = 1.0;       // Task 3 (replay=time): weight ∝ ((t+1)/T)^step_density
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -103,6 +106,9 @@ int main(int argc, char** argv) {
         else if (a == "--noise_floor") noise_floor = std::stod(next());
         else if (a == "--adaptive_noise_scale") adaptive_noise_scale = std::stod(next());
         else if (a == "--warmup_noise_fraction") warmup_noise_fraction = std::stod(next());
+        else if (a == "--sampler") sampler_s = next();
+        else if (a == "--replay") replay_s = next();
+        else if (a == "--step_density") step_density = std::stod(next());
         else if (a == "--quiet") quiet = true;
     }
 
@@ -141,11 +147,15 @@ int main(int argc, char** argv) {
     if (learn_every > 0) cfg.learn_every = learn_every;
     if (critic_warmup >= 0) cfg.critic_warmup = critic_warmup;
     cfg.elm_critic = (elm_critic != 0); cfg.elm_ridge = elm_ridge; cfg.elm_forget = elm_forget;
+    // Task 3 (sample efficiency): scenario generator + replay-distribution arms.
+    Sampler sampler = (sampler_s == "arqmc") ? Sampler::ARQMC : Sampler::MC;
+    cfg.replay_mode = (replay_s == "time") ? 1 : (replay_s == "coverage") ? 2 : 0;
+    cfg.step_density = step_density;
 
     // ============ 0 -> 4k ============
     auto t0 = clk::now();
     Paths train_paths;
-    simulate_hhk(hhk, c, n_train, seed, /*stratify*/true, cfg.batch, threads, train_paths);
+    simulate_hhk(hhk, c, n_train, seed, /*stratify*/true, cfg.batch, threads, train_paths, sampler);
     auto t_sim_train = clk::now();
 
     Agent agent(cfg, c, hhk, kernel, (agent_seed >= 0 ? (uint64_t)agent_seed : seed));
@@ -203,6 +213,9 @@ int main(int argc, char** argv) {
         "  \"std\": %.6f,\n"
         "  \"avg_exercised\": %.4f,\n"
         "  \"bangbang\": %.6f,\n"
+        "  \"sampler\": \"%s\",\n"
+        "  \"replay\": \"%s\",\n"
+        "  \"step_density\": %.4f,\n"
         "  \"seed\": %llu,\n"
         "  \"n_train\": %d,\n"
         "  \"n_eval\": %d,\n"
@@ -222,6 +235,7 @@ int main(int argc, char** argv) {
         "  \"t_total\": %.4f\n"
         "}\n",
         res.price, res.ci95, res.std, res.avg_exercised, res.bangbang,
+        sampler_s.c_str(), replay_s.c_str(), step_density,
         (unsigned long long)seed, n_train, n_eval, hidden, actor_layers, critic_layers, threads,
         (sizeof(Real)==8 ? "fp64" : "fp32"),
         secs(t0, t_sim_train), secs(t_sim_train, t_calib), secs(t_calib, t1), cpu_train,
