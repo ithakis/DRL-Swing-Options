@@ -299,8 +299,6 @@ Defaults below are the **v64 canonical** — `python run.py` with no flags repro
 | `4: Evaluation 1: RL vs LSM Analysis` | Statistical comparison | Rerun under the kernel-on canonical |
 | `5: Convex Costs LSM vs RL` | **Main results analysis** | Rerun (paper figures) |
 | `6: Convex costs 0.04 Analysis` | Case study; generates Figures 1–3 (HHK paths, main results, Bang-Bangness) | Rerun (paper figures) |
-| `7: Phase 1 Findings — Semi-Analytical Kernel` | Statistical summary of the kernel study (M_x isolation, hypothesis tests) | Frozen research record |
-| `8: Approximator Comparison` | Historical study of curated-feature approximators (removed in v64 — all lost to the NN) | Frozen research record |
 | `Hedging` | Pathwise Delta/Gamma (CRN bump) + forward-hedge backtest | New |
 
 > The paper-figure notebooks (4–6) need a rerun once the simplified kernel-on canonical config

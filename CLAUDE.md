@@ -69,7 +69,7 @@ Headline result (focal c=0.04, gamma=2, 4096 ep, 12 seeds):
 
 No-cost regression: kernel +5.2 pp better than baseline.  H8 (antithetic), H9 (jump-IW), and their combination confirmed dead at 12 seeds — no variance reduction, H8 marginally worse on mean.
 
-See `Jupyter Notebooks/7: Phase 1 Findings - Semi-Analytical Kernel.ipynb` for the full statistical summary.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics) either did not help or actively hurt.
+See `HPT.md` for the full statistical summary.  Other hypotheses tested (H4 warm-start, H5 Dyna, H6 IQN, H7 twin critics) either did not help or actively hurt.
 
 **⚠️ critic_warmup note:** Warmup is **structurally required** for g1 (γ=1, c=0.04) and cannot be removed or substituted.  A 12-seed cc_g1 investigation (under the single-step default) found `warmup=0` collapses **5/12 seeds to ~−14%** (even with a gentler actor LR — the collapse is not LR-fixable).  But 1024 was over-conservative: `warmup=512` and `256` have **0/12 blowups** and a slightly *better* mean than 1024.  **Canonical is now `--critic_warmup_episodes=512`** (best mean +0.337, safe worst-case +0.076; 256 also safe but thinner margin).  See HPT.md “Critic-warmup investigation”.
 
@@ -208,9 +208,6 @@ default. The following flags remain in `run.py` for backward compatibility with 
 | `4: Evaluation 1: RL vs LSM Analysis` | Statistical comparison of RL vs LSM |
 | `5: Convex Costs LSM vs RL` | Main results analysis across the c x gamma grid |
 | `6: Convex costs 0.04 Analysis` | Detailed case study; **generates Figures 1-3** for the paper (HHK paths, main results, bang-bangness) |
-| `7: Phase 1 Findings - Semi-Analytical Kernel` | Statistical summary of the semi-analytical kernel study (M_x isolation, hypothesis tests) |
-| `8: Approximator Comparison` | Compares the `--approximator` contenders: speed microbenchmark, correctness, screening/finalist stats, winner, end-to-end C++ port plan |
-| `9: C++ Pricer - Speed & Validation` | Speed/validation of the `cpp_pricer/` C++ port: parity tables, Welch price-parity vs PyTorch, optimization ladder, time-vs-paths scaling |
 | `Hedging` | **Risk management** — pathwise Delta/Gamma via CRN bump (`src/greeks.py`), value/Δ/Γ-vs-spot curves, and a static HHK-forward hedge backtest. Figures → `figs/hedging_*.png` |
 | `Convex_Costs_Relationships` | Exploration of convex cost relationships (exploratory; candidate for removal) |
 
