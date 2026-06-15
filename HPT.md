@@ -1230,4 +1230,54 @@ core change = **SiLU → swish-β3** (+0.17% accuracy, cross-regime, variance-ne
 **b64/ln3: +0.17% accuracy AND 1.21× faster than the v64-port baseline** — faster *and* more accurate.
 Task-2 NN-reduction: null (actor32/critic48 already minimal; ELM/frozen-feature critic dead).
 
+---
+
+### v66 sampling: better-than-MC scenario generation & replay coverage — FULL NEGATIVE (June 2026)
+
+Tested the conjecture (well-supported by the swing-option numerics literature) that forward Monte-Carlo
++ uniform replay is *not* the most sample-efficient way to populate the critic's training distribution:
+because the HHK marginal is near-degenerate at t=0 and widens monotonically toward maturity, MC should
+"waste" samples re-covering the tight early marginals and under-cover the wide late ones and the exercise
+boundary. We have an analytic transition kernel, so a deterministic time-graded grid and/or low-discrepancy
+state coverage *should* dominate. Design doc: `cpp_pricer/docs/research/SAMPLE_EFFICIENCY_RESEARCH_PLAN.md`.
+
+**Harness (P0, bit-identical control).** Added `--sampler {mc,arqmc}`, `--replay {uniform,time,coverage}`,
+`--step_density` to the v65 C++ pricer; only the **scenario generator / replay distribution** changes
+between arms — everything downstream (net, kernel target, LRs, eval) is identical, so the contrast is the
+sampling method alone. `--sampler mc --replay uniform` reproduces v65 **bit-for-bit** (verified: seed 11
+→ 1.984538). Weighted replay via a Fenwick tree on a separate `add_w`/`sample_weighted` path (uniform
+untouched). Collector `tools/collect_sampler_results.py` → tidy CSV; analyzer `tools/analyze_sampler_screen.py`
+(paired-seed t, F variance-ratio, paired TOST ±0.5%). Arms:
+- **A1 array-RQMC** (L'Ecuyer–Lécot–Tuffin): sort the chains by OU state each step, drive rank-r's OU
+  increment with a randomly-shifted rank-stratified point `Φ⁻¹(frac((r+U)/n))`; jumps stay pseudo-random.
+- **A2 time-graded replay**: weight ∝ `((t+1)/T)^step_density` (denser toward maturity), `step_density=2`.
+- **A4 coverage-flattening replay**: weight ∝ `1/√count(step, log-spot bin)` (16 spot bins × 22 steps).
+
+**Screen: 3 regimes (nocost/g1/g2) × N∈{1024,2048,4096} × 12 seeds (11–22), common 65 536-path MC test
+set.** Results CSVs: `cpp_pricer/docs/research/p1_screen.csv` (g2), `p1_confirm.csv` (nocost/g1).
+
+| arm | mean Δprice vs MC (across 9 cells) | seed-std ratio (arm/MC) | promotions | verdict |
+|-----|-----------------------------------|-------------------------|-----------:|---------|
+| A1 array-RQMC       | **−0.02 to −0.092** (worse everywhere) | 1.3–**24×** (worse) | 0/9 | **REJECT — actively harmful** |
+| A2 time-graded      | ≈0 (−0.04 to +0.0003), TOST-equiv | 0.89–**24×** (1 blow-up) | 0/9 | reject-by-no-upside |
+| A4 coverage-flatten | ≈0 (−0.003 to +0.0003), TOST-equiv | 0.92–1.34 | 0/9 | reject-by-no-upside |
+
+**★ Verdict: zero promotions across all 27 cells. MC + uniform replay is already on the sample-efficiency
+frontier for this pricer.** Re-weighting the replay distribution (A2/A4) is statistically *equivalent* to
+uniform (TOST p<1e-3) with no upside — no higher price, no tighter seed-std. **Array-RQMC (A1) actively
+hurts**: sorting the chains by state each step and advancing them with a shared point set correlates the
+per-step transitions, shrinking the effective replay diversity an off-policy critic needs — the price
+collapses most at small N (where coverage was supposed to help most) and the seed-std *explodes* in nocost
+(up to 20–24×, the regime with no convex-cost gate to stabilize the policy). A2 inherits the same
+instability in one nocost cell. The user's intuition (sparse-early/dense-late coverage) is correct about
+the *state geometry* but does not translate into a better trainer at this network size — consistent with
+the v65 finding that the net is already minimal and training has converged.
+
+**What this rules out (honest scope).** The remaining unbuilt arm is **A3, the optimal-quantization tree**
+(deterministic distortion-optimal per-step grids + kernel edge-weights). It is mechanistically distinct
+from array-RQMC, but the cheap screen — three independent "better coverage" mechanisms all failing, and
+the closest one (A1) failing *badly* — lowers its prior enough that it was **gated and not built**; the
+harness, design doc, and stat tooling remain in place to revisit it cheaply if the network is ever scaled
+up (where coverage may start to bind). **No change to the v65 canonical.** Sampling stays MC + uniform.
+
 *Document last updated: v63 (May 2026); mega-campaign complete (Stages A/B/C) — June 2026*
