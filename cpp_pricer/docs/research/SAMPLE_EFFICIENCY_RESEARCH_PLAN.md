@@ -229,6 +229,32 @@ this plan is approved.**
 - **Bit-identity gate.** `--sampler mc` must reproduce current v65 exactly, or the comparison baseline is
   contaminated.
 
+## 7b. P1 results (cheap screen A1/A2/A4 — COMPLETE, 2026-06-15)
+
+**Harness:** `--sampler {mc,arqmc}` + `--replay {uniform,time,coverage}` + `--step_density` in the
+v65 C++ pricer (`mc/uniform` bit-identical to v65, verified). Screen: **g2** × N∈{1024,2048,4096} ×
+12 seeds (11–22), common 65 536-path MC test set. Collector `tools/collect_sampler_results.py`
+(→ `logs/sampler_study/p1_screen.csv`); analysis `tools/analyze_sampler_screen.py` (paired-seed t,
+F variance-ratio, paired TOST ±0.5%).
+
+| arm | N=1024 Δprice | N=2048 | N=4096 | seed-std ratio (arm/A0) | verdict |
+|-----|--------------:|-------:|-------:|-------------------------|---------|
+| A1 array-RQMC      | **−0.0726** | **−0.0334** | **−0.0203** | 3.88 / 1.30 / 1.61 | **REJECT** (strongly worse, higher variance) |
+| A2 time-graded     | +0.0006 | −0.0008 | −0.0024 | 0.97 / 1.21 / 1.23 | tie (TOST p<1e-3) — **no upside** |
+| A4 coverage-flatten| −0.0029 | −0.0030 | −0.0028 | 1.21 / 1.10 / 1.34 | tie (TOST p<1e-3) — **no upside** |
+
+**Conclusion:** *No arm is promoted.* MC + uniform replay is already on the sample-efficiency
+frontier for this pricer at N≥1024. Re-weighting the replay distribution (A2/A4) is statistically
+*equivalent* to uniform — no higher price, no tighter seed-std (std-ratio ≥ 0.97, mostly > 1).
+Array-RQMC (A1) **actively hurts**: sorting the chains by state each step and driving them with a
+shared rank-stratified point set correlates the per-step transitions, shrinking the effective replay
+diversity the off-policy critic needs — the price collapses most at small N (where coverage was
+supposed to help most). This is the cheap-arm read the plan asked for: at this (already-minimal) net
+size, *changing the scenario-generation measure or replay coverage does not move the needle.*
+
+Decision: A1 closed (negative). A2/A4 closed (equivalent, no benefit). **A3 (optimal-quantization
+tree) gated on user go/no-go** — it is the high-cost arm and the cheap screen lowers its prior.
+
 ## 8. Deliverables
 1. `--sampler`/`--step_density` in the C++ pricer (+ `mc` bit-identity test).
 2. `tools/collect_sampler_results.py` → tidy CSV; a notebook section (candidate: extend Notebook 3's
