@@ -13,7 +13,13 @@ public:
         params_ = params; lr_ = lr; b1_ = b1; b2_ = b2; eps_ = eps; t_ = 0;
         size_t n = 0; for (auto& p : params_) n += p.n;
         m_.assign(n, 0); v_.assign(n, 0);
+        base_lr_ = lr;
     }
+
+    // Runtime LR override (v61 cosine/linear LR schedule). base_lr() returns the init LR
+    // captured at init() so the schedule can scale relative to it.
+    void set_lr(double lr) { lr_ = lr; }
+    double base_lr() const { return base_lr_; }
 
     void step() {
         ++t_;
@@ -42,7 +48,7 @@ public:
 private:
     std::vector<ParamRef> params_;
     std::vector<double> m_, v_;
-    double lr_=0, b1_=0.9, b2_=0.999, eps_=1e-8;
+    double lr_=0, base_lr_=0, b1_=0.9, b2_=0.999, eps_=1e-8;
     long t_ = 0;
 };
 

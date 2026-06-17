@@ -60,6 +60,15 @@ int main(int argc, char** argv) {
     std::string sampler_s = "mc";   // Task 3: training scenario generator {mc, arqmc}
     std::string replay_s = "uniform"; // Task 3: replay distribution {uniform, time, coverage}
     double step_density = 1.0;       // Task 3 (replay=time): weight ∝ ((t+1)/T)^step_density
+    // ---- v61 (no-kernel) features (default off => v65 bit-identical). See docs/V61_CONFIG.md ----
+    std::string noise_schedule_s = "linear";   // {linear, hyperbolic, const_floor}
+    int noise_plateau = -1;                     // -1 => keep default 0
+    int min_replay = -1, max_replay = -1;       // -1 => keep AgentConfig defaults
+    int double_critic_step = 0;
+    double target_policy_noise = -1, tpn_floor = -1; int tpn_decay_start = -1;
+    std::string lr_schedule_s = "const";        // {const, cosine, linear}
+    int lr_warmup_episodes = -1, lr_schedule_episodes = -1;
+    double final_lr_fraction = -1, min_lr = -1;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -109,6 +118,20 @@ int main(int argc, char** argv) {
         else if (a == "--sampler") sampler_s = next();
         else if (a == "--replay") replay_s = next();
         else if (a == "--step_density") step_density = std::stod(next());
+        // ---- v61 (no-kernel) features ----
+        else if (a == "--noise_schedule") noise_schedule_s = next();
+        else if (a == "--noise_plateau") noise_plateau = std::stoi(next());
+        else if (a == "--min_replay") min_replay = std::stoi(next());
+        else if (a == "--max_replay") max_replay = std::stoi(next());
+        else if (a == "--double_critic_step") double_critic_step = std::stoi(next());
+        else if (a == "--target_policy_noise") target_policy_noise = std::stod(next());
+        else if (a == "--tpn_decay_start") tpn_decay_start = std::stoi(next());
+        else if (a == "--tpn_floor") tpn_floor = std::stod(next());
+        else if (a == "--lr_schedule") lr_schedule_s = next();
+        else if (a == "--lr_warmup_episodes") lr_warmup_episodes = std::stoi(next());
+        else if (a == "--lr_schedule_episodes") lr_schedule_episodes = std::stoi(next());
+        else if (a == "--final_lr_fraction") final_lr_fraction = std::stod(next());
+        else if (a == "--min_lr") min_lr = std::stod(next());
         else if (a == "--quiet") quiet = true;
     }
 
@@ -147,6 +170,20 @@ int main(int argc, char** argv) {
     if (learn_every > 0) cfg.learn_every = learn_every;
     if (critic_warmup >= 0) cfg.critic_warmup = critic_warmup;
     cfg.elm_critic = (elm_critic != 0); cfg.elm_ridge = elm_ridge; cfg.elm_forget = elm_forget;
+    // ---- v61 (no-kernel) features ----
+    cfg.noise_schedule = (noise_schedule_s == "hyperbolic") ? 1 : (noise_schedule_s == "const_floor") ? 2 : 0;
+    if (noise_plateau >= 0) cfg.noise_plateau = noise_plateau;
+    if (min_replay > 0) cfg.min_replay = min_replay;
+    if (max_replay > 0) cfg.max_replay = max_replay;
+    cfg.double_critic_step = (double_critic_step != 0);
+    if (target_policy_noise >= 0) cfg.target_policy_noise = target_policy_noise;
+    if (tpn_decay_start >= 0) cfg.tpn_decay_start = tpn_decay_start;
+    if (tpn_floor >= 0) cfg.tpn_floor = tpn_floor;
+    cfg.lr_schedule = (lr_schedule_s == "cosine") ? 1 : (lr_schedule_s == "linear") ? 2 : 0;
+    if (lr_warmup_episodes >= 0) cfg.lr_warmup_episodes = lr_warmup_episodes;
+    if (lr_schedule_episodes >= 0) cfg.lr_schedule_episodes = lr_schedule_episodes;
+    if (final_lr_fraction >= 0) cfg.final_lr_fraction = final_lr_fraction;
+    if (min_lr >= 0) cfg.min_lr = min_lr;
     // Task 3 (sample efficiency): scenario generator + replay-distribution arms.
     Sampler sampler = (sampler_s == "arqmc") ? Sampler::ARQMC : Sampler::MC;
     cfg.replay_mode = (replay_s == "time") ? 1 : (replay_s == "coverage") ? 2 : 0;

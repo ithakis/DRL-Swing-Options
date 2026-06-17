@@ -25,6 +25,9 @@ struct AgentConfig {
     int critic_warmup = 512;
     double noise_sigma0 = 1.30, noise_floor = 0.26;
     int noise_plateau = 0;
+    // Exploration-noise decay shape: 0 = linear (v65 canonical, bit-identical), 1 = hyperbolic
+    // (literal v61: floor + (sigma0-floor)/(1+t/plateau)), 2 = const_floor (hard step after plateau).
+    int noise_schedule = 0;
     double adaptive_noise_scale = 0.6;
     double warmup_noise_fraction = 0.3;
     double ema_decay = 0.999;
@@ -58,6 +61,29 @@ struct AgentConfig {
     // 2 = coverage-flattening (A4): weight ∝ 1/sqrt(count(step, log-spot bin)+1).
     int    replay_mode = 0;
     double step_density = 1.0;   // A2 exponent (>1 => denser toward maturity)
+
+    // ---- Literal-v61 (no-kernel) features. All default to v65/off => build_v67_kernel stays
+    // bit-identical. See cpp_pricer/docs/V61_CONFIG.md. (min_replay/max_replay reuse the fields
+    // above; v61 sets them to 18000/200000.) ----
+    bool   double_critic_step = false;  // v61: legacy duplicate critic_optimizer.step() (~2x critic LR)
+    // Target-policy noise (TD3-style target smoothing) on the single-sample TD target only.
+    double target_policy_noise = 0.0;   // v61: 0.15 ; 0 => off
+    int    tpn_decay_start = 0;          // v61: 20000 (episode to begin linear decay; 0 => no decay)
+    double tpn_floor = 0.0;              // v61: 0.04
+    // LR schedule: 0 = constant (v65, bit-identical), 1 = cosine (v61), 2 = linear. Stepped per episode.
+    int    lr_schedule = 0;
+    int    lr_warmup_episodes = 1024;   // linear LR warmup to full rate by this episode
+    int    lr_schedule_episodes = 0;    // cosine horizon (0 => use n_episodes)
+    double final_lr_fraction = 1.0;     // v61: 0.20 (>=1.0 => no decay)
+    double min_lr = 0.0;                 // v61: 1e-6 (LR floor)
+    // PER (prioritized replay). Off => uniform (bit-identical). v61 focal: alpha ramps 0->0.20 over
+    // [5000,25000], beta 1.0->0.98; inert (alpha=0) at <=4096-ep budgets.
+    bool   per = false;
+    double per_alpha = 0.0;          // base exponent when no ramp configured
+    double per_alpha_final = -1.0;   // <0 => no alpha ramp
+    int    per_alpha_ramp_start = 0, per_alpha_ramp_end = 0;
+    double per_beta_start = 1.0, per_beta_final = 1.0;
+    double per_priority_floor = 1e-6, per_priority_clip_pct = 0.0;
 };
 
 struct EvalResult { double price; double ci95; double std; double avg_exercised; double bangbang; };
@@ -125,6 +151,8 @@ private:
     std::vector<Real> sb_, ab_, rb_, nsb_, db_, qexp_, qtgt_, qnext_, apred_, qval_, dqa_, dq_, dqv_;
 
     double pre_noise_sigma() const;
+    double tpn_sigma() const;             // v61 target-policy-noise magnitude (with late decay)
+    void apply_lr_schedule(int episode);  // v61 cosine/linear LR schedule (per-episode)
     Real act_single(const Real* state, bool add_noise);
     void learn_step(bool refresh_target = true);
     void init_orthogonal(uint64_t seed);
