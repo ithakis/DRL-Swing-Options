@@ -140,15 +140,62 @@ double Agent::pre_noise_sigma() const {
     int e = std::max(1, episode_count_);
     int plateau = std::max(0, cfg_.noise_plateau);
     double sigma;
-    int horizon = std::max(plateau + 1, noise_decay_episodes_);   // linear schedule
-    double frac = std::min(1.0, std::max(0.0, (double)(e - plateau) / std::max(1, horizon - plateau)));
-    sigma = cfg_.noise_sigma0 + (cfg_.noise_floor - cfg_.noise_sigma0) * frac;
+    if (plateau > 0 && e < plateau) {
+        sigma = cfg_.noise_sigma0;                       // all schedules hold sigma0 during plateau
+    } else if (cfg_.noise_schedule == 1) {               // hyperbolic (literal v61)
+        double t = (plateau > 0) ? (double)(e - plateau) : (double)e;
+        double denom = 1.0 + t / (double)std::max(1, plateau > 0 ? plateau : 1);
+        sigma = cfg_.noise_floor + (cfg_.noise_sigma0 - cfg_.noise_floor) / denom;
+    } else if (cfg_.noise_schedule == 2) {               // const_floor (hard step after plateau)
+        sigma = cfg_.noise_floor;
+    } else {                                             // linear (v65 canonical, default; bit-identical)
+        int horizon = std::max(plateau + 1, noise_decay_episodes_);
+        double frac = std::min(1.0, std::max(0.0, (double)(e - plateau) / std::max(1, horizon - plateau)));
+        sigma = cfg_.noise_sigma0 + (cfg_.noise_floor - cfg_.noise_sigma0) * frac;
+    }
     if (e <= cfg_.critic_warmup && cfg_.warmup_noise_fraction < 1.0) {
         double prog = (double)e / std::max(1, cfg_.critic_warmup);
         double cur = cfg_.warmup_noise_fraction + (1.0 - cfg_.warmup_noise_fraction) * prog;
         sigma *= cur;
     }
     return sigma;
+}
+
+// v61 target-policy-noise magnitude with optional late linear decay (matches Python
+// _get_target_policy_noise). Returns 0 when off.
+double Agent::tpn_sigma() const {
+    double init = cfg_.target_policy_noise;
+    if (init <= 0.0) return 0.0;
+    if (cfg_.tpn_decay_start <= 0) return init;
+    int e = episode_count_;
+    if (e < cfg_.tpn_decay_start) return init;
+    double prog = std::min(1.0, (double)(e - cfg_.tpn_decay_start) / (double)std::max(1, cfg_.tpn_decay_start));
+    return cfg_.tpn_floor + (init - cfg_.tpn_floor) * (1.0 - prog);
+}
+
+// v61 LR schedule (cosine/linear) with linear warmup, stepped once per episode. Matches the
+// Python lr_lambda. No-op (bit-identical to v65) when lr_schedule==0 or final_lr_fraction>=1.
+void Agent::apply_lr_schedule(int episode) {
+    if (cfg_.lr_schedule == 0 || cfg_.final_lr_fraction >= 1.0) return;
+    const double PI = 3.14159265358979323846;
+    int total = (cfg_.lr_schedule_episodes > 0) ? cfg_.lr_schedule_episodes : noise_decay_episodes_;
+    int warm = std::max(1, cfg_.lr_warmup_episodes);
+    double scale;
+    if (episode <= warm) {
+        scale = (double)episode / warm;
+    } else if (episode < total) {
+        double t = (double)(episode - warm) / (double)std::max(1, total - warm);
+        if (cfg_.lr_schedule == 2)  // linear
+            scale = 1.0 + (cfg_.final_lr_fraction - 1.0) * t;
+        else                        // cosine
+            scale = cfg_.final_lr_fraction + (1.0 - cfg_.final_lr_fraction) * 0.5 * (1.0 + std::cos(PI * t));
+    } else {
+        scale = cfg_.final_lr_fraction;
+    }
+    double sa = std::max(cfg_.min_lr / std::max(opt_a_.base_lr(), 1e-30), scale);
+    double sc = std::max(cfg_.min_lr / std::max(opt_c_.base_lr(), 1e-30), scale);
+    opt_a_.set_lr(opt_a_.base_lr() * sa);
+    opt_c_.set_lr(opt_c_.base_lr() * sc);
 }
 
 Real Agent::act_single(const Real* state, bool add_noise) {
@@ -253,6 +300,17 @@ void Agent::learn_step(bool refresh_target) {
                                kernel_, c_.strike, kws_, qnext_.data());
     } else {
         actor_target_.forward(nsb_.data(), B, apred_.data());
+        // v61 target-policy noise (TD3-style smoothing): perturb the target action, clamp, re-gate.
+        // Off by default (tpn==0 => no RNG draw => bit-identical to v65).
+        double tpn = tpn_sigma();
+        if (tpn > 0.0) {
+            for (int b = 0; b < B; ++b) {
+                Real a = apred_[b] + (Real)(rng_.normal() * tpn);
+                a = std::clamp(a, (Real)0, (Real)1);
+                a = gate(a, nsb_[(size_t)b*STATE_DIM + 0], c_.c_cost, c_.gamma_cost, c_.q_min, c_.q_max);
+                apred_[b] = std::clamp(a, (Real)0, (Real)1);
+            }
+        }
         critic_target_.forward(nsb_.data(), apred_.data(), B, qnext_.data());
     }
     for (int i = 0; i < B; ++i)
@@ -272,6 +330,9 @@ void Agent::learn_step(bool refresh_target) {
         critic_local_.zero_grad();
         critic_local_.backward(dq_.data(), B);
         opt_c_.step();
+        // v61 legacy duplicate critic step (~2x effective critic LR): a second Adam update on the
+        // same (un-zeroed) gradients. Off by default (single step = v65 canonical).
+        if (cfg_.double_critic_step) opt_c_.step();
     }
     PROF_ADD(prof_critic); }
 
@@ -299,6 +360,8 @@ void Agent::learn_step(bool refresh_target) {
                 actor_lerp(actor_ema_, actor_local_, nn/(nn+1), (Real)1/(nn+1));
                 swa_count_++;
             }
+        } else if (cfg_.weight_avg == 2) {                // OFF (v61): eval on the raw local actor
+            actor_ema_.copy_from(actor_local_);
         } else {                                          // EMA (canonical)
             actor_lerp(actor_ema_, actor_local_, (Real)cfg_.ema_decay, (Real)(1.0-cfg_.ema_decay));
         }
@@ -331,6 +394,7 @@ void Agent::train(const Paths& tp, int n_episodes) {
     std::vector<Real> s(STATE_DIM);
     for (int ep = 1; ep <= n_episodes; ++ep) {
         episode_count_ = ep;
+        apply_lr_schedule(ep);   // v61 cosine/linear LR (no-op at v65 defaults)
         int pidx = (ep - 1) % tp.n_paths;
         const Real* Sr = tp.Srow(pidx); const Real* Xr = tp.Xrow(pidx); const Real* Yr = tp.Yrow(pidx);
         EpisodeState es;

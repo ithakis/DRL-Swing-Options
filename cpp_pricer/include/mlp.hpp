@@ -14,7 +14,14 @@ constexpr int H_DEFAULT = 64;    // canonical v64 hidden width
 // set at construction from AgentConfig::hidden.  Default 64 reproduces v64 exactly
 // (PyTorch parity tests load 64-wide weights).  Smaller widths are C++-native archs
 // (train from scratch, no parity), gated by TOST-equivalence in the speedup study.
-constexpr Real ACTOR_BETA = static_cast<Real>(1.5);  // beta_sigmoid_1.5
+// Actor output squash steepness: q_raw = sigmoid(ACTOR_BETA * u).
+// COMPILE-TIME: 1.5 = v64/v65 (beta_sigmoid_1.5, default / build_v67_kernel);
+// build_v67_nokernel sets -DACTOR_BETA_VAL=3 to reproduce the literal-v61 beta_sigmoid_3.0.
+// Default 1.5 keeps the PyTorch parity fixtures and v65 bit-identical.
+#ifndef ACTOR_BETA_VAL
+#define ACTOR_BETA_VAL 1.5
+#endif
+constexpr Real ACTOR_BETA = static_cast<Real>(ACTOR_BETA_VAL);
 
 // A weight-decayable parameter block (Adam iterates over these).
 struct ParamRef { Real* data; Real* grad; int n; double weight_decay; };
