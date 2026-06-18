@@ -1280,4 +1280,92 @@ the closest one (A1) failing *badly* — lowers its prior enough that it was **g
 harness, design doc, and stat tooling remain in place to revisit it cheaply if the network is ever scaled
 up (where coverage may start to bind). **No change to the v65 canonical.** Sampling stays MC + uniform.
 
+## v68 — closing the bang-bang gap (γ=1): THREE NEGATIVE ARMS → it's a fixed-point bias (June 2026)
+
+**Motivation.** The full v67 sweep (`Convex Costs Results 8.csv`) shows the kernel mode beats LSM-D in
+the convex cells (up to **+5.2%** at c=0.15,γ=3) but **loses a small, significant margin wherever the
+optimum is bang-bang**: γ=1 is **−0.16…−0.24%** across all c, and the sign flips monotonically with
+convexity. We want publication parity in the bang-bang cells.
+
+**Diagnosis (math).** At γ=1 the per-exercise reward `q·(S−K)₊ − c·q` is **linear in q** ⇒ the optimal
+control is a *discontinuous corner policy* (lift `q_max` or nothing, on a sharp inventory-aware state
+threshold) and LSM-D's M=5 grid contains {0, q_max} **exactly**, so its backward induction is essentially
+optimal. At γ≥2 the FOC optimum is a *smooth interior* `q*(S)` the continuous actor represents but the
+grid can only quantise — hence RL wins there. So the bang-bang shortfall is, a priori, either (a) the
+smooth sigmoid not reaching the corner, (b) the actor blurring the timing threshold, or (c) the learned
+value being slightly off. We screened all three families. **All methodology = 8 seeds, KON_BALANCED
+recipe (the Results-8 kernel recipe), 4096 ep, the shared 65,536-path Validation-3 OOS dumps, paired
+bootstrap Δ% vs LSM-D M=5.** The screen harnesses (`screen_bangbang.py` / `gate_screen.py` /
+`vi_screen.py`) and the C++ flags they drove were **removed with the revert** (Verdict); each arm below
+is described in enough detail to re-implement, and all three reuse the Validation-3 OOS dumps + LSM cache.
+
+### Arm family A — output representation (rejects "non-saturation") — compile-time squash variants
+Hypothesis: `beta_sigmoid_1.5` (the kernel build's output) never reaches q_max, so full exercises are
+under-filled — a first-order loss since reward is linear in q. Arms: β=3/β=6 (sharper sigmoid), **stretch**
+(`q=clip(a·σ(βu)+b,0,1)`, a=1.1 → corner-reachable), **snap** (snap-to-corner STE gate, the "bang-bang
+gate" idea). *(Caveat: these were built on a squash refactor that introduced a ~0.09% FP32 training drift
+— FP64 parity held — so arm-vs-baseline is confounded at ~0.1pp; the arm-to-arm and bang-bangness signals
+below are confound-free. The refactor was reverted.)*
+
+| arm | g1 Δ% | nocost Δ% | g2 Δ% (control) | bang-bangness@g1 |
+|-----|------:|----------:|----------------:|-----------------:|
+| baseline β1.5 | −0.33 | −0.34 | −0.04 | 0.67 |
+| β=3 / β=6 | −0.29 / −0.31 | −0.35 / −0.31 | −0.04 / **−0.11** | 0.69 / 0.68 |
+| stretch (a=1.1) | −0.32 | −0.35 | +0.03 | **0.82** |
+| snap (STE gate) | −0.29 | −0.32 | +0.02 | **0.84** |
+
+**★ Reject.** `snap`/`stretch` force bang-bangness 0.67→0.84 yet recover **zero** Δ% — decisively killing
+the non-saturation hypothesis (and the "make the actor bang-bang" idea). β=6 over-sharpens and regresses
+the convex g2 control. No output-representation arm closes γ=1.
+
+### Arm B — eval-time critic-advantage gate (rejects "decision-extraction") — runtime `--advantage_gate`
+Hypothesis: the critic *knows* the better decision but the smooth actor blurs it. At each eval step pick
+the exercise qty by argmax over {0, q_actor, q_max} of the (kernel-sharpened) critic. **Eval-only** ⇒
+training untouched, `--advantage_gate 0` is **bit-identical** to v65 (verified), and the comparison is
+*perfectly paired on the same trained agent*.
+
+| regime | Δ% gate-off | Δ% gate-on | paired gate gain | avg-exercised off→on |
+|--------|-----------:|-----------:|-----------------:|---------------------:|
+| nocost | −0.337 | −0.361 | −0.024 ± 0.056 | 11.64 → 11.65 |
+| g1     | −0.326 | −0.331 | **−0.004 ± 0.015** | 10.27 → 10.26 |
+| g2     | −0.038 | −0.062 | −0.024 ± 0.027 | 9.68 → 9.66 |
+
+**★ Reject (informative no-op).** The gate is a pure **no-op at g1** and slightly hurts the convex
+control. Because the critic-argmax reproduces the actor, **the actor already maximises its own critic** —
+the residual is *not* in decision-extraction.
+
+### Arm C — value-iteration kernel target (rejects "policy-eval backup") — runtime `--vi_target`
+Hypothesis: the kernel backup learns `E[Q(s',π(s'))]` (policy-evaluation of the smooth actor), whereas
+**LSM does value-iteration** (`max` over exercise). Make the kernel backup learn `E[max_a Q(s',a)]` over
+{0, π, q_max} (`vi=1`) or {0, π} (`vi=2`) — the paper-aligned move (extends the kernel's role; mirrors
+LSM's max-over-exercise DP). `vi=0` bit-identical to v65 (verified); 3× critic evals in the mesh backup.
+
+| regime | vi=0 (base) | vi=1 ({0,π,q_max}) | vi=2 ({0,π}) |
+|--------|-----------:|-------------------:|-------------:|
+| nocost | −0.337 | −0.331 | −0.351 |
+| g1     | −0.326 | **−0.317** | −0.335 |
+| g2     | −0.038 | −0.053 | −0.035 |
+
+**★ Reject.** All arms sit within the baseline's 95% CI (g1 CI ≈ ±0.03–0.05); avg-exercised and
+bang-bangness are unchanged. The `max` doesn't bite because — exactly as Arm B showed — the critic's
+argmax already *is* the actor, so the value-iteration backup ≡ the policy-evaluation backup for this
+converged pair.
+
+### Root cause & verdict
+The three arms fail for **one** reason: D4PG's actor and (kernel-sharpened) critic converge to a
+**self-consistent fixed point at which the actor IS the critic's argmax**. Output tricks change the
+magnitude but not the fixed point; eval-time argmax and value-iteration backups are no-ops because they
+re-select the action the pair already agrees on. The ~0.3% bang-bang shortfall is the *distance of that
+fixed point to LSM's exact backward induction at 4k paths* — a finite-sample / function-approximation
+bias of the learned value near the sharp threshold, where LSM's exact grid DP is structurally favored.
+Closing it would require a value estimate that **disagrees** with the actor near the boundary — i.e.,
+either LSM-distillation (circular for a paper benchmarking RL *vs* LSM) or substantially more capacity/
+data (risks the convex wins; β=6 already shows over-sharpening hurts g2). **No promotion. All v68 C++
+(`--advantage_gate`, `--vi_target`, the squash macros) was reverted; the branch stays pristine v67.**
+
+**Paper takeaway.** These are clean ablations that *bound and localise* the gap: RL-kernel is within
+~0.3% of LSM in the bang-bang cells (where LSM is provably optimal), decisively better under convex costs
+(+0.2…+5.2%), and more sample-efficient (Validation-3 R2: matches LSM at every matched path budget).
+Frame the bang-bang gap as a characterised, structurally-explained residual, not a deficiency.
+
 *Document last updated: v63 (May 2026); mega-campaign complete (Stages A/B/C) — June 2026*
