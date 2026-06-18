@@ -18,7 +18,8 @@ each RL price with the LSM price on the *same* OOS set for a clean paired Δ%.
 Produces:
   rl_lsm_pricing.csv      R1 - regime x {lsm_M5,lsm_M9,lsm_M17,kernel_on,kernel_off} x 8 seeds
   episode_efficiency.csv  R2 - focal g2, {kernel_on(champion),kernel_off} x {2048..32768} x 8 seeds
-                               + lsm_M5 reference (episodes=-1), all on the shared g2 OOS sets
+                               + lsm_M5 as a sample-efficiency CURVE (fit at each budget {2048..32768})
+                               AND a 65 536-path reference (episodes=-1), all on the shared g2 OOS sets
 
 Run:  EP11python gen_rl_validation_v67.py            (EP11 = ~/miniforge3/envs/EP11/bin/python)
       VAL3_NTEST=16384 EP11python gen_rl_validation_v67.py     # quick pass
@@ -184,6 +185,43 @@ def lsm_worker(args):
     return reg, c, gamma, seed, out
 
 
+def lsm_r2_worker(args):
+    """R2 sample-efficiency LSM curve: fit full-state LSM-D (M=5) on its OWN training paths
+    (seed=700+k) at EACH RL training-path budget and price on the g2 OOS dump -- the IDENTICAL paths
+    the RL agents were evaluated on. This makes the R2 LSM benchmark a true sample-efficiency curve
+    (LSM fit on n_train paths) rather than a single 65 536-path horizontal reference. Module-level for
+    spawn. Returns (seed, {budget: price}). Caches per (c, gamma, seed, N=budget) -- same N-safe key
+    family as lsm_worker, so the 65 536 reference (lsm_worker, N=65536) and the per-budget curve never
+    collide."""
+    seed, k, oos_path, budgets = args
+    out = {}
+    params = rb.dotdict(dict(q_min=0.0, q_max=2.0, Q_min=0.0, Q_max=20.0, strike=1.0, maturity=0.0833,
+        n_rights=22, risk_free_rate=0.05, min_refraction_periods=0, c_cost=0.04, gamma_cost=2.0,
+        S0=1.0, alpha=12.0, sigma=1.2, beta=150.0, lam=6.0, mu_J=0.3))
+    contract = rb.build_contract(params); hhk = rb.build_hhk_params(params)
+    oos = read_sxy(oos_path)
+    for n_train in budgets:
+        cache_f = CACHE_DIR / f"lsm_c0.04_g2.0_s{seed}_N{n_train}.json"
+        if cache_f.exists():
+            cached = {int(m): v for m, v in json.load(open(cache_f)).items()}
+            if 5 in cached:
+                out[n_train] = cached[5]
+                continue
+        with contextlib.redirect_stdout(io.StringIO()):
+            train = simulate_hhk_spot(**hhk, n_paths=n_train, seed=700 + k, stratify=True, batch_size=128)
+            est = fit_lsm_estimators(contract=contract, dataset=train, poly_degree=2,
+                                     basis_type="chebyshev", state_mode="full",
+                                     reg_type="none", reg_alpha=1e-6, n_actions=5)
+            price, _ = price_swing_option_lsm_oos(contract=contract, dataset=(0, *oos),
+                                                  estimators=est, seed=12345,
+                                                  csv_path=None, _print_results=False)
+        out[n_train] = float(price)
+        tmp = cache_f.with_suffix(".json.tmp")
+        json.dump({5: float(price)}, open(tmp, "w"))
+        tmp.replace(cache_f)
+    return seed, out
+
+
 def _rl_job(job):
     """One C++ run (executed in a worker thread, --threads 1). job carries everything needed."""
     kind = job[0]
@@ -246,10 +284,22 @@ def main():
                 r1_rows.append(dict(regime=reg, c=c, gamma=gamma, method=method, seed=seed, price=price))
     pd.DataFrame(r1_rows).to_csv(HERE / "rl_lsm_pricing.csv", index=False)
 
+    # ---- Phase B2: R2 LSM sample-efficiency curve (LSM-D M=5 fit at each RL training-path budget) ----
+    # Makes the R2 LSM benchmark a genuine curve (vs the single 65 536-path horizontal reference): LSM
+    # is fit on the SAME budgets as the RL episodes {2048..32768} and priced on the identical g2 OOS.
+    lsm_r2_jobs = [(seed, k, str(OOS_DIR / f"g2_{seed}.bin"), R2_EPISODES) for k, seed in enumerate(SEEDS)]
+    lsm_r2 = {}
+    with ProcessPoolExecutor(max_workers=WORKERS) as ex:
+        for seed, out in ex.map(lsm_r2_worker, lsm_r2_jobs):
+            lsm_r2[seed] = out
+    print(f"  Phase B2 (LSM R2 curve) done in {time.time()-t0:.0f}s.", flush=True)
+
     # ---- R2 assembly (reuses the g2 OOS LSM prices) ----
+    # lsm_M5 appears at episodes=-1 (65 536-path reference) AND at each training-path budget (curve).
     r2_rows = [dict(method="lsm_M5", episodes=-1, seed=s, price=lsm_g2[s]) for s in SEEDS]
     for ep in R2_EPISODES:
         for seed in SEEDS:
+            r2_rows.append(dict(method="lsm_M5", episodes=ep, seed=seed, price=lsm_r2[seed][ep]))
             r2_rows.append(dict(method="kernel_on", episodes=ep, seed=seed, price=rl[("R2k", seed, ep)]))
             r2_rows.append(dict(method="kernel_off", episodes=ep, seed=seed, price=rl[("R2n", seed, ep)]))
     pd.DataFrame(r2_rows).to_csv(HERE / "episode_efficiency.csv", index=False)
