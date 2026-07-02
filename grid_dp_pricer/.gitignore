@@ -1,0 +1,14 @@
+# build trees
+build/
+build_*/
+# generated artifacts
+*.o
+*.a
+# large generated data; keep the tiny committed parity fixture + result CSVs
+data/*.bin
+!data/kernel_fixture.bin
+data/*.npz
+data/_kernel_cache/
+data/sweeps/
+__pycache__/
+*.pyc
