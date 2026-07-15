@@ -37,11 +37,23 @@ ROOT = Path(__file__).resolve().parents[1]
 C_GRID = [0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15]
 G_GRID = [1.0, 1.5, 2.0, 3.0]
 
-# Balanced ladder for convex cells: (nXY, nQ, Mx).  Non-geometric on purpose (the
-# T1/T11 finding that nQ controls depends on it); the LS fit handles arbitrary h.
-CONVEX_LADDER = [(61, 76, 12), (81, 101, 16), (121, 151, 24), (161, 201, 32)]
-# Spatial ladder for linear (lattice) cells: nQ pinned to the exact 11-node lattice.
-LATTICE_LADDER = [(61, 11, 12), (81, 11, 16), (121, 11, 24), (161, 11, 32)]
+# Convex cells: pure-nQ geometric ladder (r=2) at FIXED converged spatial/quadrature
+# (121/121, Mx=24 — per-axis residuals <=2.4e-5 at the focal cell, T1).  A balanced
+# all-axes ladder is NOT usable for the uncertainty band: errors of different sign
+# cancel along the diagonal refinement path and the band comes out overconfident
+# (observed: +/-4e-6 on the focal cell vs the known ~6e-5 nQ-axis residual).  The nQ
+# axis is the controlling first-order axis, and a geometric ratio makes the 3-point
+# Richardson/GCI textbook-clean.  The spatial+quadrature residual is added on top.
+CONVEX_LADDER = [(121, 101, 24), (121, 201, 24), (121, 401, 24)]
+U_SPATIAL = 3.0e-5  # per-axis nX/nY/Mx residuals at the reference spatial grid (T1_summary)
+# Spatial ladder for linear (lattice) cells: nQ pinned to the exact 11-node lattice, so the
+# spatial axis is the ONLY error source and is cheap enough to brute-force.  At gamma=1 the
+# value surface has a KINK along the exercise boundary (x+y = log(1+c/K)); the signed
+# cubic-spline transfer then oscillates with node-vs-kink alignment (~1e-3 at nXY<=161,
+# decaying to ~1e-4 by nXY>=281), so the band is the oscillation ENVELOPE of the finest
+# rungs, not a Richardson fit (the LS order is meaningless on oscillatory data).
+LATTICE_LADDER = [(281, 11, 48), (321, 11, 48), (361, 11, 48),
+                  (401, 11, 48), (481, 11, 48), (641, 11, 48)]
 
 FS = 1.25  # GCI factor of safety (three+ grid study with observed order)
 
@@ -93,16 +105,24 @@ def main() -> None:
             fine = d
         V = np.array(vals)
         h = np.array(hs)
-        V0, p_obs, rms = ls_order_fit(h, V)
-        delta_re = abs(V0 - V[-1])
-        # Fallback when the ladder is at the noise floor (lattice cells: errors ~1e-6 and
-        # the order fit is unconstrained): band on the last-rung spread instead.
-        spread = abs(V[-1] - V[-2])
-        if not np.isfinite(V0) or rms > max(delta_re, 1e-12):
-            u_num = FS * max(spread, rms if np.isfinite(rms) else 0.0)
-            V0, p_obs = float("nan"), float("nan")
+        if lattice:
+            # Oscillation-envelope band over the last 4 rungs; quote the finest rung.
+            tail = V[-4:]
+            u_num = FS * float(tail.max() - tail.min())
+            V0, p_obs, rms = float("nan"), float("nan"), float("nan")
         else:
-            u_num = FS * max(delta_re, rms)
+            # Classic 3-point Richardson on the geometric (r=2) nQ ladder.
+            d1, d2 = V[1] - V[0], V[2] - V[1]
+            rms = float("nan")
+            if d2 != 0.0 and d1 / d2 > 1.0:
+                p_obs = float(np.log2(d1 / d2))
+                V0 = float(V[2] + d2 / (2.0 ** p_obs - 1.0))
+                u_num = FS * (abs(V0 - V[2]) + U_SPATIAL)
+            else:
+                # Non-monotone tail: converged to the spatial noise floor; band on the
+                # last-rung spread + spatial residual.
+                V0, p_obs = float("nan"), float("nan")
+                u_num = FS * (abs(d2) + U_SPATIAL)
         rows.append({
             "c": c, "gamma": gamma, "mode": "latticeQ" if lattice else "ladder",
             "V_dp": f"{V[-1]:.9f}", "U_num": f"{u_num:.2e}",
