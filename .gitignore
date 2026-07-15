@@ -220,6 +220,7 @@ tb_logs/
 *.csv
 !Jupyter Notebooks/*.csv
 !Jupyter Notebooks/**/*.csv
+!grid_dp_pricer/results/*.csv
 *.json
 *.parquet
 *.feather
@@ -231,6 +232,11 @@ datasets/
 # Model outputs and experiments
 outputs/
 results/
+# Load-bearing result CSVs (paper artifacts) — re-include the two curated results dirs.
+# NB: a bare "!<dir>/*.csv" would be dead — git never descends into an excluded directory,
+# so the directory itself must be un-ignored first (the episode_efficiency.csv lesson).
+!grid_dp_pricer/results/
+!Jupyter Notebooks/DP Validation/results/
 experiments/
 logs/
 profilelogs/

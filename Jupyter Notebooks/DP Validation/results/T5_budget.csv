@@ -1,0 +1,11 @@
+source,axis,order,residual
+discretization,nX,-5.08,2.6234057748375506e-07
+discretization,nY,4.75,2.414979674703055e-05
+discretization,nQ,0.93,6.315325230388247e-05
+quadrature,Mx,spectral,8.97858999993062e-06
+quadrature,Nmax,spectral,5.204999999897097e-07
+quadrature,glU,spectral,2.1999999599842113e-09
+quadrature,glagJ,spectral,2.9021700000964046e-06
+truncation,Xhi,exp,0.0
+truncation,Yhi,exp,0.0
+TOTAL,V0=1.990329,,9.996884962837349e-05

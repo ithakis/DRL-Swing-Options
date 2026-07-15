@@ -52,7 +52,10 @@ is why the canonical benchmark uses n_actions=5.
 
 ### 1.4 Limiting cases (`test_dp_limits`, all pass)
 - **Zero-vol deterministic path** (σ→0, λ=0): DP == exact Lagrangian budget allocation to ≤3e-3.
-- **Monotonicities**: price ↓ in `c`, ↓ in `γ`, ↑ in `Q_max`, ↑ in `q_max`, ↑ in `σ`.
+- **Monotonicities**: price ↓ in `c`, ↑ in `Q_max`, ↑ in `q_max`, ↑ in `σ`.  Price ↓ in `γ` **only
+  where optimal lifts are ≥1** (e.g. the focal c=0.04 column): when high cost pushes the optimum
+  interior with q<1, `c·q^γ` *decreases* in γ, so the price turns **non-monotone** — on the full grid
+  V(c=0.15, γ=3)=1.0997 > V(c=0.15, γ=2)=1.0659.  Economics, not a solver artifact.
 - **γ=1 / c=0 corner**: ITM lifts are ≥95% bang-bang (∈{0,q_max}) — the linear-payoff limit.
 
 ## 2. Convergence (GOAL 3)
