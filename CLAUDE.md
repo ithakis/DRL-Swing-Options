@@ -234,6 +234,56 @@ indistinguishable from Python (Welch p=0.37). Nothing in `src/` is modified.
 - Built artifacts go to `Paper/build/`
 - Figures live in `figs/` (referenced from manuscript via `../figs/...`)
 
+#### Editing the `.tex` so the layout stays clean
+
+The class is **`cas-dc`** (Elsevier two-column). It already loads **`stfloats`**, so do **not**
+add `dblfloatfix` (it errors with "`\c@dblbotnumber` already defined"). Float behaviour is tuned in
+the preamble — keep the block intact:
+- Relaxed float params (`\topfraction 0.92`, `\floatpagefraction 0.75`, `\dbltopfraction 0.92`,
+  `totalnumber 5`, `dbltopnumber 3`, …) plus `\usepackage{placeins}` for `\FloatBarrier`.
+
+**Float-placement rules (the layout is fragile — follow these or figures drift to the end):**
+1. **Specifiers:** full-width `figure*` → `[tb]` only (`stfloats` strips `h`/`!`/`p` and warns "No
+   positions in optional float specifier" otherwise). Single-column `figure` → `[!tb]`.
+2. **Two separate float queues** exist (single-column `figure` vs full-width `figure*`); a stuck
+   `figure*` does **not** block a `figure` and vice-versa. Dense back-half text leaves no inline room,
+   so without help floats pile onto a blank float page at the very end.
+3. **`\FloatBarrier` before `\section{Risk Management…}` (§6) and `\section{Conclusion}` (§7)** keeps
+   §5/§6 figures next to their text. Do **not** barrier the appendices (it strands the lone appendix
+   figure on a blank page) — and do not use `\usepackage[section]{placeins}` (barriers every section,
+   including appendices).
+4. **Wide figures span the page; tall ones don't.** A single-column figure on a float page fills only
+   one column (ugly half-blank page). If two single-column figures would share a float page, promote
+   them to `figure*` at `width=0.72–0.85\textwidth` so they stack and fill the page (this is why
+   `bang_bangness_rl`, `sample_efficiency`, and `hedging_pnl_var_es` are `figure*`). Rule of thumb:
+   aspect ≳ 2:1 → `width=\textwidth`; aspect ~1.5:1 → `width=0.72\textwidth`; keep genuinely small
+   single plots (e.g. `bang_bangness_sensitivity`) as single-column `figure`.
+5. When you change a `figure` ↔ `figure*`, change **both** `\begin{}` and `\end{}` or the build dies
+   with "`\begin{figure*}` … ended by `\end{figure}`".
+
+**Workflow:** `make paper`, then verify visually before claiming done — `pdftoppm -png -r 95
+Paper/build/DRL_Swing_Options.pdf /tmp/p` and read the pages, or map floats with
+`for p in $(seq …); do pdftotext -f $p -l $p … - | grep -oE "Figure [0-9]+:"; done`. Confirm the log
+has no "No positions", "undefined references", or `\begin{figure*}…ended by` errors. Iterate
+(edit → build → view) until each figure sits on the page of (or adjacent to) its `\ref`.
+
+#### Results 9 / Table 5 downstream checklist (2026-06-21)
+
+Table 5 (`tab:results`) was rebuilt from `Jupyter Notebooks/Convex Costs Results 9.csv` (generator
+`Jupyter Notebooks/3: Validation 3 …/gen_results9_v67.py`): **8 seeds {11–18}**, each priced on its own OOS
+set (eval seed = train seed + 777), **BCa 95% CIs** on price and paired Δ%, a **zero-cost reference row**,
+and the **full grid** (γ=3 for every c → 28 positive cells). Format is now **price + Δ% [95% CI]** (σ_seed
+dropped). The old "kernel cuts inter-seed σ by ~2 orders of magnitude" claim is **dead** (all methods ~0.01
+per-seed SD); the manuscript now frames stability via the ~10×-tighter paired-Δ% CIs. Reconciled in the tex:
+table+caption, protocol/results paragraphs+grid note, abstract, results bullets, Seed-Robustness subsection,
+conclusion, appendix "Seeds and data". `sven.tex` intentionally left as-is (reviewer history).
+
+**Still possibly stale — verify before next submission:** (1) **Table 8 `tab:lsm_grid`** left UNCHANGED —
+its AC-kernel/AC-sample reference cols and M=5 LSM use the old single-seed-999 protocol; regenerate under
+8-seed or relabel. (2) **Figures 1–3** (notebook 6) and **notebooks 5 / Validation 3** — re-export if they
+embed old Δ% or "3 seeds". (3) **Hedging section** focal PVs vs new focal (1.9823/1.9592/1.9850).
+(4) **`Convex Costs Results 7*.csv` / `tools/rebuild_results_v7.py`** — decide if Results 9 supersedes.
+
 ### Output Locations
 
 | Path | Contents |

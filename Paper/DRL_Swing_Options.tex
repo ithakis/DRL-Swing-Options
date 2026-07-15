@@ -1,6 +1,11 @@
+% Ensure xcolor (loaded by the class) carries the table option so \cellcolor is available,
+% avoiding an option clash if we were to reload it.
+\PassOptionsToPackage{table}{xcolor}
 \documentclass[a4paper,fleqn]{cas-dc}
 
 \usepackage[numbers]{natbib}
+\usepackage{xcolor}
+\usepackage{xfp}
 \usepackage{amsmath, amsfonts, amssymb}
 \usepackage{algorithm, algpseudocode}
 \usepackage{graphicx}
@@ -10,21 +15,29 @@
 \usepackage{ragged2e}
 \usepackage{microtype}
 \usepackage{float}
-\usepackage{xcolor}
-\definecolor{revisiongreen}{RGB}{0,100,0}
-\colorlet{green}{revisiongreen}
-\definecolor{revisionpurple}{HTML}{6A0DAD}
-\colorlet{purple}{revisionpurple}
-\definecolor{revisionorange}{HTML}{B35A00}
-\definecolor{revisionbrown}{HTML}{6B3A2A}
+% NB: the cas-dc class already loads stfloats (double-column float ordering + figure* at bottom).
+\usepackage{placeins} % provides \FloatBarrier (used selectively before the back-half sections)
 \setlist{nosep}
+\graphicspath{{../}}
+
+% --- Float placement: keep figures near their referencing text, avoid end-of-document pile-up ---
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.75}
+\renewcommand{\dbltopfraction}{0.92}
+\renewcommand{\dblfloatpagefraction}{0.72}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+\setcounter{dbltopnumber}{3}
 
 \hypersetup{hypertexnames=false}
 
 \widowpenalty=10000
 \clubpenalty=10000
 \emergencystretch=3em
-\hfuzz=130pt
+\hfuzz=2pt
 
 \makeatletter
 \g@addto@macro\UrlBreaks{\do\.\do\@\do\-\do\_}
@@ -42,11 +55,13 @@
 \author[1]{Alexander Tsoskounoglou}[]
 \ead{alexander.tsoskounoglou@gmail.com}
 
+\author[2,3]{Konstantinos Chatziandreou}[]
+\ead{k.chatziandreou@uva.nl}
+
 \author[2,3]{Sven Karbach}[]
 \ead{sven@karbach.org}
 
-\author[2,3]{Konstantinos Chatziandreou}[]
-\ead{k.chatziandreou@uva.nl}
+
 
 \affiliation[1]{%
     organization={Morgan Stanley},
@@ -67,7 +82,7 @@
 }
 
 \begin{abstract}
-    We study the valuation of electricity swing options under spot dynamics with seasonality, mean reversion, and spikes. Prices follow the Hambly--Howison--Kluge (HHK) model, and the contract is cast as a finite-horizon stochastic control problem with continuous exercise quantities, a cumulative volume cap, and convex exercise costs. We propose a deterministic actor--critic method whose profitability-gated actor clips candidate exercises to quantities with non-negative immediate payoff while preserving gradient flow via a straight-through estimator. The method avoids explicit state-space discretisation and works with a nine-dimensional Markov state that combines market factors with contract bookkeeping variables. \textcolor{revisionbrown}{Numerical experiments against a discretized-action least-squares Monte Carlo baseline (LSM-D) show that the two methods produce comparable option values: the LSM-D baseline is generally competitive, while the actor--critic approach narrows the gap and occasionally prevails in configurations where strong cost convexity makes fine-grained exercise modulation most valuable.}
+    We study the valuation of electricity swing options under spot dynamics with seasonality, mean reversion, and spikes. Prices follow the Hambly--Howison--Kluge (HHK) model, and the contract is cast as a finite-horizon stochastic control problem with continuous exercise quantities, a cumulative volume cap, and convex exercise costs. We propose a deterministic actor--critic method whose profitability-gated actor clips candidate exercises to quantities with non-negative immediate payoff while preserving gradient flow via a straight-through estimator. The core method, denoted AC-sample, is \emph{model-agnostic} in the spot dynamics: it learns from simulated price paths and uses a single-sample temporal-difference bootstrap, so it requires no transition density. We also study AC-kernel, an HHK-specific extension that replaces the sampled bootstrap with a semi-analytical expected target when the transition law is known. Both variants avoid explicit state-space discretisation and operate on a nine-dimensional engineered feature vector that combines market factors with contract bookkeeping variables. Numerical experiments compare the actor--critic variants with a full-state discretized-action least-squares Monte Carlo baseline (LSM-D) across a grid of convex-cost configurations. The model-agnostic AC-sample trails LSM-D by about $1\%$ on average, while the kernel extension AC-kernel matches a well-resolved LSM-D benchmark with seed-paired confidence intervals roughly an order of magnitude tighter than the model-agnostic variant; an action-grid refinement shows that AC-kernel's apparent edge over the coarse fixed grid is baseline discretisation error rather than valuation superiority, and that the continuous-action policy and a fine-grid dynamic program agree to within $0.2\%$. Beyond valuation, a focal risk study computes common-random-number finite-difference Greeks and daily-rebalanced delta hedges.
 \end{abstract}
 
 \begin{keywords}
@@ -77,6 +92,7 @@
 
 \sloppy
 \maketitle
+\typeout{MEAS_COLW=\the\columnwidth MEAS_TXTW=\the\textwidth}
 \fussy
 
 \ExplSyntaxOn
@@ -99,21 +115,18 @@
 \section{Introduction}
 \label{sec:introduction}
 
-Electricity markets display several features that distinguish them from traditional financial markets: non-storability, strong seasonality, abrupt demand--supply imbalances, and short-lived price spikes. A substantial literature therefore models electricity prices using mean-reverting diffusions augmented by jump components. Early two-factor Gaussian models were introduced by~\cite{lucia2002electricity}, while~\cite{cartea2005pricing} incorporated jumps to capture extreme movements. A major refinement was provided by~\cite{Hambly2009}, who specified the log spot price as the sum of a seasonal component, an Ornstein--Uhlenbeck factor, and a rapidly mean-reverting spike factor. The resulting model captures both ordinary price fluctuations and transient spikes while remaining tractable enough for calibration and valuation.
+Electricity markets display several features that distinguish them from traditional financial markets: non-storability, strong seasonality, abrupt demand--supply imbalances, and short-lived price spikes. A substantial literature therefore models electricity prices using mean-reverting diffusions augmented by jump components. Early two-factor Gaussian models were introduced by~\cite{lucia2002electricity}, while~\cite{cartea2005pricing} incorporated jumps to capture extreme movements. A major refinement was provided by~\cite{Hambly2009}, who specified the log spot price as the sum of a seasonal component, an Ornstein--Uhlenbeck factor, and a rapidly mean-reverting spike factor. The resulting model captures both ordinary price fluctuations and transient spikes while remaining tractable enough for calibration and valuation. Swing options are central in gas and power markets because they grant the holder repeated rights to purchase energy subject to volume and operational constraints. Their valuation is substantially more involved than that of European-style derivatives, since the holder repeatedly decides how much to exercise at each decision time. Classical approaches include tree and grid-based dynamic programming~\cite{jaillet2004valuation}, Monte Carlo regression methods~\cite{longstaff2001valuing,meinshausen2004monte}, dual or multiple-stopping formulations~\cite{carmona2008swing}, and analytically tractable special cases. These methods can be accurate, but they become increasingly cumbersome when the underlying model contains multiple stochastic factors, jump components, and non-trivial contractual constraints. Reinforcement learning and neuro-dynamic programming provide an attractive alternative to explicit state-space discretisation~\cite{bertsekas1996neuro,sutton1998reinforcement}. Recent financial applications include deep hedging, optimal stopping, and related control problems~\cite{halperin2017qlbs,buehler2019deephedging,becker2019deepoptimalstopping,tsoskounoglou2025higherorder}. Closely related work already applies least-squares Monte Carlo and reinforcement-learning algorithms to commodity swing options~\cite{daluiso2020pricingcommodityswing}, and deep Q-learning has been used for multiple-stopping and swing-style examples with primal--dual bounds~\cite{ery2021solvingoptimalstopping}. Against this background, our contribution is an engineering adaptation of continuous-action actor--critic learning to a convex-cost swing testbed, together with an explicit comparison between a model-agnostic sampled target and a model-specific HHK expected target.
 
-Swing options are central in gas and power markets because they grant the holder repeated rights to purchase energy subject to volume and operational constraints. Their valuation is substantially more involved than that of European-style derivatives, since the holder repeatedly decides how much to exercise at each decision time. Classical approaches include tree and grid-based dynamic programming~\cite{jaillet2004valuation}, Monte Carlo regression methods~\cite{longstaff2001valuing,meinshausen2004monte}, dual or multiple-stopping formulations~\cite{carmona2008swing}, and analytically tractable special cases. These methods can be accurate, but they become increasingly cumbersome when the underlying model contains multiple stochastic factors, jump components, and non-trivial contractual constraints.
-
-Reinforcement learning and neuro-dynamic programming provide an attractive alternative to explicit state-space discretisation~\cite{bertsekas1996neuro,sutton1998reinforcement}. \textcolor{green}{Recent financial applications include deep hedging, optimal stopping, and related control problems~\cite{halperin2017qlbs,buehler2019deephedging,becker2019deepoptimalstopping,tsoskounoglou2025higherorder}.} Swing contracts are a natural testbed: the exercise decision is continuous, the horizon is finite but non-trivial, and the contract state embeds directly into the Markov state observed by the agent.
-
-In this paper we formulate swing-option valuation under the HHK model as a finite-horizon Markov decision process and solve the resulting control problem with a deterministic actor--critic algorithm. The focus is on contracts with optional exercise, a cumulative volume cap, and convex exercise costs, since convexity destroys the bang-bang structure that simplifies many classical implementations. Our main contributions are:
+We formulate swing-option valuation under the HHK model as a finite-horizon Markov decision process and solve the resulting control problem with deterministic actor--critic methods. The headline method, AC-sample, is \emph{model-agnostic} in the spot dynamics: it learns from simulated price paths and never requires the transition density, so the same algorithm applies to any energy price model one can simulate. The HHK model also admits a tractable transition law; we therefore report AC-kernel as a model-specific extension that trades generality for a lower-variance critic target. The focus is on contracts with optional exercise, a cumulative volume cap, and convex exercise costs, since convexity destroys the bang-bang structure that simplifies many classical implementations. Our main contributions are:
 \begin{enumerate}
     \item a \textbf{profitability-gated actor} that clips proposed exercises to quantities with non-negative immediate payoff while preserving gradient flow through a straight-through estimator;
-    \item a \textbf{nine-dimensional state representation} that combines HHK market factors with contract bookkeeping variables in a Markovian input to the policy and value networks;
-    \item a \textbf{deterministic actor--critic training procedure} with prioritized replay, target smoothing, and pre-squash exploration noise tailored to continuous exercise decisions; and
-    \item a set of \textbf{numerical experiments} showing how the learned policy compares with a \textcolor{revisionbrown}{discretized-action LSM (LSM-D)} baseline across a range of convex cost specifications.
+    \item a \textbf{nine-dimensional feature representation} that combines HHK market factors with contract bookkeeping variables in an engineered Markovian input to the policy and value networks;
+    \item a \textbf{two-variant actor--critic comparison}: AC-sample uses a model-agnostic single-sample bootstrap, while AC-kernel uses the semi-analytical HHK transition kernel when that model structure is available;
+    \item a set of \textbf{numerical experiments} comparing both actor--critic variants with a full-state discretized-action LSM baseline (LSM-D) across convex cost specifications; and
+    \item a \textbf{risk-management study} that computes common-random-number finite-difference Greeks and runs daily-rebalanced delta hedges in a focal regime.
 \end{enumerate}
 
-The remainder of the paper is organised as follows. Section~\ref{sec:market_contract} introduces the HHK price model and the swing-contract specification used throughout the manuscript. Section~\ref{sec:classical_methods} summarises the classical dynamic-programming perspective that motivates the reinforcement-learning approach. Section~\ref{sec:rl_formulation} presents the Markov decision process, actor--critic architecture, and profitability gate. Section~\ref{sec:experiments} reports numerical results, and Section~\ref{sec:conclusion} concludes.
+The remainder of the paper is organised as follows. Section~\ref{sec:market_contract} introduces the HHK price model and the swing-contract specification used throughout the manuscript. Section~\ref{sec:classical_methods} summarises the classical dynamic-programming perspective that motivates the reinforcement-learning approach. Section~\ref{sec:rl_formulation} presents the Markov decision process, actor--critic architecture, and profitability gate. Section~\ref{sec:experiments} reports numerical results, Section~\ref{sec:hedging} studies sensitivities and hedging, and Section~\ref{sec:conclusion} concludes.
 
 \section{Market and Contract Framework}
 \label{sec:market_contract}
@@ -144,23 +157,23 @@ although in practice one can use richer parametrisations. In the numerical exper
 \]
 To ensure forward-curve consistency, $f$ must absorb a convexity correction arising from the variance of $X_T$ and the moment-generating function of $Y_T$ under $\mathbb{Q}$; details are given in~\cite{Hambly2009}.
 
-% P2-7: Replace Sven's red comment with an explicit justification for flat seasonality.
 The choice $A = 0$ is motivated by the short contract maturity of approximately one month used in the numerical experiments.
 Over a horizon of $T \approx 0.083$ years ($\approx 22$ trading days), the deterministic seasonal component $A\cos(2\pi t)$ changes by at most $|A|\cdot 2\pi T \approx 0.5A$, which is negligible relative to the diffusive and jump volatility for realistic values of $A$.
 Setting $A = 0$ therefore isolates the contribution of the stochastic factors $(X,Y)$ without confounding seasonal trends, and keeps the pricing problem well-suited to comparing RL with LSM-D on a well-understood benchmark.
 For longer-maturity contracts or seasonal calibration studies, $A > 0$ can be activated without modifying the algorithm.
+We emphasise that the numerical experiments use this $f(t)=\log S_0$ specification as a \emph{normalised testbed} rather than a forward-calibrated model: with $f$ flat, the implied forward curve $F_0^{[T]}=\mathbb{E}^{\mathbb{Q}}[S_T]$ is the (mildly upward-sloping) curve generated by the $(X,Y)$ dynamics through the convexity correction above, not a separately fitted flat curve. Calibrating to an observed forward curve would absorb that correction into $f$ and could change absolute price levels and payoff distributions; it would not affect the methodological comparison here, since AC-sample, AC-kernel, and LSM-D are all evaluated under the same simulated dynamics and the same pricing measure.
 
 The HHK model provides an appealing compromise between realism and tractability. It captures the empirical features that matter most for electricity options, yet it already makes classical grid-based valuation demanding because the state space contains two latent factors and a jump component. This is precisely the regime in which simulation-based control methods become attractive.
 
 \subsection{Swing Contract Specification}
 
-We consider a finite set of exercise dates
+We consider a finite set of $n$ exercise dates
 \[
-    0 = t_0 < t_1 < \cdots < t_{n-1} < t_n = T,
+    0 = t_0 < t_1 < \cdots < t_{n-1} = T,
     \qquad
     t_i = i \Delta t,
 \]
-with a constant time step $\Delta t = T/n$. At each exercise date $t_i$, the holder chooses a non-negative quantity
+with a constant time step $\Delta t = T/(n-1)$, so that the $n$ decision dates span $n-1$ intervals and the final exercise opportunity coincides with maturity. At each exercise date $t_i$, the holder chooses a non-negative quantity
 \[
     q_i \in [0,q_{\max}],
 \]
@@ -270,7 +283,7 @@ We now cast~\eqref{eq:value0} as a finite-horizon Markov decision process. The o
 \subsection{Markov Decision Process}
 \label{sec:mdp}
 
-At exercise time $t_i$, the agent observes a nine-dimensional state
+At exercise time $t_i$, the underlying control problem is Markov in the HHK market factors and contract bookkeeping variables. The actor and critic do not use a minimal sufficient state directly; instead, they receive the following nine-dimensional engineered feature vector:
 \[
     \begin{aligned}
         s_i = \bigl( & S_{t_i} - K,
@@ -284,7 +297,9 @@ At exercise time $t_i$, the agent observes a nine-dimensional state
         \rho_i\bigr).
     \end{aligned}
 \]
-The display above lists the raw economic quantities; Table~\ref{tab:state_components} details the meaning and preprocessing applied to each component before network ingestion (e.g., log-moneyness and robust scaling). The state contains all variables required to make the problem Markov. \textcolor{purple}{The representation is intentionally non-minimal: the paired inventory features $Q_i/Q_{\max}$ and $(Q_{\max}-Q_i)/Q_{\max}$, as well as the paired time features $(T-t_i)/T$ and $i/n$, encode the same information up to affine transforms. We retain both pairs as an engineering choice because they stabilised optimisation in our experiments. This is consistent with the broader DRL hedging literature, where state design is largely task-specific and recent reviews report no consensus minimal representation, with practical implementations often preferring richer feature sets over theoretically minimal ones \cite{kolm2019dynamic,pickard2023review,cao2022gamma}. A systematic minimal-state ablation is left for future work.} \textcolor{red}{\textbf{Sven:} While noted as practically useful, the inclusion of redundant state variables ($Q_i/Q_{\max}$ vs $(Q_{\max}-Q_i)/Q_{\max}$, and $t_i$ vs $i/n$) is theoretically not super elegant. Worth it to reduce to a minimal sufficient basis to strengthen the theoretical presentation?}
+The display above lists the raw economic quantities; Table~\ref{tab:state_components} details the meaning and preprocessing applied to each component before network ingestion (e.g., log-moneyness for the spot and a robust-normalisation layer for the latent factors). The representation is intentionally non-minimal: the paired inventory features $Q_i/Q_{\max}$ and $(Q_{\max}-Q_i)/Q_{\max}$, as well as the paired time features $(T-t_i)/T$ and $i/n$, encode the same information up to affine transforms. Consistent with this, the time-to-maturity component is implemented as the affine surrogate $(n-i)/(n-1)$ (the fraction of decision dates remaining, counting the current one), as recorded in Table~\ref{tab:state_components}. We retain both pairs as an engineering choice because they stabilised optimisation in our experiments. This follows common DRL practice, where the economic state may be Markov in a minimal representation while the network input is allowed to be a richer feature map tailored to function approximation \cite{kolm2019dynamic,pickard2023review,cao2022gamma}. A systematic minimal-state ablation is left for future work.
+
+We use ``model-agnostic'' throughout in a specific sense: AC-sample requires only the ability to \emph{simulate} the spot dynamics and never the transition density, so the same algorithm applies to any energy price model one can sample. It is not model-free in the broader sense: the state above includes the simulated HHK latent factors $X_{t_i}$ and $Y_{t_i}$, and the profitability gate uses the known contract payoff and cost structure. Applying the method to market data would therefore require either filtering the latent factors or a state representation built from observable quantities; we treat this as part of the controlled numerical testbed rather than a claim about plug-and-play deployment.
 
 \begin{table}[htbp]
     \centering
@@ -298,11 +313,11 @@ The display above lists the raw economic quantities; Table~\ref{tab:state_compon
             0     & $S_{t_i} - K$               & Intrinsic spread                     & Raw                             \\
             1     & $Q_i / Q_{\max}$            & Used-volume fraction                 & $[0,1]$                         \\
             2     & $(Q_{\max} - Q_i)/Q_{\max}$ & Remaining-volume fraction            & $[0,1]$                         \\
-            3     & $(T - t_i)/T$               & Time to maturity                     & $[0,1]$                         \\
-            4     & $i/n$                       & Contract progress                    & $[0,1]$                         \\
+            3     & $(T - t_i)/T$               & Time to maturity                     & $(n-i)/(n-1)$                   \\
+            4     & $i/n$                       & Contract progress                    & $i/n$                           \\
             5     & $S_{t_i}$                   & Spot price                           & Log-moneyness $\log(S_{t_i}/K)$ \\
-            6     & $X_{t_i}$                   & Diffusive factor                     & Robust-scaled (median/IQR)      \\
-            7     & $Y_{t_i}$                   & Spike factor                         & Robust-scaled (median/IQR)      \\
+            6     & $X_{t_i}$                   & Diffusive factor                     & Robust-norm.\ (identity stats)  \\
+            7     & $Y_{t_i}$                   & Spike factor                         & Robust-norm.\ (identity stats)  \\
             8     & $\rho_i$                    & Normalised steps since last exercise & $[0,1]$                         \\
             \bottomrule
         \end{tabular}
@@ -331,32 +346,29 @@ The next state is obtained by advancing the HHK simulator over one exercise inte
 \]
 We write $\operatorname{SimHHK}$ for the one-step simulation routine used on the exercise grid; it draws from the exact conditional distributions of $X$ and $Y$ under $\mathbb{Q}$. The presentation below does not rely on a particular discretisation scheme, only on the ability to simulate the model consistently under the pricing measure.
 
-% P2-6: Document Sobol QMC for OU increments and antithetic variates for jump component.
 \paragraph{Variance reduction in path generation.}
-The implementation uses two variance-reduction techniques when generating the training and evaluation paths.
-For the Ornstein--Uhlenbeck diffusion component $X$, the Brownian increments $\Delta W \sim \mathcal{N}(0,\Delta t)$ are drawn via a scrambled Sobol quasi-Monte Carlo sequence (dimension equal to $n \times N_{\mathrm{paths}}$), improving the uniformity of path coverage relative to plain pseudo-random sampling.
-For the compound Poisson jump component $Y$, antithetic variates are applied: each path is paired with a mirror path that uses the negative of its Poisson arrivals and jump sizes, so that the estimator averages out the first-order sampling error from the jump noise.
-These techniques reduce the variance of the option-price estimator at fixed path count and are particularly beneficial for the evaluation step, which uses $65{,}536$ held-out paths.
+The implementation uses scrambled Sobol quasi-Monte Carlo draws for the Ornstein--Uhlenbeck increments of $X$, improving the uniformity of path coverage relative to plain pseudo-random sampling. All reported valuation estimates are then computed on a large common test sample of $65{,}536$ paths so that Monte Carlo noise remains small relative to the RL--LSM differences reported below.
 
-The one-step reward is the undiscounted exercise payoff
+The replay buffer stores the pre-discounted one-step reward
 \[
-    R_i(q_i) = \Pi_i(q_i),
+    \tilde R_i(q_i) = \delta^i \Pi_i(q_i),
+    \qquad
+    \delta = e^{-r\Delta t},
 \]
-and the objective is
+so that the RL objective is
 \[
     J(\pi) =
     \mathbb{E}^{\mathbb{Q}}
     \biggl[
-        \sum_{i=0}^{n-1} \delta^i R_i(q_i)
+        \sum_{i=0}^{n-1} \tilde R_i(q_i)
+        \biggr]
+    =
+    \mathbb{E}^{\mathbb{Q}}
+    \biggl[
+        \sum_{i=0}^{n-1} \delta^i \Pi_i(q_i)
         \biggr].
 \]
-This is exactly the swing-option value~\eqref{eq:value0} for the policy class represented by the actor. Note that the RL discount factor $\delta = e^{-r\Delta t}$ coincides with the financial discount factor in the pricing objective, and all paths are simulated under the risk-neutral measure $\mathbb{Q}$, so the RL and derivative-pricing problems are formally identical.
-
-\paragraph{Implementation note (pre-discounted reward convention).}
-% P1-8: Document that the implementation uses pre-discounted rewards with GAMMA=1.
-In the implementation, the one-step reward stored in the replay buffer is the \emph{pre-discounted} payoff $\tilde R_i = \delta^i \Pi_i(q_i)$, and the Bellman target is computed with RL discount factor $\gamma_{\mathrm{RL}} = 1$.
-This is equivalent to the formulation above: the Bellman recursion with $\gamma_{\mathrm{RL}} = 1$ and pre-discounted rewards reconstructs the same sum $\sum_i \delta^i \Pi_i(q_i)$ as a standard $\gamma_{\mathrm{RL}} = \delta$ recursion with undiscounted rewards.
-The pre-discounted convention avoids introducing a second discount mechanism in the critic loss, and is reflected in the hyperparameter $\gamma = 1$ listed in Table~\ref{tab:hyperparams}.
+This is exactly the swing-option value~\eqref{eq:value0} for the policy class represented by the actor. Using pre-discounted rewards lets the RL recursion operate with $\gamma_{\mathrm{RL}} = 1$ without changing the financial objective.
 
 \subsection{Enforcement of Swing Constraints}
 
@@ -366,18 +378,15 @@ The contract constraints enter the RL formulation through the environment and th
 The actor proposes a normalised action in $[0,1]$, which corresponds to a physical exercise in $[0,q_{\max}]$. The environment then enforces the cumulative cap by clipping to the remaining capacity $Q_{\max} - Q_i$.
 
 \paragraph{Refraction constraints.}
-% P2-1: rho_i is implemented as normalised steps since last exercise, not remaining blocked fraction.
-\textcolor{purple}{The state variable $\rho_i$, taking values in $[0,1]$, records the normalised number of steps elapsed since the last exercise and acts as a soft proximity signal for refraction-style constraints.}
-
-\textcolor{purple}{If a mandatory refraction period is active, the environment forces $q_i = 0$ while a cooldown counter is positive. Then $\rho_i$ gives the policy a continuous summary of how recently the last exercise occurred. In the reported experiments no refraction is imposed, so $\rho_i$ carries elapsed-since-exercise information only. Retaining it in the state nevertheless makes the extension to richer contracts explicit.}
+The state variable $\rho_i$, taking values in $[0,1]$, records the normalised number of steps elapsed since the last exercise and acts as a soft proximity signal for refraction-style constraints. If a mandatory refraction period is active, the environment forces $q_i = 0$ while a cooldown counter is positive. Then $\rho_i$ gives the policy a continuous summary of how recently the last exercise occurred. In the reported experiments no refraction is imposed, so $\rho_i$ carries elapsed-since-exercise information only. Retaining it in the state nevertheless makes the extension to richer contracts explicit.
 
 \paragraph{Profitability masking.}
-\textcolor{purple}{For the contract class studied numerically, zero exercise is always admissible and only an upper cumulative volume cap is imposed. Consequently, any action with strictly negative immediate payoff is weakly dominated by zero exercise: it lowers the current cash flow and consumes flexibility that could be used later. This observation justifies the profitability gate introduced in Section~\ref{sec:profitability_gate}. We do not claim the same argument without modification for contracts with mandatory take obligations, active ramping constraints, or hard refraction limits. Under such path-dependent restrictions, it may be optimal to accept a small immediate loss in order to preserve feasibility for a more valuable future exercise, so the hard gate would need to be relaxed.}
+For the contract class studied numerically, zero exercise is always admissible and only an upper cumulative volume cap is imposed. Consequently, any action with strictly negative immediate payoff is weakly dominated by zero exercise: it lowers the current cash flow and consumes flexibility that could be used later. In this setting the profitability gate introduced in Section~\ref{sec:profitability_gate} is therefore lossless rather than merely heuristic. Operationally this profitability projection is applied at the environment level and shared by every method: after feasibility clipping, the environment and evaluator map any exercise with non-positive net payoff to zero for both the actor--critic policy and the LSM-D baseline, so the comparison in Section~\ref{sec:experiments} treats the two methods symmetrically. We do not claim the same argument without modification for contracts with mandatory take obligations, active ramping constraints, or hard refraction limits. Under such path-dependent restrictions, it may be optimal to accept a small immediate loss in order to preserve feasibility for a more valuable future exercise, so the hard gate would need to be relaxed.
 
 \subsection{Actor--Critic Algorithm}
 \label{sec:actor_critic}
 
-We use a deterministic actor--critic architecture~\cite{silver2014dpg}, inspired by the distributed D4PG framework of~\cite{barth2018d4pg}, with target networks, prioritized experience replay (PER), and target-policy smoothing. The actor $\pi_\theta : \mathcal{S} \to [0,1]$ maps states to normalised exercise quantities, while the critic $Q_\phi : \mathcal{S} \times \mathcal{A} \to \mathbb{R}$ estimates discounted continuation values.
+We use a deterministic actor--critic architecture~\cite{silver2014dpg} with target networks and uniform replay. The actor $\pi_\theta : \mathcal{S} \to [0,1]$ maps states to normalised exercise quantities, while the critic $Q_\phi : \mathcal{S} \times \mathcal{A} \to \mathbb{R}$ estimates pre-discounted continuation values. The implementation supports two critic targets. AC-sample uses the standard single-sample temporal-difference bootstrap and requires only simulated state transitions. AC-kernel replaces that bootstrap with a conditional expectation over the HHK transition kernel, using the model-specific structure to reduce target variance.
 
 \subsubsection{Deterministic Policy Gradient}
 
@@ -401,34 +410,35 @@ with $\tau = 0.0032$.
 
 \subsubsection{Critic Loss}
 
-The critic is scalar-valued and is trained with the one-step temporal-difference target
+The critic is scalar-valued. In AC-sample it is trained with the one-step temporal-difference target
 \[
-    y = R + \delta (1-d) Q_{\phi'}\bigl(s',\pi_{\theta'}(s')\bigr),
+    y_{\mathrm{sample}} = \tilde R + (1-d) Q_{\phi'}\bigl(s',\pi_{\theta'}(s')\bigr),
 \]
-where $d$ is the terminal indicator and $R$ is the one-step reward. The loss is
+where $d$ is the terminal indicator and $\tilde R$ is the pre-discounted one-step reward stored in the replay buffer. In AC-kernel the sampled continuation value is replaced by
+\[
+    y_{\mathrm{kernel}} =
+    \tilde R
+    + (1-d)
+      \mathbb{E}_{\mathcal{K}_{\mathrm{HHK}}}
+      \!\left[
+          Q_{\phi'}\bigl(s^+,\pi_{\theta'}(s^+)\bigr)
+          \,\middle|\, s,a
+      \right],
+\]
+where $\mathcal{K}_{\mathrm{HHK}}$ is the exact one-step HHK transition law on the exercise grid. The expectation is evaluated with shared Gauss--Hermite nodes for the Gaussian $X$ transition and a fast quadrature mesh for the rapidly decaying spike factor $Y$. The loss for either target is the unweighted mean squared TD error
 \begin{equation*}
     \mathcal{L}_{\mathrm{critic}}
     =
-    \mathbb{E}_{(s,a,R,s',d) \sim \mathcal{D}}
+    \mathbb{E}_{(s,a,\tilde R,s',d) \sim \mathcal{D}}
     \Bigl[
-        w_i \bigl(y - Q_\phi(s,a)\bigr)^2
+        \bigl(y - Q_\phi(s,a)\bigr)^2
         \Bigr],
 \end{equation*}
-with importance-sampling weights $w_i$ supplied by PER.
+with $y=y_{\mathrm{sample}}$ for AC-sample and $y=y_{\mathrm{kernel}}$ for AC-kernel.
 
-\subsubsection{Prioritized Replay}
+\subsubsection{Uniform Replay}
 
-Transition $i$ is sampled with probability
-\[
-    P(i) = \frac{p_i^{a_{\mathrm{per}}}}{\sum_k p_k^{a_{\mathrm{per}}}},
-    \qquad
-    p_i = |\varepsilon_i| + \epsilon_{\mathrm{per}},
-\]
-where $\varepsilon_i$ is the TD error and $\epsilon_{\mathrm{per}} = 5 \times 10^{-6}$ is the priority floor. The priority exponent is annealed from $a_{\mathrm{per}} = 0.1$ to $0.2$. Importance weights use the exponent $b_{\mathrm{per}} = 1.0$:
-\[
-    w_i = (N P(i))^{-b_{\mathrm{per}}}.
-\]
-Renaming these replay exponents avoids confusion with the HHK parameters $\alpha$ and $\beta$.
+Transitions are stored in a circular replay buffer and sampled uniformly; prioritized replay is not used in either reported recipe. The buffer capacity and the minimum fill before updates begin are variant-specific: AC-kernel uses a capacity of $10^5$ transitions and starts updates after $1{,}000$ stored transitions, while AC-sample uses a larger capacity of $2\times10^5$ and starts after $18{,}000$. The two variants differ in target-policy smoothing: AC-kernel uses none, whereas AC-sample injects a small Gaussian noise into the target action (standard deviation $0.15$, decaying to $0.04$ over training) before evaluating the bootstrap target, following the original single-sample recipe.
 
 \subsection{Profitability-Gated Actor}
 \label{sec:profitability_gate}
@@ -487,7 +497,7 @@ The clipping operation is non-differentiable, so we use a straight-through estim
     =
     \tilde{q}_i + \sg\!\left(\tilde{q}_i^{\mathrm{gate}} - \tilde{q}_i\right).
 \]
-In the forward pass, $\tilde{q}_i^{\mathrm{out}} = \tilde{q}_i^{\mathrm{gate}}$; in the backward pass, gradients flow through the unclipped proposal $\tilde{q}_i$~\cite{bengio2013ste}. This retains a simple differentiable training signal while ensuring that the executed action satisfies the profitability bound. The STE introduces a biased gradient estimator; however, the bias is mild in practice because the gate is inactive for most training transitions (the actor quickly learns to avoid unprofitable exercises).
+In the forward pass, $\tilde{q}_i^{\mathrm{out}} = \tilde{q}_i^{\mathrm{gate}}$; in the backward pass, gradients flow through the unclipped proposal $\tilde{q}_i$~\cite{bengio2013ste}. This retains a simple differentiable training signal while ensuring that the executed action satisfies the profitability bound. The STE introduces a biased gradient estimator; empirically, the resulting policies remain stable across the reported experiments and seeds.
 
 \subsubsection{Implementation}
 
@@ -501,7 +511,7 @@ Algorithm~\ref{alg:profitability_gate} summarises the gated actor forward pass.
         \Require Cost parameters $c$, $\gamma_c$, $q_{\max}$
         \Ensure Feasible normalised action $\tilde{q}_i^{\mathrm{out}} \in [0,1]$
         \State $u \gets \operatorname{MLP}(s_i)$
-        \State $\tilde{q}_i \gets \operatorname{sig}(\beta_{\mathrm{act}} u)$ \Comment{$\beta_{\mathrm{act}}$-sigmoid, $\beta_{\mathrm{act}} = 3.0$}
+        \State $\tilde{q}_i \gets \operatorname{sig}(\beta_{\mathrm{act}} u)$ \Comment{$\beta_{\mathrm{act}}$ is variant-specific}
         \If{$c > 0$ and $\gamma_c > 1$}
         \State $\bar{q}_i \gets \bigl((S_{t_i}-K)^+/c\bigr)^{1/(\gamma_c-1)}$
         \State $\tilde{q}_i^{\max} \gets \min\{1,\bar{q}_i/q_{\max}\}$
@@ -524,7 +534,7 @@ Exploration is challenging in continuous action spaces because the actor output 
     \qquad
     \epsilon_i \sim \mathcal{N}(0,1).
 \]
-Pre-squash noise remains effective even when the policy is close to the action bounds. The noise scale follows a plateau-then-decay schedule,
+Pre-squash noise remains effective even when the policy is close to the action bounds. The two variants use frozen exploration recipes. AC-kernel uses a linear decay from $\sigma_0=1.30$ to $\sigma_{\mathrm{floor}}=0.26$ over the training horizon. AC-sample uses the sample-target recipe with an initial plateau followed by hyperbolic decay,
 \[
     \sigma_{\mathrm{expl}}(e) =
     \begin{cases}
@@ -535,8 +545,7 @@ Pre-squash noise remains effective even when the policy is close to the action b
                   & e \ge e_{\mathrm{plateau}},
     \end{cases}
 \]
-\textcolor{green}{The schedule starts at 1.30, decays no lower than 0.26, and only begins to decay after 3{,}200 episodes.} % P2-5: Clarify that adaptive noise scales the std of the *pre-squash* noise by (1 + 0.6*|u_i|),
-% where u_i is the pre-activation logit (not the squashed action in [0,1]).
+with $e_{\mathrm{plateau}}$ set to $10\%$ of the episode budget.
 We additionally scale the pre-squash noise standard deviation adaptively as
 \[
     \begin{aligned}
@@ -548,72 +557,41 @@ We additionally scale the pre-squash noise standard deviation adaptively as
 where $u_i$ is the pre-squash logit output by the actor before the $\beta$-sigmoid nonlinearity.
 This increases the effective noise magnitude when the logit is large (i.e.\ the policy is saturated near the action bounds), where the sigmoid gradient is small and unscaled noise would have little effect on the squashed output.
 
-During the first $1{,}024$ episodes, actor updates are frozen and only the critic is trained. This critic warmup stabilises the early training dynamics. To reduce target overestimation, target-policy smoothing is applied in the critic target by perturbing the target action with clipped Gaussian noise.
+During the critic warmup, actor updates are frozen and only the critic is trained. The warmup length is variant-specific: $512$ episodes for AC-kernel and $1{,}024$ episodes for AC-sample. AC-kernel uses no target-policy smoothing; AC-sample adds the small decaying target-policy noise described in Section~\ref{sec:actor_critic}. Target-action clipping is unused in both variants.
+
+\paragraph{Evaluation weight averaging.}
+Both variants maintain a shadow copy of the actor weights as an exponential moving average (EMA) over training with decay $0.999$: after each actor update, the EMA copy is updated by $\bar\theta \leftarrow 0.999\,\bar\theta + 0.001\,\theta$. All held-out evaluations use the EMA actor $\pi_{\bar\theta}$ rather than the live actor $\pi_\theta$. This averaging has no effect on gradient computation and does not alter the training dynamics; it acts as a lightweight Polyak average of the actor trajectory and reduces sensitivity to late-training noise in the evaluation signal.
 
 \subsection{Neural Network Architecture}
 \label{sec:architecture}
 
-Both actor and critic are lightweight multilayer perceptrons. Table~\ref{tab:network_arch} summarises the architecture.
+Both actor and critic are lightweight multilayer perceptrons with LayerNorm on every hidden layer. The actor takes the $9$-dimensional state of Table~\ref{tab:state_components} and the critic appends the scalar action ($10$ inputs); both emit a scalar output (exercise quantity and continuation value, respectively). The two variants differ slightly in capacity: AC-sample uses two width-$64$ hidden layers for both networks, while AC-kernel uses two width-$32$ layers for the actor and four width-$48$ layers for the deeper critic.
 
-\begin{table}[htbp]
-    \centering
-    \caption{Neural-network architecture for actor and critic.}
-    \label{tab:network_arch}
-    \begin{adjustbox}{max width=\linewidth}
-        \begin{tabular}{lll}
-            \toprule
-            Component         & Actor                          & Critic                 \\
-            \midrule
-            Input dimension   & 9 (state)                      & 9 (state) + 1 (action) \\
-            Hidden layers     & 2                              & 2                      \\
-            Hidden units      & 64                             & 64                     \\
-            Activation        & SiLU                           & SiLU                   \\
-            Normalisation     & LayerNorm                      & LayerNorm              \\
-            Output dimension  & 1                              & 1                      \\
-            Output activation & $\beta_{\mathrm{act}}$-sigmoid & None                   \\
-            \bottomrule
-        \end{tabular}
-    \end{adjustbox}
-\end{table}
+The actor output uses $\operatorname{sig}(\beta_{\mathrm{act}} u)$, where $\operatorname{sig}$ denotes the logistic sigmoid. The two variants use different hidden activations: AC-sample uses the SiLU gate $x\,\sigma(x)$, while AC-kernel uses a steeper swish gate $x\,\sigma(3x)$ (swish-$\beta$3). The steeper gate was retained for AC-kernel because, paired with the low-variance expected target, it improved the focal value at negligible cost; under the noisier single-sample target it gave no benefit, so AC-sample keeps the standard SiLU. State preprocessing is domain-specific and shared across variants: the spot component is mapped to log-moneyness $\log(S_{t_i}/K)$; the latent factors $X_{t_i}$ and $Y_{t_i}$ are passed through a robust-normalisation layer based on median/IQR scaling. In the reported recipes this layer uses default identity statistics (median $0$, IQR $1$) rather than per-dataset fitted values, so the latent factors enter the network essentially unscaled apart from the hidden-layer normalisation. The hidden-layer initialisation differs by variant---AC-sample uses orthogonal weights and AC-kernel uses He (scaled-Gaussian) weights---and both use a small uniform initialisation drawn from $[-0.003,0.003]$ for the output layers.
 
-\textcolor{green}{The actor output uses $\operatorname{sig}(\beta_{\mathrm{act}} u)$ with $\beta_{\mathrm{act}} = 3.0$, where $\operatorname{sig}$ denotes the logistic sigmoid. State preprocessing is domain-specific: the spot component is mapped to log-moneyness $\log(S_{t_i}/K)$; the latent factors $X_{t_i}$, $Y_{t_i}$ are robust-scaled using the sample median and IQR.
-    Hidden-layer weights are initialised orthogonally with gain $\sqrt{2}$. Output layers use a small uniform initialisation drawn from the interval $[-0.003,0.003]$.}
-
-Training uses AdamW with separate learning rates and weight decay:
-\begin{itemize}
-    \item actor: $\eta_a = 1.6 \times 10^{-4}$ with weight decay $5 \times 10^{-5}$;
-    \item critic: $\eta_c = 9.0 \times 10^{-5}$ with weight decay $1.2 \times 10^{-4}$.
-\end{itemize}
-Both learning rates follow a warmup over the first $1{,}024$ episodes followed by cosine decay to $20\%$ of their initial values over $40{,}000$ episodes.
+Training uses AdamW. The actor weight decay is $5 \times 10^{-5}$ in both recipes; the critic weight decay is $10^{-4}$ for AC-kernel and $1.2 \times 10^{-4}$ for AC-sample. AC-kernel uses constant learning rates $\eta_a = 3.0 \times 10^{-4}$ and $\eta_c = 5.0 \times 10^{-4}$. AC-sample uses smaller base rates $\eta_a = 1.6 \times 10^{-4}$ and $\eta_c = 9.0 \times 10^{-5}$ under a cosine decay schedule with a short linear warmup; it additionally applies a duplicated critic optimiser step per update (an effective doubling of the critic learning rate), following the original single-sample recipe.
 
 \subsection{Training Procedure}
 \label{sec:training}
 
-Algorithm~\ref{alg:training} gives the training loop.
+Algorithm~\ref{alg:training} gives the training loop used for both actor--critic variants.
 
 \begin{algorithm}[htbp]
     \caption{Actor--critic training for swing-option pricing}
     \label{alg:training}
     \begin{algorithmic}[1]
         \Require Swing contract $\mathcal{C}$, HHK parameters $\Theta_{\mathrm{HHK}}$
-        \Require Training episodes $N_{\mathrm{train}}$, held-out episodes $N_{\mathrm{hold}}$
-        \Ensure Trained actor $\pi_\theta$
-        \State Generate market paths $(t,S,X,Y)$
-        \Statex \hspace{\algorithmicindent}$\gets \operatorname{SimHHK}(\Theta_{\mathrm{HHK}},N_{\mathrm{train}}+N_{\mathrm{hold}})$
+        \Require Training episodes $N_{\mathrm{train}}$, held-out test paths $N_{\mathrm{test}}$
+        \Require Variant $v \in \{\text{AC-sample},\text{AC-kernel}\}$
+        \Ensure Saved final actor checkpoint and metadata
+        \State Generate training paths $(t,S,X,Y)$
+        \Statex \hspace{\algorithmicindent}$\gets \operatorname{SimHHK}(\Theta_{\mathrm{HHK}},N_{\mathrm{train}})$
+        \State Generate a disjoint held-out evaluation set
+        \Statex \hspace{\algorithmicindent}$\gets \operatorname{SimHHK}(\Theta_{\mathrm{HHK}},N_{\mathrm{test}})$
         \State Initialise actor $\pi_\theta$, critic $Q_\phi$, and targets $\pi_{\theta'}$, $Q_{\phi'}$
-        \State Initialise replay buffer $\mathcal{D}$ with capacity $2 \times 10^5$
-        \Statex \textbf{// Bias calibration warm-up (before RL training)}
-        \State Evaluate actor on $N_{\mathrm{calib}} = 4{,}096$ paths;
-        \Statex \hspace{\algorithmicindent}compute action std $\hat\sigma$ and mean $\hat\mu_q$
-        \State Scale output-layer weights:
-        \Statex \hspace{\algorithmicindent}$w \gets w \cdot \sigma_{\mathrm{target}} / \hat\sigma$, where $\sigma_{\mathrm{target}} = 0.005$
-        \State Shift output-layer bias so $\hat\mu_q \approx \bar{q}_{\mathrm{norm}}$,
-        \Statex \hspace{\algorithmicindent}where $\bar{q}_{\mathrm{norm}} = \bigl(Q_{\max}/(n \cdot q_{\max}) - q_{\min}\bigr)/(q_{\max}-q_{\min})$
-        \For{$k = 1$ to $20$}
-        \State Compute finite-difference gradient: $g \gets \bigl[P(b+\varepsilon) - P(b-\varepsilon)\bigr]/(2\varepsilon)$
-        \State Update bias by Rprop step: $b \gets b + \operatorname{sign}(g)\cdot\delta_k$, adapting $\delta_k$ with $\eta^+=1.2$, $\eta^-=0.5$
-        \If{$\delta_k < 10^{-4}$ and $k \ge 10$} \textbf{break} \EndIf
-        \EndFor
+        \State Initialise uniform replay buffer $\mathcal{D}$ with capacity $10^5$
+        \State Initialise actor bias by the closed-form myopic first-order condition
+        \State If $v=\text{AC-kernel}$, precompute the shared HHK transition quadrature
         \Statex \textbf{// Main RL training loop}
         \For{episode $e = 1$ to $N_{\mathrm{train}}$}
         \State $s_0 \gets \operatorname{Env.Reset}(\text{path\_idx}=e)$
@@ -622,98 +600,59 @@ Algorithm~\ref{alg:training} gives the training loop.
         \State $u_i \gets \operatorname{ActorPreAct}(s_i)$
         \State $\tilde{q}_i \gets \operatorname{sig}(\beta_{\mathrm{act}}(u_i + \sigma_{\mathrm{expl}} \epsilon_i))$, $\epsilon_i \sim \mathcal{N}(0,1)$
         \State $a_i \gets \operatorname{GateAndClip}(\tilde{q}_i,s_i)$
-        \State $s_{i+1}, R_i, \mathrm{done} \gets \operatorname{Env.Step}(a_i)$
-        \State $\mathcal{D}.\operatorname{Add}(s_i,a_i,R_i,s_{i+1},\mathrm{done})$
-        \If{$|\mathcal{D}| \ge 18{,}000$ and $i \bmod 2 = 0$}
-        \State Sample $(s,a,R,s',d,w)$ from $\mathcal{D}$
-        \State Update $Q_\phi$ with the TD loss
-        \If{$e > 1{,}024$}
+        \State $s_{i+1}, \tilde R_i, \mathrm{done} \gets \operatorname{Env.Step}(a_i)$
+        \State $\mathcal{D}.\operatorname{Add}(s_i,a_i,\tilde R_i,s_{i+1},\mathrm{done})$
+        \If{$|\mathcal{D}| \ge 1{,}000$ and the update frequency triggers}
+        \State Sample $(s,a,\tilde R,s',d)$ uniformly from $\mathcal{D}$
+        \State Update $Q_\phi$ with $y_{\mathrm{sample}}$ or $y_{\mathrm{kernel}}$
+        \If{critic warmup has elapsed}
         \State Update $\pi_\theta$ with the deterministic policy gradient
         \State Soft-update $\pi_{\theta'}$
         \EndIf
         \State Soft-update $Q_{\phi'}$
         \EndIf
         \EndFor
-        \If{$e \bmod 1{,}024 = 0$}
-        \State Evaluate and log RL and LSM-D baseline values on held-out paths
-        \EndIf
+        \State Optionally record a held-out evaluation diagnostic every $1{,}024$ episodes
         \EndFor
+        \State Save the final actor weights and JSON metadata
     \end{algorithmic}
 \end{algorithm}
 
-\begin{table}[htbp]
-    \centering
-    \caption{Training hyperparameters for the convex-cost experiments.}
-    \label{tab:hyperparams}
-    \begin{adjustbox}{max width=\linewidth}
-        \begin{tabular}{llr}
-            \toprule
-            Category                         & Parameter                          & Value                                                      \\
-            \midrule
-            \multirow{4}{*}{Training}        & Episodes                           & 32{,}768                                                   \\
-                                             & Batch size                         & 128                                                        \\
-                                             & Replay buffer size                 & 200{,}000                                                  \\
-                                             & Minimum replay size                & 18{,}000                                                   \\
-            \midrule
-            \multirow{3}{*}{Target Networks} & Polyak $\tau$                      & 0.0032                                                     \\
-                                             & Target noise                       & $0.15 \to 0.04$                                            \\
-                                             & Target-noise clip                  & 0.25                                                       \\
-            \midrule
-            % P2-2: Initial a_per is 0.0 (uniform) until episode 5000, then ramps linearly to 0.2 by episode 25000.
-            % P2-3: b_per starts at 1.0 and anneals to 0.98; not fixed at 1.0.
-            \multirow{5}{*}{Replay}          & $a_{\mathrm{per}}$ schedule        & $0.0 \xrightarrow{\text{ep }5{,}000\text{--}25{,}000} 0.2$ \\
-                                             & $b_{\mathrm{per}}$ schedule        & $1.0 \to 0.98$                                             \\
-                                             & $b_{\mathrm{per}}$ anneal episodes & 120{,}000                                                  \\
-                                             & Priority clip                      & 99.7th percentile                                          \\
-                                             & Priority floor                     & $5 \times 10^{-6}$                                         \\
-            \midrule
-            Critic warmup                    & Episodes                           & 1{,}024                                                    \\
-            \bottomrule
-        \end{tabular}
-    \end{adjustbox}
-\end{table}
+\paragraph{Closed-form actor initialisation.}
+To avoid the early episodes where an uninitialised actor proposes near-zero exercises regardless of spot price, the actor output bias is set so that the initial policy approximates the myopic (single-period) unconstrained optimum. Setting $\partial\Pi_i(q)/\partial q = 0$ under convex costs $(c>0,\,\gamma_c>1)$ gives
+\begin{equation}
+    \label{eq:myopic_stationary}
+    q_i^{\mathrm{stat}} = \left(\frac{(S_{t_i}-K)^+}{c\,\gamma_c}\right)^{1/(\gamma_c-1)},
+\end{equation}
+and the warm-start target clips this to the admissible range and a budget-proportional ceiling:
+\begin{equation}
+    \label{eq:warmstart_target}
+    q^*(S)
+    =
+    \operatorname{clip}\!\Bigl(
+        q_i^{\mathrm{stat}},\;
+        q_{\min},\;
+        \min\!\bigl\{q_{\max},\,Q_{\max}/n\bigr\}
+    \Bigr).
+\end{equation}
+This target is averaged over a set of warmup spot realisations drawn from the training paths. The resulting mean normalised target $\bar{\tilde{q}}^* \in (0,1)$ is converted to a pre-squash logit by $\bar u = \operatorname{sig}^{-1}(\bar{\tilde{q}}^*)/\beta_{\mathrm{act}}$, and the actor output bias is initialised to $\bar u$. The procedure is $O(1)$ in network parameters and adds no training episodes; it is used identically by both AC-sample and AC-kernel.
 
-\subsection{\textcolor{revisionbrown}{Discretized-Action LSM Baseline (LSM-D)}}
+\subsection{Discretized-Action LSM Baseline (LSM-D)}
 \label{sec:lsm}
 
-\textcolor{revisionbrown}{For comparison we use a least-squares Monte Carlo baseline that discretizes the exercise decision into $M$ equally spaced actions $\{0, \Delta q, 2\Delta q, \ldots, q_{\max}\}$, where $\Delta q = q_{\max}/(M-1)$, and approximates continuation values via Longstaff--Schwartz backward regression~\cite{longstaff2001valuing}. We denote this variant \emph{LSM-D} (discretized-action LSM) to distinguish it from the classical bang-bang Longstaff--Schwartz method, which restricts the action set to $\{0,q_{\max}\}$ (i.e.\ $M = 2$). With $M = 5$ and $q_{\max} = 2.0$, the LSM-D action grid is $\{0, 0.5, 1.0, 1.5, 2.0\}$.}
+For comparison we use a least-squares Monte Carlo baseline that discretizes the exercise decision into $M$ equally spaced levels on $[0,q_{\max}]$ with spacing $\Delta q = q_{\max}/(M-1)$, and approximates continuation values by Longstaff--Schwartz regression~\cite{longstaff2001valuing}. With $M = 5$ and $q_{\max} = 2.0$, the action grid is $\{0, 0.5, 1.0, 1.5, 2.0\}$.
 
-\textcolor{revisionbrown}{Because the exercise quantity is no longer restricted to multiples of $q_{\max}$, the dynamic-programming state tracks the remaining cumulative capacity in multiples of $\Delta q$. That is, the number of inventory levels is $\lfloor Q_{\max}/\Delta q \rfloor + 1 = 41$ (for $Q_{\max} = 20$, $\Delta q = 0.5$). Together with the cooldown state, each time step requires $M - 1$ continuation-value regressions per inventory--cooldown pair for the non-zero actions, plus one for the hold action.}
+To keep the comparison economically fair, the LSM-D policy conditions on the same market information as the RL agent: the continuation regression uses the HHK market state $(S_{t_i},X_{t_i},Y_{t_i})$, while inventory and cooldown are handled as discrete state slices. Because the exercise quantity is discretized, the dynamic-programming state tracks remaining cumulative capacity in multiples of $\Delta q$. The number of inventory levels is therefore $\lfloor Q_{\max}/\Delta q \rfloor + 1 = 41$ for $Q_{\max} = 20$ and $\Delta q = 0.5$. Together with the cooldown state, each time step requires $M - 1$ continuation-value regressions per inventory--cooldown pair for the non-zero actions, plus one for the hold action.
 
-\textcolor{revisionbrown}{At each exercise date $t_i$, regression features are normalised to $[-1,1]$ using cross-path min--max scaling. Continuation values are regressed with a degree-$2$ Chebyshev product basis on the state $(S_{t_i}, X_{t_i}, Y_{t_i})$ and no regularisation. The exercise rule selects the action $m^* \in \{0,1,\ldots,M-1\}$ that maximises the sum of the immediate net payoff and fitted continuation value:}
+At each exercise date $t_i$, regression features are normalised to $[-1,1]$ using cross-path min--max scaling. Continuation values are regressed with a degree-$2$ total-degree Chebyshev basis on $(S_{t_i}, X_{t_i}, Y_{t_i})$ (the tensor Chebyshev basis truncated to total degree two) and no regularisation. The exercise rule selects the action $m^* \in \{0,1,\ldots,M-1\}$ that maximises the sum of the immediate net payoff and fitted continuation value:
 \[
-    m^* = \arg\max_{m}\; \Pi_i(q_m) + \widehat{C}_i^{(m)}(S_{t_i}),
+    m^* = \arg\max_{m}\; \Pi_i(q_m) + \widehat{C}_i^{(m)}(S_{t_i},X_{t_i},Y_{t_i}),
 \]
-\textcolor{revisionbrown}{where $q_0 = 0$ denotes holding and $\widehat{C}_i^{(m)}$ is the fitted continuation value after exercising quantity $q_m$, subject to the constraint that $q_m$ does not exceed the remaining capacity. At the terminal date, exercise occurs only if the net payoff $\Pi_{n-1}(q_m)$ is positive. With $M = 2$ the algorithm reduces to the classical bang-bang LSM; with $M = 5$ (LSM-D) it can select from five volume levels at each step, permitting graduated exercise under convex costs.}
+where $q_0 = 0$ denotes holding and $\widehat{C}_i^{(m)}$ is the fitted continuation value after exercising quantity $q_m$, subject to the constraint that $q_m$ does not exceed the remaining capacity. At the terminal date, exercise occurs only if the net payoff $\Pi_{n-1}(q_m)$ is positive. With $M = 2$ the algorithm reduces to the classical bang-bang case; with $M = 5$ it can select from five volume levels at each step, permitting graduated exercise under convex costs.
 
-\textcolor{purple}{We also tested a reduced-state variant that conditions only on the current spot price using a degree-$7$ Chebyshev basis. Across the 25 configurations in our experiment grid, the full-state regression yields on average approximately $0.4\%$ higher option values (20 of 25 cases positive), confirming that conditioning on the latent factors and inventory modestly improves continuation-value fits\textcolor{revisionbrown}{; this margin is smaller than the gap from $M = 2$ to $M = 5$, suggesting that action-space resolution is the more important lever for the LSM-D baseline}.}
+The LSM-D basis and action grid are fixed a priori across configurations, so no validation-based model selection is used for the classical benchmark. For each parameter configuration, the regression coefficients are fit on an independent training sample of $32{,}768$ paths and the resulting policy is then evaluated without re-fitting on the same per-seed out-of-sample sets used for the RL results (each training seed $k$ is priced on its own seed-$(k+777)$ test set of $N_{\mathrm{test}} = 65{,}536$ paths).
 
-\textcolor{revisionbrown}{The distinction between LSM-D and the classical bang-bang LSM ($M = 2$) is material under convex costs.  Because the $M = 2$ baseline can only choose between zero exercise and full-capacity exercise, it cannot represent the interior optima that arise when $\gamma_c > 1$.  Moving from $M = 2$ to $M = 5$ therefore produces large value gains in convex regimes---for example, from $1.8634$ to $1.9822$ at $(c, \gamma_c) = (0.04, 2)$, from $1.0357$ to $1.6749$ at $(0.05, 3)$, and from $0.6226$ to $1.0321$ at $(0.15, 2)$.  These improvements show that action-space resolution is a first-order issue for LSM under convex costs, and motivate the use of the stronger LSM-D baseline throughout this paper.}
-
-\textcolor{red}{\textbf{Sven:} The comparative analysis reliess on a weak baseline as we compare a 9-dimensional continuous DRL method against a 1-dimensional discrete LSMC. This makes it harder to disentangle the benefit of continuous actions under convex costs from the poor performance of the baseline (ignoring $X, Y, Q$). A full-state LSMC baseline with discretized actions ($q \in \{0, q_{\max}/4, q_{\max}/2, \dots, q_{\max}\}$) regressing on $(X, Y, Q)$ would provide a stronger and more convincing comparison. Of course, one might even look into randomized LSMC approaches as benchmark.}
-
-\section{Deep Hedging of Swing Options}
-\label{sec:hedging}
-
-% P1-5: Section replaced with planned future work note.
-% The original draft contained a detailed hedging MDP, risk-minimization objective,
-% and three experiment outlines (baseline risk reduction, convexity impact, jump hedging),
-% but no corresponding implementation exists in the codebase.  The section is therefore
-% marked as planned future work below, avoiding false claims of completed experiments.
-
-Deep hedging of swing options from the writer's perspective is a natural next step of this research.
-In electricity markets the spot price is non-storable and price spikes render the market fundamentally incomplete, so perfect replication is impossible.
-Following the framework of \citet{buehler2019deephedging}, the writer could train a secondary neural-network hedger $\pi^H_\phi$ that observes the same Markov state as the holder together with the current forward price, and selects a forward position $H_i$ at each exercise date so as to minimise the variance (or CVaR) of the terminal P\&L
-
-\begin{equation}
-    \label{eq:pnl}
-    \text{P\&L}_n = V_0 + \sum_{i=0}^{n-1} \delta^i H_i (F_{t_{i+1}} - F_{t_i})
-    - \sum_{i=0}^{n-1} \delta^i \Pi_i(q^*_i),
-\end{equation}
-
-where $V_0$ is the option premium obtained from the trained holder policy, and $q^*_i = \pi^*_\theta(s_i)$ are the frozen holder exercises.
-Key open questions include: (i)~how convexity of exercise costs affects the writer's residual risk, (ii)~whether a two-instrument hedger (baseload + peak-load forward) can materially neutralise jump exposure, and (iii)~the interaction between the holder's continuous action space and hedging tractability.
-We defer a full numerical treatment to future work.
+We also tested a reduced-state variant that conditions only on the current spot price using a degree-$7$ Chebyshev basis. Across the reported configurations, the full-state regression yields on average approximately $0.4\%$ higher option values, confirming that conditioning on the latent factors modestly improves continuation-value fits; this margin is smaller than the gain from moving from $M = 2$ to $M = 5$, suggesting that action-space resolution is the more important lever for the LSM-D baseline.
 
 
 \section{Numerical Experiments}
@@ -758,158 +697,260 @@ We evaluate the actor--critic method across a grid of convex cost parameters. Ta
     \end{adjustbox}
 \end{table}
 
-\textcolor{revisionorange}{All reported experiments use optional exercise, no refraction lag, and no ramping constraint. Each configuration is trained with three seeds $\{11,12,13\}$ for $32{,}768$ episodes and the final-episode actor weights are saved. To eliminate maximisation bias, a single common test set of $N_{\mathrm{test}} = 65{,}536$ paths is generated with a dedicated seed ($s_{\mathrm{test}} = 999$) that was never used during training or hyperparameter selection. Every saved actor and the LSM-D baseline are evaluated on this identical test set, so the reported prices are true out-of-sample estimates. For each configuration the table reports the cross-seed mean and standard deviation of the three test-set prices.}
+All reported experiments use optional exercise, no refraction lag, and no ramping constraint. The protocol uses eight independent actor--critic training seeds $\{11,\dots,18\}$ for each configuration and evaluates each saved actor checkpoint on its own untouched out-of-sample set of $N_{\mathrm{test}} = 65{,}536$ paths (seed $k\!\mapsto\!k+777$), so that the per-cell statistics span both initialisation and Monte~Carlo variation; the relative difference $\Delta\%$ is computed seed-paired on each seed's common LSM-D/actor--critic test set. The LSM-D basis and action grid are fixed a priori, so no model selection is performed for the classical benchmark; its continuation regressions are fit on an independent training sample and the resulting policy is evaluated on the same per-seed test set. Every table entry is reproducible from archived run metadata, saved actor weights, LSM-D metadata, and a regeneration command, collected in the reproducibility appendix. The degenerate linear case $(c,\gamma_c)=(0,1)$, where the profitability gate is inactive, is retained as a zero-cost reference row that anchors the comparison rather than excluded.
 
 \subsection{Results}
 
-\textcolor{revisionorange}{Table~\ref{tab:results} compares the actor--critic values with the \textcolor{revisionbrown}{full-state LSM-D ($M = 5$)} baseline.
-    All reported values are discounted to time zero.
-    Each actor--critic entry reports the cross-seed mean option value across seeds $\{11,12,13\}$
-    evaluated on the common test set ($N_{\mathrm{test}} = 65{,}536$ paths, seed~999).
-    The $\sigma$ column reports the standard deviation across the three seed-level test prices.
-    The $\pm$ intervals in the $\Delta\%$ column propagate the cross-seed uncertainty.}
-\begin{table}[htbp]
+Table~\ref{tab:results} reports the three-way comparison on the common test set: the full-state discretized-action benchmark LSM-D ($M=5$), the model-agnostic actor--critic AC-sample, and the HHK-kernel extension AC-kernel. Each actor--critic entry is the mean test-set value over eight independent training seeds $\{11,\dots,18\}$; the relative difference from the benchmark, $\Delta\% = 100\,(V_{\mathrm{RL}}/V_{\mathrm{LSM}}-1)$, is reported seed-paired with its asymmetric $95\%$ BCa bootstrap confidence interval ($2000$ resamples), so that an interval excluding zero signals a difference resolved beyond seed and Monte~Carlo noise. The grid spans the full set of cost configurations of Table~\ref{tab:contract_params} (every coefficient $c$ paired with every exponent $\gamma_c\in\{1,1.5,2,3\}$) together with a zero-cost reference row. Every entry is backed by archived per-seed run artifacts (JSON configs and checkpoints) and a regeneration manifest (Appendix~\ref{appendix:reproducibility}).
+
+% Diverging background shading for the two \Delta\% columns: white at 0, green for positive,
+% red for negative, on a single shared linear scale (|Delta|/5.2, saturating at 5.2) so the
+% AC-sample and AC-kernel columns are directly comparable (5.2 caps the most extreme cell, +5.14).
+% The per-cell mix percentage is precomputed (see tools/colorize_results_table.py) and passed as
+% the first argument, e.g. \dpct{dgrnpos!36!white}{+2.32}{...}{...}, so the table needs no runtime
+% floating-point evaluation at build time.
+\definecolor{dgrnpos}{RGB}{38,160,72}
+\definecolor{dredneg}{RGB}{214,62,56}
+\newcommand{\dpct}[4]{\cellcolor{#1}$#2$\,{\scriptsize$[#3,\,#4]$}}
+\newcommand{\pmci}[2]{$#1$\,{\scriptsize$\pm#2$}}
+\begin{table*}[htbp]
     \centering
-    \caption{\textcolor{revisionorange}{Swing-option prices under convex exercise costs.
-            All models are evaluated on a single common test set ($N_{\mathrm{test}} = 65{,}536$ paths, seed~999)
-            that was never used during training or model selection.
-            The actor--critic column reports the cross-seed mean over seeds $\{11,12,13\}$;
-            $\sigma$ is the inter-seed standard deviation.
-            $\Delta\%$ denotes the relative improvement over the \textcolor{revisionbrown}{full-state LSM-D ($M = 5$)} baseline,
-            with $\pm$ propagating the cross-seed uncertainty.}}
+    \caption{Three-way swing-option valuation under convex exercise costs, evaluated on the common test protocol of $N_{\mathrm{test}}=65{,}536$ paths per seed. LSM-D is the full-state discretized-action benchmark ($M=5$); AC-sample is the model-agnostic actor--critic (single-sample TD target); AC-kernel uses the semi-analytical HHK expected target. Prices are means over the eight training seeds $\{11,\dots,18\}$, each evaluated on its own out-of-sample set, and carry the half-width of their $95\%$ BCa bootstrap confidence interval ($\pm$); $\Delta\% = 100\,(V_{\mathrm{RL}}/V_{\mathrm{LSM}}-1)$ is the seed-paired relative difference, reported with its asymmetric $95\%$ BCa bootstrap confidence interval ($2000$ resamples). The top row is a zero-cost reference $(c,\gamma_c)=(0,1)$.}
     \label{tab:results}
     \begin{adjustbox}{max width=\linewidth}
-        \begin{tabular}{ccr>{\color{revisionorange}}r>{\color{revisionorange}}r>{\color{revisionorange}}r}
+        \begin{tabular}{cc r r l r l}
             \toprule
-            $c$  & $\gamma_c$ & \textcolor{revisionbrown}{LSM-D} & DRL & $\sigma$ & $\Delta\%$ ($\pm$ CI) \\
+                 &            & LSM-D ($M\!=\!5$) & \multicolumn{2}{c}{AC-sample (model-agnostic)} & \multicolumn{2}{c}{AC-kernel (HHK target)} \\
+            \cmidrule(lr){4-5}\cmidrule(lr){6-7}
+            $c$  & $\gamma_c$ & price\,\footnotesize$\pm$CI & price\,\footnotesize$\pm$CI & $\Delta\%$ \footnotesize[95\% CI] & price\,\footnotesize$\pm$CI & $\Delta\%$ \footnotesize[95\% CI] \\
             \midrule
-            0.00 & 1.0        & \textcolor{revisionbrown}{2.6676}            & 2.6265        & ---      & $-1.54$               \\
-            0.01 & 1.0        & \textcolor{revisionbrown}{2.5549}            & 2.5339        & 0.0029   & $-0.82 \pm 0.11$      \\
-            0.01 & 1.5        & \textcolor{revisionbrown}{2.5131}            & 2.4905        & 0.0052   & $-0.90 \pm 0.21$      \\
-            0.01 & 2.0        & \textcolor{revisionbrown}{2.4609}            & 2.4324        & 0.0063   & $-1.16 \pm 0.26$      \\
-            0.01 & 3.0        & \textcolor{revisionbrown}{2.3289}            & 2.2989        & 0.0123   & $-1.29 \pm 0.53$      \\
+            0.00 & 1 & \pmci{2.6649}{0.006} & \pmci{2.6293}{0.011} & \dpct{dredneg!20!white}{-1.33}{-1.73}{-1.00} & \pmci{2.6608}{0.006} & \dpct{dredneg!2!white}{-0.15}{-0.17}{-0.13} \\
             \midrule
-            0.02 & 1.0        & \textcolor{revisionbrown}{2.4452}            & 2.4162        & 0.0062   & $-1.19 \pm 0.25$      \\
-            0.02 & 1.5        & \textcolor{revisionbrown}{2.3690}            & 2.3413        & 0.0122   & $-1.17 \pm 0.51$      \\
-            0.02 & 2.0        & \textcolor{revisionbrown}{2.2822}            & 2.2536        & 0.0042   & $-1.25 \pm 0.19$      \\
-            0.02 & 3.0        & \textcolor{revisionbrown}{2.1030}            & 2.0800        & 0.0023   & $-1.10 \pm 0.11$      \\
+            0.01 & 1 & \pmci{2.5525}{0.006} & \pmci{2.5285}{0.011} & \dpct{dredneg!14!white}{-0.94}{-1.23}{-0.69} & \pmci{2.5487}{0.006} & \dpct{dredneg!2!white}{-0.15}{-0.17}{-0.12} \\
+            0.01 & 1.5 & \pmci{2.5108}{0.006} & \pmci{2.4903}{0.010} & \dpct{dredneg!13!white}{-0.82}{-1.19}{-0.65} & \pmci{2.5075}{0.006} & \dpct{dredneg!2!white}{-0.13}{-0.15}{-0.11} \\
+            0.01 & 2 & \pmci{2.4590}{0.006} & \pmci{2.4397}{0.007} & \dpct{dredneg!12!white}{-0.78}{-0.84}{-0.72} & \pmci{2.4550}{0.006} & \dpct{dredneg!2!white}{-0.16}{-0.19}{-0.13} \\
+            0.01 & 3 & \pmci{2.3279}{0.006} & \pmci{2.2985}{0.011} & \dpct{dredneg!19!white}{-1.26}{-1.48}{-1.02} & \pmci{2.3288}{0.006} & \dpct{dgrnpos!1!white}{+0.04}{-0.00}{+0.07} \\
             \midrule
-            0.04 & 1.0        & \textcolor{revisionbrown}{2.2378}            & 2.2204        & 0.0033   & $-0.78 \pm 0.15$      \\
-            0.04 & 1.5        & \textcolor{revisionbrown}{2.1067}            & 2.0727        & 0.0177   & $-1.61 \pm 0.84$      \\
-            0.04 & 2.0        & \textcolor{revisionbrown}{1.9822}            & 1.9578        & 0.0088   & $-1.23 \pm 0.44$      \\
-            0.04 & 3.0        & \textcolor{revisionbrown}{1.7917}            & 1.7903        & 0.0041   & $-0.08 \pm 0.23$      \\
+            0.02 & 1 & \pmci{2.4438}{0.006} & \pmci{2.4197}{0.014} & \dpct{dredneg!15!white}{-0.99}{-1.41}{-0.64} & \pmci{2.4405}{0.006} & \dpct{dredneg!2!white}{-0.14}{-0.17}{-0.10} \\
+            0.02 & 1.5 & \pmci{2.3672}{0.006} & \pmci{2.3486}{0.007} & \dpct{dredneg!12!white}{-0.79}{-1.00}{-0.67} & \pmci{2.3640}{0.006} & \dpct{dredneg!2!white}{-0.14}{-0.16}{-0.12} \\
+            0.02 & 2 & \pmci{2.2813}{0.006} & \pmci{2.2562}{0.007} & \dpct{dredneg!17!white}{-1.10}{-1.59}{-0.86} & \pmci{2.2793}{0.006} & \dpct{dredneg!1!white}{-0.09}{-0.13}{-0.06} \\
+            0.02 & 3 & \pmci{2.1033}{0.006} & \pmci{2.0855}{0.011} & \dpct{dredneg!13!white}{-0.85}{-1.19}{-0.64} & \pmci{2.1119}{0.006} & \dpct{dgrnpos!6!white}{+0.41}{+0.37}{+0.42} \\
             \midrule
-            0.05 & 1.0        & \textcolor{revisionbrown}{2.1392}            & 2.1184        & 0.0066   & $-0.97 \pm 0.31$      \\
-            0.05 & 1.5        & \textcolor{revisionbrown}{1.9869}            & 1.9611        & 0.0149   & $-1.30 \pm 0.75$      \\
-            0.05 & 2.0        & \textcolor{revisionbrown}{1.8541}            & 1.8294        & 0.0058   & $-1.33 \pm 0.31$      \\
-            0.05 & 3.0        & \textcolor{revisionbrown}{1.6749}            & 1.6842        & 0.0045   & $+0.56 \pm 0.27$      \\
+            0.04 & 1 & \pmci{2.2366}{0.006} & \pmci{2.2109}{0.007} & \dpct{dredneg!18!white}{-1.15}{-1.43}{-0.92} & \pmci{2.2326}{0.006} & \dpct{dredneg!3!white}{-0.18}{-0.22}{-0.14} \\
+            0.04 & 1.5 & \pmci{2.1058}{0.007} & \pmci{2.0877}{0.007} & \dpct{dredneg!13!white}{-0.86}{-0.99}{-0.74} & \pmci{2.1043}{0.006} & \dpct{dredneg!1!white}{-0.07}{-0.13}{-0.04} \\
+            0.04 & 2 & \pmci{1.9823}{0.007} & \pmci{1.9592}{0.018} & \dpct{dredneg!18!white}{-1.17}{-2.04}{-0.73} & \pmci{1.9850}{0.006} & \dpct{dgrnpos!2!white}{+0.13}{+0.06}{+0.20} \\
+            0.04 & 3 & \pmci{1.7926}{0.006} & \pmci{1.7914}{0.010} & \dpct{dredneg!1!white}{-0.06}{-0.47}{+0.16} & \pmci{1.8136}{0.006} & \dpct{dgrnpos!18!white}{+1.17}{+1.15}{+1.20} \\
             \midrule
-            0.08 & 1.0        & \textcolor{revisionbrown}{1.8632}            & 1.8445        & 0.0005   & $-1.00 \pm 0.02$      \\
-            0.08 & 1.5        & \textcolor{revisionbrown}{1.6666}            & 1.6371        & 0.0107   & $-1.77 \pm 0.64$      \\
-            0.08 & 2.0        & \textcolor{revisionbrown}{1.5332}            & 1.5313        & 0.0047   & $-0.13 \pm 0.31$      \\
+            0.05 & 1 & \pmci{2.1378}{0.006} & \pmci{2.1189}{0.008} & \dpct{dredneg!14!white}{-0.88}{-1.21}{-0.67} & \pmci{2.1345}{0.006} & \dpct{dredneg!2!white}{-0.15}{-0.18}{-0.13} \\
+            0.05 & 1.5 & \pmci{1.9864}{0.007} & \pmci{1.9662}{0.009} & \dpct{dredneg!16!white}{-1.02}{-1.20}{-0.75} & \pmci{1.9856}{0.006} & \dpct{dredneg!1!white}{-0.04}{-0.08}{-0.01} \\
+            0.05 & 2 & \pmci{1.8546}{0.007} & \pmci{1.8321}{0.006} & \dpct{dredneg!19!white}{-1.21}{-1.59}{-0.88} & \pmci{1.8603}{0.006} & \dpct{dgrnpos!5!white}{+0.31}{+0.26}{+0.35} \\
+            0.05 & 3 & \pmci{1.6755}{0.006} & \pmci{1.6829}{0.008} & \dpct{dgrnpos!7!white}{+0.44}{+0.13}{+0.64} & \pmci{1.7014}{0.006} & \dpct{dgrnpos!24!white}{+1.55}{+1.52}{+1.57} \\
             \midrule
-            0.10 & 1.0        & \textcolor{revisionbrown}{1.6949}            & 1.6866        & 0.0019   & $-0.49 \pm 0.11$      \\
-            0.10 & 1.5        & \textcolor{revisionbrown}{1.4825}            & 1.4677        & 0.0090   & $-1.00 \pm 0.61$      \\
-            0.10 & 2.0        & \textcolor{revisionbrown}{1.3606}            & 1.3624        & 0.0076   & $+0.13 \pm 0.56$      \\
+            0.08 & 1 & \pmci{1.8620}{0.007} & \pmci{1.8374}{0.011} & \dpct{dredneg!20!white}{-1.32}{-1.68}{-1.08} & \pmci{1.8590}{0.007} & \dpct{dredneg!2!white}{-0.16}{-0.18}{-0.13} \\
+            0.08 & 1.5 & \pmci{1.6671}{0.007} & \pmci{1.6470}{0.013} & \dpct{dredneg!18!white}{-1.20}{-1.91}{-0.89} & \pmci{1.6711}{0.006} & \dpct{dgrnpos!4!white}{+0.24}{+0.21}{+0.27} \\
+            0.08 & 2 & \pmci{1.5341}{0.006} & \pmci{1.5286}{0.010} & \dpct{dredneg!6!white}{-0.36}{-0.66}{-0.09} & \pmci{1.5468}{0.006} & \dpct{dgrnpos!13!white}{+0.83}{+0.77}{+0.87} \\
+            0.08 & 3 & \pmci{1.4089}{0.005} & \pmci{1.4306}{0.008} & \dpct{dgrnpos!24!white}{+1.54}{+1.17}{+1.80} & \pmci{1.4457}{0.006} & \dpct{dgrnpos!40!white}{+2.61}{+2.55}{+2.67} \\
             \midrule
-            0.15 & 1.0        & \textcolor{revisionbrown}{1.3295}            & 1.3145        & 0.0022   & $-1.12 \pm 0.16$      \\
-            0.15 & 1.5        & \textcolor{revisionbrown}{1.1082}            & 1.0860        & 0.0037   & $-2.01 \pm 0.34$      \\
-            0.15 & 2.0        & \textcolor{revisionbrown}{1.0321}            & 1.0475        & 0.0044   & $+1.49 \pm 0.43$      \\
+            0.10 & 1 & \pmci{1.6945}{0.007} & \pmci{1.6766}{0.006} & \dpct{dredneg!16!white}{-1.06}{-1.27}{-0.92} & \pmci{1.6921}{0.007} & \dpct{dredneg!2!white}{-0.14}{-0.19}{-0.10} \\
+            0.10 & 1.5 & \pmci{1.4832}{0.006} & \pmci{1.4597}{0.017} & \dpct{dredneg!24!white}{-1.59}{-2.80}{-0.90} & \pmci{1.4910}{0.006} & \dpct{dgrnpos!8!white}{+0.52}{+0.50}{+0.54} \\
+            0.10 & 2 & \pmci{1.3615}{0.006} & \pmci{1.3654}{0.010} & \dpct{dgrnpos!4!white}{+0.28}{-0.32}{+0.49} & \pmci{1.3799}{0.006} & \dpct{dgrnpos!21!white}{+1.36}{+1.31}{+1.39} \\
+            0.10 & 3 & \pmci{1.2774}{0.005} & \pmci{1.3070}{0.007} & \dpct{dgrnpos!36!white}{+2.32}{+2.09}{+2.51} & \pmci{1.3197}{0.006} & \dpct{dgrnpos!51!white}{+3.31}{+3.22}{+3.36} \\
+            \midrule
+            0.15 & 1 & \pmci{1.3304}{0.007} & \pmci{1.3002}{0.028} & \dpct{dredneg!35!white}{-2.27}{-4.85}{-1.32} & \pmci{1.3279}{0.006} & \dpct{dredneg!3!white}{-0.19}{-0.25}{-0.13} \\
+            0.15 & 1.5 & \pmci{1.1089}{0.006} & \pmci{1.0913}{0.013} & \dpct{dredneg!25!white}{-1.60}{-2.54}{-1.10} & \pmci{1.1234}{0.006} & \dpct{dgrnpos!20!white}{+1.31}{+1.26}{+1.35} \\
+            0.15 & 2 & \pmci{1.0322}{0.006} & \pmci{1.0528}{0.006} & \dpct{dgrnpos!31!white}{+2.00}{+1.84}{+2.20} & \pmci{1.0645}{0.005} & \dpct{dgrnpos!48!white}{+3.14}{+3.09}{+3.17} \\
+            0.15 & 3 & \pmci{1.0441}{0.005} & \pmci{1.0856}{0.007} & \dpct{dgrnpos!61!white}{+3.97}{+3.49}{+4.19} & \pmci{1.0978}{0.004} & \dpct{dgrnpos!79!white}{+5.14}{+4.98}{+5.21} \\
+            \bottomrule
+        \end{tabular}
+    \end{adjustbox}
+\end{table*}
+
+\begin{figure*}[tb]
+    \centering
+    \includegraphics[width=0.74\textwidth]{figs/convex_costs_0p04/spot_income_pv_hist.png}
+    \caption{Per-decision diagnostics across one zero-cost reference row ($\gamma_c=1$, $c=0$) and three $c=0.04$ rows at $\gamma_c \in \{1.0,1.5,2.0\}$. The left column plots the one-step net exercise profit, $q_t(S_t-K)^+ - c q_t^{\gamma_c}$, against the spot price for decisions where exercising full capacity is feasible, with LSM-D (blue) overlaid on the kernel-augmented actor--critic (AC-kernel; RL, orange) scatter. Under linear costs both methods closely follow the same bang-bang frontier. Under convexity, both move into the interior region, with LSM-D selecting from five discrete volume levels and the AC-kernel policy filling the interior more densely. The right column shows the per-path distribution of total discounted exercise cost; panel titles report the corresponding Bang-Bangness values for each method (LSM-D and the AC-kernel RL policy).}
+    \label{fig:spot_income_pv_hist}
+\end{figure*}
+
+\subsection{Analysis of Exercise Behavior}
+\label{sec:exercise_behavior}
+
+To quantify the degree to which a policy adheres to the all-or-nothing exercise decisions typical of linear cost structures, we introduce the \emph{Bang-Bangness} metric $B$. We define $B$ as the proportion of feasible full-capacity exercises that actually hit the maximum allowable quantity. Specifically, over the subset of steps where the remaining capacity is at least the maximum single-step limit ($Q_{\max} - Q_i \ge q_{\max}$) and the agent chooses to exercise a strictly positive amount ($q_t > 0$), the metric is
+\begin{equation}
+    B = \mathbb{P}\left( \frac{q_t}{q_{\max}} \ge 0.95 \;\middle|\; Q_{\max} - Q_i \ge q_{\max},\, q_t > 0 \right).
+\end{equation}
+A bang-bang policy yields $B=100\%$, while a completely uniform random exercise decision over $(0,q_{\max}]$ yields an expected baseline of $B \approx 5\%$. The threshold $0.95$ is heuristic rather than structural; we verified that the qualitative monotone decline in $B$ as convexity increases is robust to the threshold choice across $k \in [0,1]$.
+
+Figure~\ref{fig:spot_income_pv_hist} provides a microscopic view of the exercise behavior under both methods. The left column scatters the non-discounted one-step net exercise profit against the underlying spot price. When $c>0$ and costs are linear, both the actor--critic policy and the discretized-action LSM-D baseline remain close to the same bang-bang frontier, confirming the expected all-or-nothing structure.
+
+Under convex costs ($\gamma_c \in \{1.5,2.0\}$), a wide region of profitable partial exercise opens beneath the strict bang-bang boundary. Both methods exploit this region: LSM-D does so through five discrete volume levels, while the actor--critic policy continuously modulates its exercise quantity and therefore produces a denser interior cloud of partial exercises.
+
+The right column of Figure~\ref{fig:spot_income_pv_hist} shows the corresponding distribution of the path-level present value of exercise costs. The Bang-Bangness values reported in the panel titles fall sharply as convexity increases, and they are typically slightly lower for the continuous RL policy than for LSM-D, reflecting the smoother interior exercise made possible by continuous control.
+
+Figure~\ref{fig:bang_bangness_trend} traces this trend across the cost grid. For every cost coefficient, $B$ declines monotonically as the convexity exponent $\gamma_c$ rises, and it falls faster at larger $c$: at $\gamma_c=1$ the continuous AC-kernel policy is already moderately graduated ($B\approx0.66$--$0.74$) against a near-perfectly bang-bang LSM-D ($B\approx1$), and by $\gamma_c=2$ both methods exercise well inside full capacity, with the high-cost regimes ($c=0.15$) dropping below $10\%$. The AC-kernel curve sits at or below LSM-D throughout, confirming that continuous control fills the interior more finely than a five-level grid; the gap is descriptive of exercise style and does not by itself drive the small linear-cost valuation difference.
+
+\begin{figure}[pos=tb]
+    \centering
+    \includegraphics[width=\columnwidth]{figs/convex_costs_0p04/bang_bangness_rl.pdf}
+    \caption{Bang-Bangness $B$ across five representative cost coefficients $c\in\{0.01,0.02,0.04,0.08,0.15\}$ and convexity exponents $\gamma_c$, for the AC-kernel RL policy (solid, eight-seed mean $\pm$ SE) and the LSM-D baseline (dashed). Lower $B$ indicates smoother interior exercise. $B$ declines with both higher cost and higher convexity, and AC-kernel lies at or below LSM-D throughout.}
+    \label{fig:bang_bangness_trend}
+\end{figure}
+
+\begin{table}[htbp]
+    \centering
+    \caption{Frozen actor--critic recipes for the convex-cost study.}
+    \label{tab:hyperparams}
+    \begin{adjustbox}{max width=\linewidth}
+        \begin{tabular}{lll}
+            \toprule
+            Parameter                         & AC-sample                         & AC-kernel                         \\
+            \midrule
+            Episodes                          & 32{,}768                          & 4{,}096                           \\
+            Batch size                        & 128                               & 64                                \\
+            Replay buffer                     & $2\times10^5$, uniform            & $10^5$, uniform                   \\
+            Minimum replay                    & 18{,}000                          & 1{,}000                           \\
+            Critic target                     & single sampled transition         & HHK expected target               \\
+            Kernel quadrature                 & none                              & $M_x=2$, $M_{\mathrm{per}\ k}=1$  \\
+            Actor/critic layers               & 2 / 2                             & 2 / 4                             \\
+            Actor sigmoid $\beta_{\mathrm{act}}$ & 3.0                            & 1.5                               \\
+            Gradient steps per interaction    & 1                                 & 3                                 \\
+            Learning-rate schedule            & cosine + warmup                   & constant                          \\
+            Target-policy noise               & $0.15 \to 0.04$                   & none                              \\
+            Critic warmup                     & 1{,}024                           & 512                               \\
+            Exploration schedule              & plateau + hyperbolic decay        & linear decay                      \\
+            Weight averaging                  & EMA, decay 0.999                  & EMA, decay 0.999                  \\
+            Polyak $\tau$                     & 0.0032                            & 0.0032                            \\
+            RL discount $\gamma_{\mathrm{RL}}$ & 1.0                              & 1.0                               \\
             \bottomrule
         \end{tabular}
     \end{adjustbox}
 \end{table}
 
-\begin{figure*}[!ht]
-    \centering
-    \includegraphics[width=\textwidth]{../figs/convex_costs_0p04/hist_exercise.pdf}
-    \caption{\textcolor{green}{Expected exercise quantity $\mathbb{E}[q_t]$ under the continuous DRL policy and the \textcolor{revisionbrown}{LSM-D ($M = 5$)} baseline for a cost coefficient $c=0.04$ and varying convexity parameters $\gamma_c \in \{1.0, 1.5, 2.0, 3.0\}$. The heatmap displays the average fraction of capacity exercised at each available time step (measured in days to contract maturity) as a function of moneyness ($S/K$). Under linear costs ($\gamma_c = 1$), both policies exhibit bang-bang behavior at high moneyness. \textcolor{revisionbrown}{As convexity increases, both the actor--critic network and the LSM-D baseline transition to graduated exercise quantities, with the RL agent producing smoother intensity gradients across the moneyness--time surface.}}}
-    \label{fig:exercise_heatmap}
-\end{figure*}
-
-\begin{figure*}[!ht]
-    \centering
-    \includegraphics[width=\textwidth]{../figs/convex_costs_0p04/spot_income_pv_hist.png}
-    \caption{\textcolor{green}{Net exercise profit versus spot price (left column) and path-level PV exercise cost distribution (right column) for linear ($\gamma_c=1.0$) and convex ($\gamma_c \in \{1.5, 2.0\}$) costs at $c=0.04$. The left column scatters the non-discounted one-step net exercise profit, $q_t(S_t-K)^+ - c q_t^{\gamma_c}$, over the spot price for decisions where exercising full capacity is feasible, with the LSM-D points overlaid as blue outlines so both methods remain visible in the same region. Under linear costs, \textcolor{revisionbrown}{both the LSM-D and RL policies tightly track the same bang-bang boundary}. However, under convexity, \textcolor{revisionbrown}{both methods transition to graduated exercise; the continuous RL agent produces denser scatter below the bang-bang frontier, while the LSM-D ($M = 5$) baseline selects from five volume levels}. The right column displays the distribution of total discounted exercise costs per path and tracks the Bang-Bangness metric $B$. \textcolor{revisionbrown}{As convexity grows, both methods reduce their Bang-Bangness and shift towards more distributed exercise strategies.}}}
-    \label{fig:spot_income_pv_hist}
-\end{figure*}
-
-\subsection{\textcolor{green}{Analysis of Exercise Behavior}}
-\label{sec:exercise_behavior}
-
-\textcolor{green}{To quantify the degree to which a learned policy adheres to the all-or-nothing exercise decisions typical of linear cost structures, we introduce the \emph{Bang-Bangness} metric $B$. We define $B$ as the proportion of feasible full-capacity exercises that actually hit the maximum allowable quantity. Specifically, over the subset of steps where the remaining capacity is at least the maximum single-step limit ($Q_{\max} - Q_i \ge q_{\max}$) and the agent chooses to exercise a strictly positive amount ($q_t > 0$), the metric is defined via the Hit-Ratio:}
-\begin{equation}
-    B = \mathbb{P}\left( \frac{q_t}{q_{\max}} \ge 0.95 \;\middle|\; Q_{\max} - Q_i \ge q_{\max},\, q_t > 0 \right).
-\end{equation}
-\textcolor{green}{A \textcolor{revisionbrown}{bang-bang} policy yields $B=100\%$, while a completely uniform random exercise decision over $(0, q_{\max}]$ would yield an expected baseline of $B \approx 5\%$.}
-
-\begin{figure}
-    \centering
-    \includegraphics[width=\columnwidth]{../figs/convex_costs_0p04/bang_bangness_rl.pdf}
-    \caption{\textcolor{green}{The Bang-Bangness metric $B$ across five representative cost regimes ($c \in \{0.01, 0.02, 0.04, 0.08, 0.15\}$) and convexities for the RL and LSM-D agents. \textcolor{revisionbrown}{Both methods systematically decrease the proportion of maximum-capacity exercises as the cost exponent ($\gamma$) grows, confirming that the learned policies adapt to convex penalties by distributing exercise across multiple quantities.}}}
-    \label{fig:bang_bangness_trend}
-\end{figure}
-
-\textcolor{green}{Figure~\ref{fig:spot_income_pv_hist} provides a microscopic view of the exercise behavior \textcolor{revisionbrown}{under both methods}. The left column scatters the non-discounted one-step net exercise profit against the underlying spot price. When $c > 0$ and costs are linear ($\gamma_c=1.0$), \textcolor{revisionbrown}{both the RL agent and the LSM-D baseline produce near-identical exercise boundaries, confirming that bang-bang exercise is optimal under linear costs}.}
-
-\textcolor{green}{However, under convex costs ($\gamma_c \in \{1.5, 2.0\}$), a dense region of profitable partial exercise emerges beneath the strict bang-bang frontier. \textcolor{revisionbrown}{Both methods exploit this region: the LSM-D baseline selects from five discrete volume levels while the actor--critic agent continuously modulates its exercise quantity, producing a denser scatter of intermediate exercise decisions.}}
-
-\textcolor{green}{This behavioral shift is corroborated by the right column of Figure~\ref{fig:spot_income_pv_hist}, which depicts the distribution of the path-level present value of exercise costs. At $\gamma_c=1.0$, the RL agent exhibits high Bang-Bangness (\textcolor{revisionorange}{$B \approx 66\%$}) and its cost distribution closely tracks that of the LSM-D baseline. As the cost exponent increases to $\gamma_c = 2.0$, \textcolor{revisionbrown}{both methods show markedly reduced Bang-Bangness---the RL agent decays to $B \approx 21\%$ while the LSM-D baseline reaches a similar $B \approx 22\%$---reflecting their shared adaptation to convex penalties through graduated exercise}.}
-
 \subsection{Discussion}
 
-\textcolor{revisionbrown}{Three qualitative patterns stand out in Table~\ref{tab:results} and Figures~\ref{fig:exercise_heatmap} and~\ref{fig:spot_income_pv_hist}.}
+Three patterns stand out in Table~\ref{tab:results} and Figure~\ref{fig:spot_income_pv_hist}.
 \begin{enumerate}
-    \item \textcolor{revisionbrown}{\textbf{Baseline competitiveness.} Across most of the $(c, \gamma_c)$ grid, the LSM-D baseline is competitive with or slightly exceeds the actor--critic method. The typical deficit is $1$--$2\%$, consistent with the remaining gap between a five-level action grid and a truly continuous policy.}
-    \item \textcolor{revisionbrown}{\textbf{Near-parity under strong convexity.} For $\gamma_c \ge 2$ with moderate cost coefficients, the gap between the two methods narrows substantially. This is the regime where both methods benefit from interior exercise and neither has a decisive structural advantage.}
-    \item \textcolor{revisionbrown}{\textbf{RL advantage at extremes.} For the three configurations with both high cost coefficient and high convexity exponent ($c \ge 0.05$, $\gamma_c \ge 2$), the actor--critic method marginally outperforms the LSM-D baseline. The continuous action space may help in these highly non-linear regimes where five discrete levels provide coarser cost-quantity trade-offs.}
+    \item \textbf{The model-agnostic AC-sample is competitive but trails LSM-D.} Across the grid its mean $\Delta\%$ is $-0.5\%$ (median $-0.9\%$): it sits modestly below LSM-D in most cells and exceeds it in $6$ of $28$, all concentrated in the high-cost, high-convexity corner where interior exercise dominates and the coarse $M=5$ grid under-resolves. The largest deficit is $-2.3\%$ at $c=0.15$, $\gamma_c=1$, where exercise quality matters most and a single-sample critic target is noisiest; the widest confidence intervals likewise occur at high cost (e.g.\ $[-4.85,-1.32]$ at $c=0.15$, $\gamma_c=1$). AC-sample is therefore a strong, near-LSM comparator that relies on nothing beyond simulated transitions.
+    \item \textbf{AC-kernel matches LSM-D under low convexity and exceeds the coarse $M=5$ grid under high convexity.} Under linear costs ($\gamma_c=1$) AC-kernel reproduces LSM-D to within $-0.19\%$ to $-0.14\%$, as expected where the optimum is bang-bang and LSM-D is near-exact. As convexity increases, AC-kernel rises above the reported $M=5$ benchmark: the mean $\Delta\%$ reaches $+0.24\%$ ($\gamma_c=1.5$), $+0.79\%$ ($\gamma_c=2$) and $+2.03\%$ ($\gamma_c=3$), exceeding the $M=5$ grid in $15$ of $28$ cells and by up to $+5.14\%$ ($c=0.15$, $\gamma_c=3$). This gap is not evidence that the learned policy is closer to the true optimum: as the action-grid sensitivity in Table~\ref{tab:lsm_grid} shows, a finer LSM-D grid ($M=9,17$) converges upward to essentially the AC-kernel value, so the $M=5$ deficit is a discretisation artifact of the baseline rather than RL superiority. The robust statement is that AC-kernel attains the continuous-exercise value that the coarse grid under-resolves, and that it does so without choosing an action grid.
+    \item \textbf{The AC-kernel recipe improves both accuracy and stability.} Relative to AC-sample, it raises the value by $0.6$--$2.9\%$ of the LSM-D price, and its relative performance is markedly more reproducible across seeds: the paired-$\Delta\%$ BCa intervals are roughly an order of magnitude narrower than AC-sample's (half-widths $\approx 0.02$--$0.12$ versus $\approx 0.1$--$1.8$ percentage points; Table~\ref{tab:results}), so the expected target removes most of the seed-to-seed dependence in the benchmark gap. The AC-kernel recipe differs from AC-sample in more than the critic target---network depth, critic learning rate, gradient steps per interaction, warm-up length, exploration schedule, actor temperature, and weight averaging (Table~\ref{tab:hyperparams})---so the headline grid alone does not isolate the target's contribution. A matched focal ablation that flips only the expected-target flag while holding the recipe fixed ($c=0.04$, $\gamma_c=2$; $4{,}096$ episodes, $12$ seeds) indicates that the expected target is the primary driver, with a focal gain of about $+2.5$ percentage points; we report this as focal rather than grid-wide evidence (Appendix~\ref{appendix:reproducibility}). We therefore read the model-agnostic deficit as largely a critic-variance and exercise-quality effect rather than a limitation of the continuous-control policy class.
 \end{enumerate}
 
-\textcolor{revisionbrown}{These results support a nuanced interpretation: the LSM-D baseline is a strong classical comparator that captures most of the value from interior exercise. The actor--critic approach does not systematically dominate but rather provides a complementary methodology whose main advantages lie in avoiding explicit state-space discretisation and scaling more naturally to complex contract features.}
+Taken together, the three-way evidence sharpens the earlier ``competitive, not dominant'' reading. The bang-bangness diagnostic is consistent with this reading: under linear costs LSM-D is fully bang-bang ($B\approx 1$) while the continuous actor--critic spreads exercise somewhat ($B\approx 0.66$--$0.74$ across the linear-cost grid, eight-seed mean); under convexity all methods move to graduated exercise (Figure~\ref{fig:spot_income_pv_hist}) and the continuous policies fill the interior more finely. We treat $B$ as a descriptive measure of exercise style rather than as the cause of the small linear-cost gap. The practical reading is that AC-sample offers a simulator-only continuous-control alternative at a small valuation cost, while AC-kernel converts a known transition law into a low-variance, seed-stable critic target that recovers the value AC-sample leaves on the table and matches a well-resolved LSM-D benchmark.
 
-% P2-8: Address the weak-baseline critique explicitly.
-\paragraph{Caveat: comparator strength.}
-\textcolor{revisionbrown}{A crucial caveat is that the $M\!=\!5$ LSM-D baseline, while substantially stronger than the classical bang-bang ($M\!=\!2$) variant used in earlier drafts, is still limited by its finite action grid and polynomial continuation-value approximation. Two sources of residual suboptimality remain: (i)~the five-level grid cannot represent exercise quantities between grid points, and (ii)~the degree-$2$ Chebyshev basis may miss non-linear continuation-value features in extreme cost regimes. Conversely, the actor--critic method faces its own approximation limitations through finite training, seed sensitivity, and the implicit bias of neural-network function approximation.}
-Additionally, the absence of an upper bound (e.g.\ a dual martingale bound in the spirit of \citealt{andersen2004primal}) means we cannot certify how close either method is to the true option value.
+\paragraph{Comparator strength: action-grid sensitivity.}
+The headline table fixes the LSM-D benchmark at $M=5$ exercise levels. Since the AC-kernel gains concentrate where convexity makes interior exercise valuable, the natural question is whether they survive a finer LSM-D action grid. Table~\ref{tab:lsm_grid} refits LSM-D with $M\in\{5,9,17\}$ on three representative cells. Under linear costs the optimum is bang-bang and $M$ is irrelevant ($2.2378$ throughout). Under convex costs, however, LSM-D converges \emph{upward} as the grid refines: at the focal cell the benchmark rises from $1.9823$ ($M=5$) to $1.9891$ ($M=17$), and at $c=0.15,\gamma_c=2$ from $1.0322$ to $1.0634$. At $M=17$ the refined LSM-D and the continuous-action AC-kernel agree to within about $0.2\%$ in every cell (the three cells span $-0.18\%$ to $+0.11\%$, with $-0.21\%$ at the focal cell)---well inside the Monte Carlo confidence interval. The apparent AC-kernel advantage over the reported $M=5$ grid is therefore largely a \emph{discretisation effect in the baseline}, not evidence that the learned policy is closer to the true optimum.
 
-\textcolor{green}{From a practical optimisation perspective, two engineering gaps remain. First, although the focal robustness study shows very low seed dispersion under the final evaluation protocol, the longer-term goal is a training procedure that is reliable enough that one seed is effectively sufficient in routine use, and for which additional training episodes improve the policy or at least do not degrade it. Second, the current CPU implementation is still far from production-grade throughput: substantial software and hardware optimisation, especially GPU-oriented batching and parallelisation, will be required before this approach can be deployed at much larger scale. Relative to earlier DRL derivatives work, however, the present pipeline is already materially more robust and more computationally disciplined; compare the stronger seed sensitivity and training inefficiency documented for American-option hedging in \citealt{tsoskounoglou2025higherorder}.}
+\begin{table}[htbp]
+    \centering
+    \caption{LSM-D action-grid sensitivity. Out-of-sample LSM-D value as the number of exercise levels $M$ increases, on the per-seed out-of-sample protocol of Table~\ref{tab:results} (eight training seeds $\{11,\dots,18\}$, each priced on its own test set), with the continuous-action AC-kernel and AC-sample values for reference (reproduced from Table~\ref{tab:results}). The across-seed BCa $95\%$ half-width is $\approx 0.006$--$0.007$ across these cells. As $M$ grows, LSM-D converges upward to essentially the AC-kernel value; the apparent AC-kernel edge over the reported $M=5$ grid is a baseline discretisation effect.}
+    \label{tab:lsm_grid}
+    \begin{adjustbox}{max width=\linewidth}
+        \begin{tabular}{cc rrr rr}
+            \toprule
+                 &            & \multicolumn{3}{c}{LSM-D, action levels $M$} & AC-kernel & AC-sample \\
+            \cmidrule(lr){3-5}
+            $c$  & $\gamma_c$ & $M{=}5$ & $M{=}9$ & $M{=}17$ &           &           \\
+            \midrule
+            0.04 & 1 & 2.2366 & 2.2366 & 2.2366 & 2.2326 & 2.2109 \\
+            0.04 & 2 & 1.9823 & 1.9878 & 1.9891 & 1.9850 & 1.9592 \\
+            0.15 & 2 & 1.0322 & 1.0571 & 1.0634 & 1.0645 & 1.0528 \\
+            \bottomrule
+        \end{tabular}
+    \end{adjustbox}
+\end{table}
 
-\subsection{\textcolor{revisionorange}{Seed Robustness}}
+We read this agreement as mutual corroboration rather than a setback: a continuous-action actor--critic with a variance-reduced target and a well-resolved classical dynamic program independently reach the same convex-cost values, which is stronger evidence that both are near-optimal than either method provides alone. It does mean the contribution of continuous control is \emph{not} higher valuation: AC-kernel matches a sufficiently fine LSM-D and exceeds only the coarse fixed-grid baseline, and a fine-grid LSM-D is cheaper to fit than the actor--critic is to train. The continuous policy's distinctive value lies elsewhere---it avoids any action-grid choice, it is markedly more stable across seeds than AC-sample, and (Section~\ref{sec:hedging}) its differentiability yields a direct continuation-Delta estimator that the capacity-constrained LSM dynamic program does not provide.
+
+\paragraph{Remaining caveats.}
+Several caveats apply. First, all reported numbers are out-of-sample estimates of achievable policies; absent a dual upper bound (e.g.\ a martingale bound in the spirit of Andersen and Broadie~\cite{andersen2004primal}) we cannot certify absolute distance to the true optimum, although the AC-kernel/fine-LSM agreement bounds it tightly in the cells studied. Second, AC-kernel is model-specific: it requires the HHK transition density, whereas AC-sample needs only a path simulator, so the two variants occupy complementary niches. Finally, the current CPU implementation is research-grade rather than production-grade; scaling to substantially larger experiments would require GPU batching and additional software optimisation.
+
+\subsection{Seed Robustness}
 \label{sec:seed_robustness}
 
-\textcolor{revisionorange}{To assess the sensitivity of the learned price to the training random seed, we conduct a focal robustness study for the representative configuration $c = 0.04$, $\gamma_c = 2$. In addition to the three seeds used in Table~\ref{tab:results}, twelve further seeds (14--25) are trained with identical hyperparameters and evaluated on the common test set. Figure~\ref{fig:seed_robustness} shows the resulting distribution of 15 test-set prices.}
+The paired-$\Delta\%$ confidence intervals in Table~\ref{tab:results} double as a grid-wide robustness summary: because each of the eight seeds $\{11,\dots,18\}$ is priced against LSM-D on its own \emph{common} per-seed test set, the BCa bootstrap of $\Delta\%$ absorbs both initialisation and Monte~Carlo variation and measures how reproducibly each variant reaches its benchmark gap. The expected target removes almost all dependence on the random seed: AC-kernel's intervals are tight (half-widths $\approx 0.02$--$0.12$ percentage points across the grid), whereas AC-sample's are an order of magnitude wider (up to $\approx 1.8$ pp at high cost). The tight AC-kernel intervals confirm that its near-LSM valuation is reproducible to well within the test-set uncertainty and not an artefact of a favourable seed draw, while AC-sample relies more heavily on the seed averaging used throughout.
 
-\begin{figure}
+\begin{figure}[pos=b]
     \centering
-    \IfFileExists{../figs/convex_costs_0p04/seed_robustness.pdf}{%
-        \includegraphics[width=\columnwidth]{../figs/convex_costs_0p04/seed_robustness.pdf}%
-    }{%
-        \framebox[\columnwidth]{\parbox{0.9\columnwidth}{\centering\vspace{2em}\textit{Figure placeholder --- run focal training and generate figure.}\vspace{2em}}}%
-    }
-    \caption{\textcolor{revisionorange}{Distribution of RL option values across 15 independent training seeds ($c = 0.04$, $\gamma_c = 2$). The vertical dashed line indicates the \textcolor{revisionbrown}{LSM-D ($M = 5$)} baseline. \textcolor{revisionbrown}{The narrow spread confirms consistent training, although the distribution sits slightly below the LSM-D baseline for this configuration.}}}
-    \label{fig:seed_robustness}
+    \includegraphics[width=\columnwidth]{figs/convex_costs_0p04/sample_efficiency.pdf}
+    \caption{Sample efficiency at the focal cell ($c=0.04$, $\gamma_c=2$): out-of-sample value versus training budget---RL episodes for the actor--critic variants, fit paths for LSM-D---over the eight training seeds $\{11,\dots,18\}$, each priced on its own out-of-sample set, with $95\%$ BCa bands. AC-kernel reaches the LSM-D benchmark within $\approx 2{,}000$ episodes and tracks LSM-D's own fit-path efficiency curve; the model-agnostic AC-sample remains $\approx 1.2\%$ below at $32{,}768$ episodes. The wide AC-sample band versus the tight AC-kernel band mirrors the seed-stability gap of Table~\ref{tab:results}.}
+    \label{fig:sample_efficiency}
 \end{figure}
-
-\textcolor{revisionorange}{The inter-seed standard deviation is $0.009$ (coefficient of variation $0.45\%$), confirming that the training procedure yields consistent pricing estimates across random initialisations. \textcolor{revisionbrown}{For this configuration, all 15 seeds produce test-set values within $2\%$ of the LSM-D baseline (range: $-2.0\%$ to $-0.4\%$). The tight clustering demonstrates that while the actor--critic method does not surpass the upgraded LSM-D baseline here, its cross-seed variability is small enough that the difference is economically modest.}}
 
 \subsection{Computational Efficiency}
 
-Training for $32{,}768$ episodes requires approximately $2$--$3$ hours on a $4$-core CPU. Once trained, the policy is cheap to evaluate: on the archived experiments, valuing $65{,}536$ held-out paths took less than $10$ seconds. The computational burden is thus shifted from repeated backward induction to one-off policy training.
+The computational burden is shifted from repeated backward induction to one-off policy training, and that training is itself inexpensive. The reported prices are produced by a hand-optimised float32 C++ reimplementation of the actor--critic pricer (Accelerate BLAS for every layer GEMM in both passes, vectorised fast-exponential activations, and a hand-derived analytic backward), which is roughly $8.8\times$ faster end-to-end than the equivalent PyTorch-eager baseline: on a single Apple~M1 core a complete $4{,}096$-episode train-and-price plus a $65{,}536$-path out-of-sample valuation takes about $43$ seconds, versus about $381$ seconds for the Python reference. The float32 price is statistically indistinguishable from the double-precision Python implementation (Welch two-sample test, $p=0.37$), and out-of-sample valuation of the $65{,}536$-path test set is sub-second. For context, the reference Python implementation trains the full $32{,}768$-episode budget in roughly $2$--$3$ hours on a $4$-core CPU.
 
+The expected target also buys \emph{sample} efficiency, not just wall-clock. Figure~\ref{fig:sample_efficiency} prices both actor--critic variants and the LSM-D benchmark at the focal cell as a function of training budget---episodes for the actor--critic methods, fit paths for LSM-D---over the eight seeds with bootstrap bands. AC-kernel reaches the LSM-D benchmark within about $2{,}000$ episodes and then tracks the classical dynamic program's own fit-path efficiency curve, whereas the model-agnostic AC-sample is still about $1.2\%$ below the benchmark at the full $32{,}768$-episode budget. The kernel therefore attains the benchmark value at roughly an order of magnitude fewer interactions than the model-agnostic variant.
+
+\FloatBarrier
+\section{Risk Management: Sensitivities and Hedging}
+\label{sec:hedging}
+
+\begin{figure*}[pos=tb]
+    \centering
+    \includegraphics[width=\textwidth]{figs/hedging_greeks_grid_rl_lsm.png}
+    \caption{Revalued price, Delta, and Gamma versus initial spot over $[0.5,2.0]\cdot S_0$ at the focal regime ($c=0.04$, $\gamma_c=2$), for LSM-D, the model-agnostic actor--critic (RL), and the kernel-augmented actor--critic (RL-kernel). All three share the test seed. RL-kernel tracks the LSM-D value function and its sensitivities across the grid; the model-agnostic RL prices below both near the money while retaining the same Delta/Gamma shape.}
+    \label{fig:hedging_greeks}
+\end{figure*}
+
+A usable pricer must also deliver risk sensitivities and support hedging. We therefore complement the valuation study with a risk analysis at the focal regime ($c=0.04$, $\gamma_c=2$), comparing three pricers throughout: the LSM-D benchmark, the model-agnostic actor--critic (\emph{RL}, the AC-sample policy), and a kernel-augmented actor--critic (\emph{RL-kernel}, the AC-kernel policy), the model-specific extension that replaces the single-sample critic target with a variance-reduced expectation computed analytically over the HHK transition kernel. The two learned policies are the seed-$11$ focal checkpoints, evaluated frozen and without retraining for the hedging task. This is a focal risk study with its own evaluation protocol: sensitivities and hedges are computed out-of-sample on dedicated path bundles ($8{,}192$ valuation paths and $4{,}096$ hedging paths), with the two learned policies trained on seed $11$ and evaluated on the disjoint seed-$788$ set ($11+777$), and the LSM-D comparator refit and revalued out-of-sample at each bumped spot. The present-value levels reported below are therefore consistent with the corresponding entries of Table~\ref{tab:results} up to this smaller Monte Carlo sample.
+
+\paragraph{Greeks via common-random-number revaluation.}
+Delta and Gamma are obtained by revaluing the frozen policy on path bundles started at bumped initial spots $\{S_0(1-h),S_0,S_0(1+h)\}$ that share one simulation seed. Because the HHK draws are keyed off the seed and enter the spot only through the initial condition, the bump is the near-deterministic multiplicative shift $S_t(S_0')=S_t(S_0)\exp(\Delta\log S_0\,e^{-\alpha t})$ and the finite-difference noise cancels path by path. We use central differences with a relative bump $h=0.01$; the LSM-D value is refit and priced out-of-sample at each bumped spot. Figure~\ref{fig:hedging_greeks} reports the resulting price, Delta, and Gamma over a nine-point grid spanning $[0.5,2.0]\cdot S_0$. The RL-kernel value function reproduces the LSM-D benchmark to within $\pm 0.03$ price units across the whole grid ($\lesssim 0.5\%$ in relative terms for $S_0\gtrsim K$, with larger relative gaps appearing only at the lowest spots where the option value itself approaches zero), with coincident Delta and Gamma profiles. The model-agnostic RL policy prices systematically below both, by about $2.2\%$ near the money and more at the lowest spots, yet its Greeks stay close to the common profile: the no-kernel deficit is an exercise-quality effect on the \emph{level} of value, not a different risk profile.
+
+\paragraph{Daily-rebalanced delta hedge.}
+At each decision date $t$ the per-path continuation Delta $\Delta_t=\partial V_t/\partial S_t$ is computed by bumping the prompt spot and re-rolling the frozen policy to maturity; the bump propagates through the OU factor in closed form, $X_k\mapsto X_k+\delta e^{-\alpha(t_k-t)}$, so no resimulation is needed. The finite-difference Delta is pathwise before projection and therefore anticipates future shocks, so it is projected onto the date-$t$ state by a Longstaff--Schwartz regression~\cite{longstaff2001valuing} to make the hedge ratio $\mathcal F_t$-measurable. The position is hedged with the HHK forward to maturity, giving the discounted per-contract P\&L increment $\mathrm{DF}_{t+1}(F_{t+1}-F_t)$. The hedged seller P\&L has mean $\approx 0$ for both learned policies---the forward is a fair martingale and the hedge is non-anticipating---while the P\&L standard deviation falls by $\approx 51\%$ (from $\approx 2.50$ to $\approx 1.22$ for both variants), corresponding to roughly $76\%$ variance reduction. Hedge quality is essentially identical across the model-agnostic and kernel-augmented policies: the kernel's contribution is pricing accuracy, not hedgeability.
+
+\paragraph{Hedged P\&L: Value-at-Risk and Expected Shortfall.}
+To compare all three pricers on an equal footing, we additionally hedge each with the same regression (Longstaff--Schwartz) delta, an $\mathcal F_t$-measurable estimator obtained by regressing the realised continuation value on the date-$t$ state and differentiating in spot; this runs identically on RL and LSM-D cashflows~\cite{kolm2019dynamic,cao2022gamma}. Figure~\ref{fig:hedging_pnl} shows the terminal seller P\&L distributions with $95\%$ Value-at-Risk and Expected Shortfall (ES). Under the common regression-delta hedge, all three pricers reduce P\&L standard deviation by $39$--$42\%$ with nearly identical VaR and ES (VaR$_{95}\approx-2.4$, $\mathrm{ES}_{95}\approx-4.2$ to $-4.3$ across LSM-D, RL and RL-kernel), so hedge effectiveness does not separate them. The policy-specific continuation-bump hedge, available only for the differentiable RL policies, does better still ($\approx 51\%$ standard-deviation reduction and the tightest left tail, $\mathrm{ES}_{95}\approx -3.7$ versus $-4.2$/$-4.3$ for the regression hedge). In short, the kernel buys value-function accuracy, while the differentiable policy provides a direct continuation-Delta estimator that the capacity-constrained LSM dynamic program does not provide; neither advantage shows up as a difference in basic hedge effectiveness.
+
+\begin{figure*}[pos=tb]
+    \centering
+    \includegraphics[width=0.85\textwidth]{figs/hedging_pnl_var_es.png}
+    \caption{Terminal seller P\&L distributions at the focal regime with $95\%$ VaR and ES (vertical lines). Left: the policy-specific continuation-bump hedge (RL versus RL-kernel). Right: the common regression-delta hedge applied identically to all three pricers. Under the shared hedge the methods are nearly indistinguishable; the continuation-bump hedge yields the tightest tail.}
+    \label{fig:hedging_pnl}
+\end{figure*}
+
+\FloatBarrier
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have formulated electricity swing-option valuation under the HHK jump-diffusion model as a finite-horizon stochastic control problem and approximated its solution with a deterministic actor--critic method. The central modelling device is a profitability-gated actor that clips candidate exercises to quantities with non-negative immediate payoff while preserving a usable gradient signal through a straight-through estimator.
+We have formulated electricity swing-option valuation under the HHK jump-diffusion model as a finite-horizon stochastic control problem and approximated its solution with deterministic actor--critic methods. The central modelling device is a profitability-gated actor that clips candidate exercises to quantities with non-negative immediate payoff while preserving a usable gradient signal through a straight-through estimator.
 
-\textcolor{revisionbrown}{The numerical results indicate that LSM-D ($M = 5$) is a strong classical comparator: it generally matches or slightly exceeds the actor--critic method across the tested cost configurations. The actor--critic approach remains within $1$--$2\%$ of the LSM-D baseline in most cases and marginally outperforms it in a small number of configurations with high cost convexity, where the continuous action space may provide finer exercise resolution.} The present experiments focus on optional exercise with a cumulative cap and no active refraction lag.
+On the HHK benchmark, the discretized-action LSM-D baseline is a strong classical comparator. The model-agnostic AC-sample trails the $M=5$ benchmark by about $1\%$ on average, so for AC-sample the conclusion is competitiveness rather than dominance. AC-kernel matches LSM-D under linear costs and exceeds the reported $M=5$ grid under convex costs (by up to $+5.1\%$); an action-grid refinement (Table~\ref{tab:lsm_grid}) shows this gap is largely baseline discretisation error, since a finer LSM-D converges to within about $0.2\%$ of the AC-kernel value. We therefore read the convex-cost evidence as mutual corroboration---a continuous-action method and a well-resolved dynamic program agreeing near the optimum---rather than as valuation dominance. AC-kernel's durable advantages over AC-sample are its far more reproducible benchmark gap across seeds (paired confidence intervals roughly an order of magnitude tighter) and grid-free continuous exercise. The present experiments focus on optional exercise with a cumulative cap and no active refraction lag.
 
-\textcolor{revisionbrown}{Several directions for future work are worth highlighting. First, constructing dual upper bounds---for example, via an adaptation of the Andersen--Broadie or Haugh--Kogan methodology to the swing setting---would provide an independent assessment of how close either method is to the true optimum. Second, extending the LSM-D baseline to a finer action grid or a randomised basis-selection scheme could further narrow the remaining gap. Third, extending the contract specification to include mandatory take obligations, non-trivial refraction lags, and calibration to observed forward and option data would broaden the practical relevance of both approaches.}
+The more durable takeaway is methodological: AC-sample provides a model-agnostic continuous-control route that relies only on simulated transitions, while AC-kernel shows how a known transition law can improve the critic target---in both accuracy and seed stability---without changing the policy architecture. The same policy family also delivers usable risk output: common-random-number finite-difference Greeks that track the benchmark and daily-rebalanced delta hedges with similar hedge quality across methods (Section~\ref{sec:hedging}). Several directions for future work follow naturally. First, constructing dual upper bounds---for example, via an adaptation of the Andersen--Broadie or Haugh--Kogan methodology to the swing setting---would certify absolute distance to the true optimum, which the action-grid agreement of Table~\ref{tab:lsm_grid} only brackets empirically. Second, the regime where continuous control is expected to pay off is one the present testbed deliberately excludes: contracts with mandatory take obligations, non-trivial refraction lags, or ramping constraints, where the discrete-grid dynamic program must augment its state and the grid-free continuous policy may have a structural edge. Third, calibration to observed forward and option data would broaden the practical relevance of both approaches.
+
+\appendix
+
+\section{Reproducibility}
+\label{appendix:reproducibility}
+
+All reported results are regenerated from archived artifacts by a deterministic pipeline; the elements needed to reproduce them are collected here.
+
+\paragraph{Seeds and data.} Each actor--critic cell is trained with eight seeds $\{11,\dots,18\}$ for $32{,}768$ episodes. Valuation prices each training seed $k$ on its own out-of-sample set of $N_{\mathrm{test}}=65{,}536$ HHK paths drawn with the dedicated evaluation seed $k+777$, so the reported per-cell statistics span both initialisation and Monte~Carlo variation; on each such set the LSM-D benchmark and both actor--critic variants are priced on the \emph{same} paths, making $\Delta\%$ a seed-paired quantity. The LSM-D continuation regressions are fit on an independent sample of $32{,}768$ paths. Path generation uses scrambled Sobol draws for the Ornstein--Uhlenbeck increments. Training, fitting, and evaluation samples are disjoint.
+
+\paragraph{Time grid.} The contract uses $n=22$ decision dates spanning $n-1=21$ intervals with $\Delta t = T/(n-1)$ (Section~\ref{sec:market_contract}); the time-to-maturity feature is the affine surrogate $(n-i)/(n-1)$.
+
+\paragraph{Checkpoints and artifacts.} Reported weights are the evaluation EMA of the actor weights for both variants; no best-validation selection is used. Each table entry is reproducible from a per-run configuration (\texttt{runs/<name>.json}) and weights (\texttt{runs/<name>.pth}), the aggregated results file, and the pivot command that produces Table~\ref{tab:results}; these are collected in the artifact manifest. Hyperparameters are listed in Table~\ref{tab:hyperparams}.
+
+\paragraph{Feature preprocessing.} The spot component enters as log-moneyness $\log(S_{t_i}/K)$; the latent factors $X_{t_i},Y_{t_i}$ pass through a robust-normalisation layer that, in the reported runs, uses default identity statistics (median $0$, IQR $1$), so they enter essentially unscaled apart from the hidden-layer normalisation.
+
+\paragraph{LSM-D benchmark.} The benchmark uses $M=5$ exercise levels and the full HHK market state, with inventory and cooldown carried as discrete slices; continuation values are fit with a degree-$2$ total-degree Chebyshev basis (no regularisation) and per-date features min--max scaled to $[-1,1]$. The basis and action grid are fixed a priori, so no validation-based model selection is performed. The action-grid sensitivity of Table~\ref{tab:lsm_grid} refits LSM-D at $M\in\{5,9,17\}$ on the same per-seed out-of-sample sets (script \texttt{gen\_table6\_v67.py}, output \texttt{table6\_lsm\_grid\_v67.csv}).
+
+\paragraph{AC-kernel quadrature.} The expected critic target uses a shared Gauss--Hermite rule with $M_x=2$ nodes for the Gaussian $X$ transition and a single-mesh quadrature ($M_{\mathrm{per}\,k}=1$, $N_{\max}=1$) for the rapidly decaying spike factor $Y$ (Section~\ref{sec:actor_critic}).
+
+\paragraph{Expected-target ablation.} The $+2.5$ percentage-point figure quoted in the discussion is the focal matched ablation: the AC-kernel recipe run with the expected target on versus off (the only change), at $c=0.04$, $\gamma_c=2$, $4{,}096$ episodes, $12$ seeds $\{11,\dots,22\}$, evaluated on the common test set. It is focal evidence, not a grid-wide claim. The comparison and its per-seed values are recorded in the project hyperparameter-tuning log (\texttt{HPT.md}) and the Validation-3 semi-analytical-kernel study notebook.
+
+\paragraph{Risk study.} The Greeks and hedges of Section~\ref{sec:hedging} use the seed-$11$ focal checkpoints with common-random-number central differences (relative bump $h=0.01$), evaluated out-of-sample on $8{,}192$ valuation and $4{,}096$ hedging paths (the seed-$11$ policy priced on the disjoint seed-$788$ set, $11+777$); the LSM-D comparator is refit and revalued at each bumped spot. The focal risk-study present values (RL-kernel $1.985$, AC-sample $1.958$, LSM-D $1.972$) match the corresponding Table~\ref{tab:results} entries up to this smaller Monte Carlo sample.
+
+\clearpage
 
 \section*{Acknowledgement}
 
 The authors gratefully acknowledge financial support from the Amsterdam University Fund through the AUF Impact Call (Fall 2024), together with additional support from the AI4FinTech initiative at the University of Amsterdam.
 
-\bibliographystyle{model1-num-names}
+\bibliographystyle{unsrt}
 \bibliography{Bibliography}
 
 \end{document}

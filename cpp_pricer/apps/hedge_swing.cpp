@@ -66,6 +66,15 @@ int main(int argc, char** argv) {
     bool kernel_off = false;
     int hidden = 48, hidden_actor = 32, hidden_critic = -1, actor_layers = 2, critic_layers = 4;
     int batch = 64, learn_number = 3; double lr_c = 5e-4;
+    // ---- v61 (no-kernel) runtime recipe, ported from price_swing.cpp so the no-kernel hedge agent
+    //      reproduces the headline AC-sample exactly (defaults => v65/kernel bit-identical) ----
+    int init_method = 0, learn_every = -1, critic_warmup = -1, weight_avg = -1;
+    int noise_plateau = -1, min_replay = -1, max_replay = -1, double_critic_step = 0;
+    int lr_warmup_episodes = -1, lr_schedule_episodes = -1, tpn_decay_start = -1;
+    double lr_a = -1, wd_c = -1, ema_decay = -1, tau = -1, noise_sigma0 = -1, noise_floor = -1;
+    double adaptive_noise_scale = -1, warmup_noise_fraction = -1;
+    double target_policy_noise = -1, tpn_floor = -1, final_lr_fraction = -1, min_lr = -1;
+    std::string noise_schedule_s = "linear", lr_schedule_s = "const";
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -90,6 +99,31 @@ int main(int argc, char** argv) {
         else if (a == "--batch") batch = std::stoi(nx());
         else if (a == "--learn_number") learn_number = std::stoi(nx());
         else if (a == "--lr_c") lr_c = std::stod(nx());
+        else if (a == "--init_method") init_method = std::stoi(nx());
+        else if (a == "--lr_a") lr_a = std::stod(nx());
+        else if (a == "--wd_c") wd_c = std::stod(nx());
+        else if (a == "--ema_decay") ema_decay = std::stod(nx());
+        else if (a == "--weight_avg") weight_avg = std::stoi(nx());
+        else if (a == "--learn_every") learn_every = std::stoi(nx());
+        else if (a == "--critic_warmup") critic_warmup = std::stoi(nx());
+        else if (a == "--tau") tau = std::stod(nx());
+        else if (a == "--noise_sigma0") noise_sigma0 = std::stod(nx());
+        else if (a == "--noise_floor") noise_floor = std::stod(nx());
+        else if (a == "--adaptive_noise_scale") adaptive_noise_scale = std::stod(nx());
+        else if (a == "--warmup_noise_fraction") warmup_noise_fraction = std::stod(nx());
+        else if (a == "--noise_schedule") noise_schedule_s = nx();
+        else if (a == "--noise_plateau") noise_plateau = std::stoi(nx());
+        else if (a == "--min_replay") min_replay = std::stoi(nx());
+        else if (a == "--max_replay") max_replay = std::stoi(nx());
+        else if (a == "--double_critic_step") double_critic_step = std::stoi(nx());
+        else if (a == "--target_policy_noise") target_policy_noise = std::stod(nx());
+        else if (a == "--tpn_decay_start") tpn_decay_start = std::stoi(nx());
+        else if (a == "--tpn_floor") tpn_floor = std::stod(nx());
+        else if (a == "--lr_schedule") lr_schedule_s = nx();
+        else if (a == "--lr_warmup_episodes") lr_warmup_episodes = std::stoi(nx());
+        else if (a == "--lr_schedule_episodes") lr_schedule_episodes = std::stoi(nx());
+        else if (a == "--final_lr_fraction") final_lr_fraction = std::stod(nx());
+        else if (a == "--min_lr") min_lr = std::stod(nx());
     }
 
     SwingContract c; HHKParams hhk; KernelParams kp; hhk.S0 = S0;
@@ -106,6 +140,37 @@ int main(int argc, char** argv) {
     cfg.hidden = hidden; cfg.hidden_actor = hidden_actor; cfg.hidden_critic = hidden_critic;
     cfg.actor_layers = actor_layers; cfg.critic_layers = critic_layers;
     cfg.batch = batch; cfg.learn_number = learn_number; cfg.lr_c = lr_c;
+    // ---- v61 (no-kernel) recipe -> cfg (mirrors price_swing.cpp; defaults keep v65 bit-identical) ----
+    cfg.init_method = init_method;
+    if (lr_a >= 0) cfg.lr_a = lr_a;
+    if (wd_c >= 0) cfg.wd_c = wd_c;
+    if (ema_decay >= 0) cfg.ema_decay = ema_decay;
+    if (weight_avg >= 0) cfg.weight_avg = weight_avg;
+    if (learn_every > 0) cfg.learn_every = learn_every;
+    if (critic_warmup >= 0) cfg.critic_warmup = critic_warmup;
+    if (tau >= 0) cfg.tau = tau;
+    if (noise_sigma0 >= 0) cfg.noise_sigma0 = noise_sigma0;
+    if (noise_floor >= 0) cfg.noise_floor = noise_floor;
+    if (adaptive_noise_scale >= 0) cfg.adaptive_noise_scale = adaptive_noise_scale;
+    if (warmup_noise_fraction >= 0) cfg.warmup_noise_fraction = warmup_noise_fraction;
+    cfg.noise_schedule = (noise_schedule_s == "hyperbolic") ? 1 : (noise_schedule_s == "const_floor") ? 2 : 0;
+    if (noise_plateau >= 0) cfg.noise_plateau = noise_plateau;
+    if (min_replay > 0) cfg.min_replay = min_replay;
+    if (max_replay > 0) cfg.max_replay = max_replay;
+    cfg.double_critic_step = (double_critic_step != 0);
+    if (target_policy_noise >= 0) cfg.target_policy_noise = target_policy_noise;
+    if (tpn_decay_start >= 0) cfg.tpn_decay_start = tpn_decay_start;
+    if (tpn_floor >= 0) cfg.tpn_floor = tpn_floor;
+    cfg.lr_schedule = (lr_schedule_s == "cosine") ? 1 : (lr_schedule_s == "linear") ? 2 : 0;
+    if (lr_warmup_episodes >= 0) cfg.lr_warmup_episodes = lr_warmup_episodes;
+    if (lr_schedule_episodes >= 0) cfg.lr_schedule_episodes = lr_schedule_episodes;
+    if (final_lr_fraction >= 0) cfg.final_lr_fraction = final_lr_fraction;
+    if (min_lr >= 0) cfg.min_lr = min_lr;
+
+    // OOS split: train on `seed`, evaluate + hedge on seed+777 (price_swing convention), so the
+    // reported Greeks/PV/P&L are genuinely out-of-sample. CRN is preserved within the eval set
+    // (all grid nodes + hedge bumps share eval_seed), which is what cancels the FD noise.
+    const uint64_t eval_seed = seed + 777;
 
     // ---- train once ----
     Paths train_paths;
@@ -125,14 +190,14 @@ int main(int argc, char** argv) {
     for (int g = 0; g < n_grid; ++g) {
         HHKParams hg = hhk; hg.S0 = grid[g];
         Paths pg;
-        simulate_hhk(hg, c, n_rl, seed, /*stratify*/false, 0, threads, pg);
+        simulate_hhk(hg, c, n_rl, eval_seed, /*stratify*/false, 0, threads, pg);
         EvalResult r = agent.evaluate(pg, 512);
         grid_pv[g] = r.price;
     }
 
     // ---- (2) daily delta hedge at base S0 ----
     Paths hp;
-    simulate_hhk(hhk, c, n_hedge, seed, /*stratify*/false, 0, threads, hp);
+    simulate_hhk(hhk, c, n_hedge, eval_seed, /*stratify*/false, 0, threads, hp);
     const int n = n_hedge;
     std::vector<float> cf((size_t)n * T, 0.f), qbefore((size_t)n * T, 0.f);
     std::vector<float> Vp((size_t)n * T, 0.f), Vm((size_t)n * T, 0.f);
