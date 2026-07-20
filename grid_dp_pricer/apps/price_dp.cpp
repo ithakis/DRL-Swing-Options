@@ -71,6 +71,19 @@ int main(int argc, char** argv) {
     g.glag_J = geti(argc, argv, "--glagJ", g.glag_J);
     g.interp_xy = geti(argc, argv, "--interp", g.interp_xy);
     g.n_threads = geti(argc, argv, "--threads", g.n_threads);
+    g.lattice_q = has_flag(argc, argv, "--latticeQ") ? 1 : 0;
+
+    if (g.lattice_q) {
+        const bool linear_payoff = (c.gamma_cost == 1.0) || (c.c_cost == 0.0);
+        const double spacing = c.Q_max / static_cast<double>(g.n_Q - 1);
+        if (!linear_payoff || std::fabs(spacing - c.q_max) > 1e-12) {
+            std::fprintf(stderr,
+                         "error: --latticeQ requires a payoff linear in q (gamma==1 or c==0) "
+                         "and nQ == Q_max/q_max + 1 (got gamma=%g c=%g nQ=%d)\n",
+                         c.gamma_cost, c.c_cost, g.n_Q);
+            return 2;
+        }
+    }
 
     if (c.min_refraction != 0) {
         std::fprintf(stderr, "error: --refraction>0 not yet implemented (cooldown axis is a hook)\n");

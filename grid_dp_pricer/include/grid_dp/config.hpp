@@ -72,6 +72,15 @@ struct GridParams {
     int glag_J = 16;   // Gauss-Laguerre nodes for Exp jump sizes J
     // Interpolation in (X, Y): 0 = multilinear, 1 = not-a-knot cubic spline.
     int interp_xy = 1;
+    // Exact Q-lattice (bang-bang) mode for payoffs LINEAR in q (gamma==1 or c==0).
+    // There the value function is concave piecewise-linear in Q with kinks only on the
+    // lattice {k*q_max}, and an optimal control at lattice states takes q in {0, q_cap}
+    // (Q_max/q_max integral).  With n_Q = Q_max/q_max + 1 the inner control then needs
+    // only EXACT node values: sub-cell polish (parabola/golden on the PCHIP) is not just
+    // unnecessary but harmful — the PCHIP bulges above the true chord at kinks and the
+    // max picks up the phantom (compounds to ~1e-2 over 21 steps).  1 = scan-only inner
+    // control (no Q interpolation anywhere; requires uniform gQ spacing == q_max).
+    int lattice_q = 0;
     // Threads for the inner-control sweep (0 = hardware concurrency). The GEMM stays single
     // BLAS call; only the per-(x,y) inner maximization is parallelized over X-rows.
     int n_threads = 0;

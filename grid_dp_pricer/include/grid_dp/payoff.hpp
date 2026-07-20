@@ -89,6 +89,30 @@ inline InnerResult solve_terminal(double S, double K, double c, double gamma, do
     return v > 0.0 ? InnerResult{qf, v} : InnerResult{0.0, 0.0};  // gate
 }
 
+// Scan-only inner control for the exact Q-lattice (bang-bang) mode: payoff linear in q
+// (gamma==1 or c==0), gQ spacing == q_max.  Optimal q at lattice states is node-aligned,
+// so the maximization uses EXACT node values only — no PCHIP, no sub-cell polish.
+inline InnerResult solve_inner_lattice(double S, double K, double c, double gamma,
+                                       double q_cap, double df,
+                                       const std::vector<double>& gQ,
+                                       const std::vector<double>& Wgrid, int l) {
+    const double mpos = moneyness_pos(S, K);
+    const double base = df * Wgrid[l];
+    if (q_cap <= 0.0 || mpos <= 0.0) return {0.0, base};
+    const int nQ = static_cast<int>(gQ.size());
+    const double Ql = gQ[l];
+    double best_q = 0.0, best_v = base;
+    for (int m = l + 1; m < nQ; ++m) {
+        const double q = gQ[m] - Ql;
+        if (q > q_cap + 1e-12) break;
+        const double pi = payoff_net(q, mpos, c, gamma);
+        if (pi <= 0.0) continue;                     // env profitability gate
+        const double v = pi + df * Wgrid[m];
+        if (v > best_v) { best_v = v; best_q = q; }
+    }
+    return {best_q, best_v};
+}
+
 // Robust inner control.  Continuation is given by exact grid values Wgrid on knots gQ
 // (uniform), plus a PCHIP W for sub-cell polish.  l = index of the current state Q_l=gQ[l].
 inline InnerResult solve_inner(double S, double K, double c, double gamma, double q_cap,

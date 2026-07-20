@@ -6,11 +6,15 @@ Reference grid = `nX=nY=121, nQ=151, Mx=24, X∈[-1.6,1.6], Y∈[0,4]` (the bina
 
 ## Headline
 
-> **Converged DP reference price (focal c=0.04, γ=2): `V₀ = 1.99033 ± 5.4e-5`.**
-> Ordering on the focal cell: **DP ≥ RL-kernel ≥ LSM-D ≥ RL-sample**, all incumbents below the DP.
-> RL-kernel is within **0.27%**, LSM-D within **0.41%**, RL-sample within **1.56%** of the DP reference.
+> **Publication DP reference price (focal c=0.04, γ=2): `V₀ = 1.99030 ± 4.5e-5` (GCI band).**
+> Ordering on the focal cell: **DP ≥ RL-kernel ≥ LSM-D ≥ RL-sample**, all incumbents below the DP —
+> in fact **every method's mean is below the DP in all 29 cells** of the publication sweep.
+> RL-kernel is within **0.27%**, LSM-D within **0.40%**, RL-sample within **1.56%** of the DP reference.
 > The DP reaches ≤1e-3 in **0.28 s** and ≤1e-4 in **1.3 s** (8 threads, M1) — **3–150× faster than the
 > incumbents (LSM-D 14.5 s, RL 43 s / 381 s) while being the more accurate leg.**
+>
+> Canonical per-cell values + uncertainty bands: `results/dp_publication_sweep.csv`
+> (generator `tools/dp_publication_sweep.py`; U_num ∈ [3.8e-5, 1.9e-4] across all 29 cells).
 
 ## 1. Validation — why this is a reference (GOAL 2)
 
@@ -52,8 +56,24 @@ is why the canonical benchmark uses n_actions=5.
 
 ### 1.4 Limiting cases (`test_dp_limits`, all pass)
 - **Zero-vol deterministic path** (σ→0, λ=0): DP == exact Lagrangian budget allocation to ≤3e-3.
-- **Monotonicities**: price ↓ in `c`, ↓ in `γ`, ↑ in `Q_max`, ↑ in `q_max`, ↑ in `σ`.
+- **Monotonicities**: price ↓ in `c`, ↑ in `Q_max`, ↑ in `q_max`, ↑ in `σ`.  Price ↓ in `γ` **only
+  where optimal lifts are ≥1** (e.g. the focal c=0.04 column): when high cost pushes the optimum
+  interior with q<1, `c·q^γ` *decreases* in γ, so the price turns **non-monotone** — on the full grid
+  V(c=0.15, γ=3)=1.0997 > V(c=0.15, γ=2)=1.0659.  Economics, not a solver artifact.
 - **γ=1 / c=0 corner**: ITM lifts are ≥95% bang-bang (∈{0,q_max}) — the linear-payoff limit.
+
+### 1.5 Exact Q-lattice mode for linear payoffs (`--latticeQ`)
+At γ=1 (or c=0) the payoff is linear in q, so the optimal control is bang-bang and V is concave
+piecewise-linear in Q with kinks only on the lattice `{k·q_max}` (Bardou–Bouthemy–Pagès).  With
+`nQ = Q_max/q_max + 1 = 11` and a **scan-only** inner control the Q axis is solved exactly.  Two
+findings that motivated it (both would silently bias a paper table):
+1. **The sub-cell polish is harmful at kinks**: the PCHIP bulges above the true chord and the max
+   picks the phantom — `+1.2e-2` at nQ=11, and still `+2e-4` at the nQ=151 reference grid.  The old
+   §5 γ=1 values carried this bias (e.g. c=0.04 γ=1: 2.23859 → true 2.23765).
+2. **The γ=1 spatial error is oscillatory** (kink vs node alignment of the cubic-spline transfer):
+   ~1e-3 at nXY≤161, decaying to ~1e-4 by nXY≥281.  Lattice cells are therefore quoted at nXY=641
+   with an **oscillation-envelope** band over nXY∈{281..641} (a Richardson fit is meaningless on
+   oscillatory data).
 
 ## 2. Convergence (GOAL 3)
 
@@ -66,9 +86,13 @@ Each axis swept with the others held fine; error vs a Richardson-extrapolated li
 | **nQ** | **≈ 1.02** | **3.3e-5** | **controlling axis** — PCHIP/policy in Q is 1st order |
 | Mx | (spectral) | 1.5e-5 | Gauss-Hermite; converged by Mx≈12 |
 
-**Controlling axis = nQ** (the cumulative-volume / budget dimension), converging at order ~1.
-Richardson over the finest three points gives **V₀ = 1.99033 ± 5.4e-5** (summed residual band).
-Data: `data/convergence.csv`; figure: `docs/figs/convergence.png`.
+**Controlling axis = nQ** (the cumulative-volume / budget dimension), converging at order ~1–2.
+**Publication uncertainty methodology** (`tools/dp_publication_sweep.py`): per convex cell, a pure-nQ
+geometric ladder `nQ∈{101,201,401}` at fixed converged spatial (121², Mx=24) + 3-point Richardson +
+GCI (Fs=1.25) + 3e-5 spatial residual → focal **V₀ = 1.99030 ± 4.5e-5**.  ⚠️ A *balanced* all-axes
+ladder must NOT be used for the band: axis errors of opposite sign cancel along the diagonal
+refinement path and the band comes out ~10× overconfident (4e-6 vs the true ~6e-5 nQ residual).
+Data: `data/convergence.csv`; figure: `docs/figs/convergence.png`; paper figure: `tools/gen_paper_figs.py`.
 
 ## 3. Time complexity (GOAL 4)
 
@@ -130,39 +154,42 @@ loop, not the BLAS, is the cost (the opposite of `cpp_pricer`).  FP64 stays the 
 ## 5. Full c × γ grid (GOAL 2.5)
 
 DP price for every cell vs the canonical `Convex Costs Results 9.csv` (LSM-D / RL-sample / RL-kernel,
-8-seed).  `Δ%` = (DP − method)/DP · 100.  **The DP dominates every incumbent's mean in all 28 cells.**
-Full data: `data/dp_grid_sweep.csv` (default grid 121/121/151/24).
+8-seed).  `Δ%` = (DP − method)/DP · 100.  **The DP dominates every incumbent's mean in all 28 cells**
+(and the zero-cost row: DP 2.66625 ± 1.2e-4 vs LSM-D 2.6649, RL-kernel 2.6608).
+Values below are the **publication sweep** (`results/dp_publication_sweep.csv`): γ>1 cells from the
+geometric-nQ ladder at 121²/Mx24 (quoted at nQ=401), γ=1 cells from the exact-lattice mode at
+641²/Mx48; per-cell U_num ≤ 1.9e-4.
 
 | c | γ | DP | LSM-D Δ% | RL-kernel Δ% | RL-sample Δ% |
 |---:|---:|---:|---:|---:|---:|
-| 0.01 | 1.0 | 2.55489 | 0.09 | 0.24 | 1.03 |
-| 0.01 | 1.5 | 2.51301 | 0.09 | 0.22 | 0.90 |
-| 0.01 | 2.0 | 2.46138 | 0.10 | 0.26 | 0.88 |
-| 0.01 | 3.0 | 2.33428 | 0.27 | 0.24 | 1.53 |
-| 0.02 | 1.0 | 2.44558 | 0.07 | 0.21 | 1.06 |
-| 0.02 | 1.5 | 2.36964 | 0.10 | 0.24 | 0.89 |
-| 0.02 | 2.0 | 2.28514 | 0.17 | 0.26 | 1.27 |
-| 0.02 | 3.0 | 2.11579 | 0.59 | 0.19 | 1.43 |
-| 0.04 | 1.0 | 2.23859 | 0.09 | 0.27 | 1.24 |
-| 0.04 | 1.5 | 2.10963 | 0.18 | 0.25 | 1.04 |
-| **0.04** | **2.0** | **1.99033** | **0.40** | **0.27** | **1.56** |
-| 0.04 | 3.0 | 1.81649 | 1.32 | 0.16 | 1.38 |
-| 0.05 | 1.0 | 2.13903 | 0.06 | 0.21 | 0.94 |
-| 0.05 | 1.5 | 1.99123 | 0.24 | 0.28 | 1.26 |
-| 0.05 | 2.0 | 1.86477 | 0.55 | 0.24 | 1.75 |
-| 0.05 | 3.0 | 1.70396 | 1.67 | 0.15 | 1.24 |
-| 0.08 | 1.0 | 1.86257 | 0.03 | 0.19 | 1.35 |
-| 0.08 | 1.5 | 1.67543 | 0.50 | 0.26 | 1.70 |
-| 0.08 | 2.0 | 1.55140 | 1.12 | 0.30 | 1.47 |
-| 0.08 | 3.0 | 1.44800 | 2.70 | 0.16 | 1.20 |
-| 0.10 | 1.0 | 1.69621 | 0.10 | 0.24 | 1.16 |
-| 0.10 | 1.5 | 1.49416 | 0.73 | 0.21 | 2.31 |
-| 0.10 | 2.0 | 1.38348 | 1.59 | 0.26 | 1.31 |
-| 0.10 | 3.0 | 1.32201 | 3.38 | 0.17 | 1.14 |
-| 0.15 | 1.0 | 1.33060 | 0.01 | 0.20 | 2.28 |
-| 0.15 | 1.5 | 1.12660 | 1.57 | 0.28 | 3.14 |
-| 0.15 | 2.0 | 1.06588 | 3.16 | 0.13 | 1.23 |
-| 0.15 | 3.0 | 1.09969 | 5.05 | 0.17 | 1.29 |
+| 0.01 | 1 | 2.55398 | 0.06 | 0.21 | 1.00 |
+| 0.01 | 1.5 | 2.51289 | 0.08 | 0.22 | 0.90 |
+| 0.01 | 2 | 2.46128 | 0.09 | 0.25 | 0.88 |
+| 0.01 | 3 | 2.33424 | 0.27 | 0.23 | 1.53 |
+| 0.02 | 1 | 2.44509 | 0.05 | 0.19 | 1.04 |
+| 0.02 | 1.5 | 2.36955 | 0.10 | 0.24 | 0.88 |
+| 0.02 | 2 | 2.28508 | 0.17 | 0.25 | 1.27 |
+| 0.02 | 3 | 2.11578 | 0.59 | 0.19 | 1.43 |
+| 0.04 | 1 | 2.23765 | 0.05 | 0.23 | 1.20 |
+| 0.04 | 1.5 | 2.10957 | 0.18 | 0.25 | 1.04 |
+| **0.04** | **2** | **1.99030** | **0.40** | **0.27** | **1.56** |
+| 0.04 | 3 | 1.81649 | 1.32 | 0.16 | 1.38 |
+| 0.05 | 1 | 2.13898 | 0.06 | 0.21 | 0.94 |
+| 0.05 | 1.5 | 1.99118 | 0.24 | 0.28 | 1.25 |
+| 0.05 | 2 | 1.86475 | 0.55 | 0.24 | 1.75 |
+| 0.05 | 3 | 1.70396 | 1.67 | 0.15 | 1.24 |
+| 0.08 | 1 | 1.86303 | 0.06 | 0.22 | 1.37 |
+| 0.08 | 1.5 | 1.67540 | 0.50 | 0.26 | 1.69 |
+| 0.08 | 2 | 1.55139 | 1.12 | 0.29 | 1.47 |
+| 0.08 | 3 | 1.44800 | 2.70 | 0.16 | 1.20 |
+| 0.1 | 1 | 1.69535 | 0.05 | 0.19 | 1.11 |
+| 0.1 | 1.5 | 1.49414 | 0.73 | 0.21 | 2.31 |
+| 0.1 | 2 | 1.38348 | 1.59 | 0.26 | 1.31 |
+| 0.1 | 3 | 1.32201 | 3.38 | 0.17 | 1.14 |
+| 0.15 | 1 | 1.33047 | 0.01 | 0.19 | 2.27 |
+| 0.15 | 1.5 | 1.12659 | 1.57 | 0.28 | 3.14 |
+| 0.15 | 2 | 1.06588 | 3.16 | 0.13 | 1.23 |
+| 0.15 | 3 | 1.09969 | 5.05 | 0.17 | 1.29 |
 
 Reading the grid:
 - **LSM-D Δ% grows with cost convexity** — ~0.01–0.10% at γ=1 (bang-bang, where LSM-D is near-exact)

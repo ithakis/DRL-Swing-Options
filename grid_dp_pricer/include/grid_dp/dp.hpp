@@ -192,10 +192,13 @@ inline DPResult price_backward(const SwingContract& c, const HHKParams& h,
                 const double S = Sg[(size_t)ix * nY + iy];
                 for (int q = 0; q < nQ; ++q)
                     Wcol[q] = Wbuf[(size_t)ix * nQ * nY + (size_t)q * nY + iy];
-                pc.build(R.gQ, Wcol);
+                if (!g.lattice_q) pc.build(R.gQ, Wcol);
                 for (int q = 0; q < nQ; ++q) {
                     const double qc = qcap_at(R.gQ[q]);
-                    const InnerResult r = solve_inner(S, K, cc, gam, qc, df, R.gQ, Wcol, pc, q);
+                    const InnerResult r =
+                        g.lattice_q
+                            ? solve_inner_lattice(S, K, cc, gam, qc, df, R.gQ, Wcol, q)
+                            : solve_inner(S, K, cc, gam, qc, df, R.gQ, Wcol, pc, q);
                     const size_t idx = (size_t)ix * nQ * nY + (size_t)q * nY + iy;
                     U[idx] = static_cast<Scalar>(r.value);
                     if (store_policy) R.policy[j][idx] = static_cast<Scalar>(r.q);

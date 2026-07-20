@@ -523,8 +523,10 @@ def t11_validation(quick):
 # --------------------------------------------------------------------------- T12: Pareto + complexity
 def _mx_coupled(nxy):
     """Quadrature mesh coupled to the spatial resolution (even, clipped) — matches the original
-    balanced ladder's 8/10/12/16/20/24/28/32 progression."""
-    return int(min(32, max(6, 2 * round(nxy / 10.0))))
+    balanced ladder's 8/10/12/16/20/24/28/32 progression.  The floor is 2 (not 6) so the coarse
+    breakdown-regime rungs (nXY<31) get a correspondingly starved quadrature; no config with
+    nXY>=31 is affected (the old floor of 6 only ever bound at nXY=31, where 2*round(3.1)=6)."""
+    return int(min(32, max(2, 2 * round(nxy / 10.0))))
 
 
 def _t12_configs(quick):
@@ -542,8 +544,14 @@ def _t12_configs(quick):
         bal_nxy = [41, 61, 81, 121]
         bases = [81]
     else:
-        bal_nxy = [31, 36, 41, 46, 51, 56, 61, 71, 81, 96, 111, 126, 141, 151, 161, 171]
-        bases = [51, 61, 81, 101, 121, 141, 161]
+        # The <31 rungs deliberately extend the ladder into the BREAKDOWN regime: e.g. 7/7/9/2 puts
+        # only 9 nodes on the Q axis for a 22-right contract (nQ is the controlling axis, T1/T11),
+        # so the exercise boundary is grossly under-resolved and the price error should blow up by
+        # orders of magnitude — the point is to show WHERE the solver stops being trustworthy, not
+        # to use these grids.
+        bal_nxy = [7, 9, 11, 13, 15, 18, 21, 25,
+                   31, 36, 41, 46, 51, 56, 61, 71, 81, 96, 111, 126, 141, 151, 161, 171]
+        bases = [21, 31, 51, 61, 81, 101, 121, 141, 161]
     seen, out = {}, []                       # dedup on the grid quad; first family wins (balanced)
 
     def add(nx, ny, nq, mx, fam):
@@ -556,7 +564,9 @@ def _t12_configs(quick):
         add(nxy, nxy, round(1.25 * nxy), _mx_coupled(nxy), "balanced")
     for base in bases:                        # unbalanced (off-diagonal) misallocations
         nq_b, mx_b = round(1.25 * base), _mx_coupled(base)
-        add(base, base, max(31, round(0.5 * nq_b)), mx_b, "unbalanced")     # nQ-starved (controlling axis)
+        # floor 7 (was 31): never binds for the original bases (>=51 give nQ>=32); for the new coarse
+        # bases (21, 31) a floor of 31 would make the "starved" rung nQ-RICHER than its base grid.
+        add(base, base, max(7, round(0.5 * nq_b)), mx_b, "unbalanced")      # nQ-starved (controlling axis)
         if not quick:
             add(base, base, min(280, round(1.6 * nq_b)), mx_b, "unbalanced")  # nQ-rich (over-resolved budget)
         add(base, base, nq_b, 4, "unbalanced")                             # Mx-starved (coarse quadrature)
