@@ -29,7 +29,7 @@ df = df[df.c.isin(PLOT_COSTS) & (df.gamma <= 2.2)]
 # font sizes match the surrounding ~9pt body / 8pt caption text without any LaTeX rescaling.
 plt.rcParams.update({"font.size": 8, "axes.labelsize": 8.5, "axes.titlesize": 8.5,
                      "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 7})
-fig, ax = plt.subplots(1, 1, figsize=(3.30, 2.95), dpi=300)
+fig, ax = plt.subplots(1, 1, figsize=(3.30, 2.35), dpi=300)
 cmap = plt.cm.viridis
 n_c = len(PLOT_COSTS)
 c_colors = {c: cmap(i / max(n_c - 1, 1)) for i, c in enumerate(PLOT_COSTS)}

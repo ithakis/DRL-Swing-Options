@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
-"""gen_table5_dp.py — inject the DP reference column into Table 5 (tab:results).
+"""gen_table5_dp.py — regenerate the full body of Table 4 (tab:results).
 
-Reads grid_dp_pricer/results/dp_publication_sweep.csv and rewrites the tab:results body
-in Paper/DRL_Swing_Options.tex, inserting a "DP" value column right after the (c, gamma)
-key columns.  The existing LSM-D / AC-sample / AC-kernel entries (BCa numbers baked by
-gen_results9_v67.py + colorize_results_table.py) are preserved verbatim.
+Column layout (LSM-D benchmark FIRST, then DP treated like a priced method):
 
-Idempotent: an already-injected DP cell (marked \\dpv{...}) is replaced, not duplicated.
+    c | gamma | LSM-D (M=5) price+-CI | DP: price , Delta% [CI] | AC-sample: price+-CI, Delta% [CI]
+                                                                 | AC-kernel: price+-CI, Delta% [CI]
+
+Every method (DP, AC-sample, AC-kernel) is reported the same way against the LSM-D
+benchmark: a mean price and Delta% = 100*(V/V_LSM - 1) with an asymmetric 95% interval.
+
+  * LSM-D / AC-sample / AC-kernel prices, half-widths, Delta% and Delta%-CI come from
+    "Convex Costs Results 9.csv" (8-seed BCa bootstrap, produced by gen_results9_v67.py).
+  * V^DP comes from grid_dp_pricer/results/dp_publication_sweep.csv.
+  * DP is deterministic, so its Delta% interval is obtained by propagating the LSM-D price
+    interval through the monotone map Delta%(L) = 100*(V_DP/L - 1) (endpoints swap):
+        Delta%_lo = 100*(V_DP/L_hi - 1),  Delta%_hi = 100*(V_DP/L_lo - 1).
+    This is exactly the "CI inherited from LSM" statement in the caption.
+
+Cell shading of the Delta% columns replicates tools/colorize_results_table.py
+(white at 0, green positive, red negative, intensity = min(|d|/CAP,1)*MAXMIX).
+
 Run:  python tools/gen_table5_dp.py
 """
 from __future__ import annotations
@@ -18,6 +31,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TEX = ROOT / "Paper" / "DRL_Swing_Options.tex"
 DPCSV = ROOT / "grid_dp_pricer" / "results" / "dp_publication_sweep.csv"
+R9CSV = ROOT / "Jupyter Notebooks" / "Convex Costs Results 9.csv"
+
+CAP = 5.2        # Delta% shading saturates at the most extreme cell
+MAXMIX = 80      # cap the white-mix so saturated cells stay legible under black text
+
+# Grid order in the table: zero-cost reference row, then c ascending x gamma ascending.
+GAMMAS = [1.0, 1.5, 2.0, 3.0]
+CS = [0.01, 0.02, 0.04, 0.05, 0.08, 0.10, 0.15]
+ROWS = [(0.0, 1.0)] + [(c, g) for c in CS for g in GAMMAS]
+
+
+def colour(v: float) -> str:
+    pct = round(min(abs(v) / CAP, 1.0) * MAXMIX)
+    base = "dgrnpos" if v >= 0 else "dredneg"
+    return f"{base}!{pct}!white"
 
 
 def load_dp() -> dict[tuple[float, float], float]:
@@ -28,67 +56,87 @@ def load_dp() -> dict[tuple[float, float], float]:
     return out
 
 
-def main() -> None:
-    dp = load_dp()
-    text = TEX.read_text()
+def load_r9() -> dict[tuple[float, float], dict[str, float]]:
+    out = {}
+    with R9CSV.open() as f:
+        for r in csv.DictReader(f):
+            out[(float(r["c"]), float(r["gamma"]))] = {k: float(v) for k, v in r.items()
+                                                       if k not in ("Configuration",)}
+    return out
 
-    # Locate the tab:results tabular body.
-    m = re.search(r"(\\label\{tab:results\}.*?\\begin\{tabular\}\{)([^}]*)(\}.*?)\\end\{tabular\}",
-                  text, re.S)
+
+def pmci(mean: float, lo: float, hi: float) -> str:
+    hw = (hi - lo) / 2.0
+    return f"\\pmci{{{mean:.4f}}}{{{hw:.3f}}}"
+
+
+def dpct(v: float, lo: float, hi: float) -> str:
+    return f"\\dpct{{{colour(v)}}}{{{v:+.2f}}}{{{lo:+.2f}}}{{{hi:+.2f}}}"
+
+
+def cfmt(c: float) -> str:
+    return f"{c:.2f}"
+
+
+def gfmt(g: float) -> str:
+    return f"{g:.0f}" if g == int(g) else f"{g:g}"
+
+
+def build_body() -> str:
+    dp = load_dp()
+    r9 = load_r9()
+    lines: list[str] = []
+    prev_c = None
+    for c, g in ROWS:
+        if prev_c is not None and c != prev_c:
+            lines.append("            \\midrule")
+        prev_c = c
+        d = r9[(c, g)]
+        vdp = dp[(c, g)]
+        L_mean, L_lo, L_hi = d["LSM_mean"], d["LSM_lo"], d["LSM_hi"]
+        # DP treated like a method vs LSM: price (no CI) + Delta% [CI inherited from LSM].
+        dp_delta = 100.0 * (vdp / L_mean - 1.0)
+        dp_lo = 100.0 * (vdp / L_hi - 1.0)   # monotone decreasing -> endpoints swap
+        dp_hi = 100.0 * (vdp / L_lo - 1.0)
+        cells = [
+            cfmt(c), gfmt(g),
+            pmci(L_mean, L_lo, L_hi),                                   # LSM-D benchmark (first)
+            f"\\dpv{{{vdp:.4f}}}", dpct(dp_delta, dp_lo, dp_hi),        # DP: price, Delta%[CI]
+            pmci(d["ACsample_mean"], d["ACsample_lo"], d["ACsample_hi"]),
+            dpct(d["ACsample_delta_pct"], d["ACsample_delta_lo"], d["ACsample_delta_hi"]),
+            pmci(d["ACkernel_mean"], d["ACkernel_lo"], d["ACkernel_hi"]),
+            dpct(d["ACkernel_delta_pct"], d["ACkernel_delta_lo"], d["ACkernel_delta_hi"]),
+        ]
+        lines.append("            " + " & ".join(cells) + " \\\\")
+    return "\n".join(lines)
+
+
+HEADER = (
+    "            \\toprule\n"
+    "                 &            & LSM-D ($M\\!=\\!5$) & \\multicolumn{2}{c}{DP reference} "
+    "& \\multicolumn{2}{c}{AC-sample (model-agnostic)} & \\multicolumn{2}{c}{AC-kernel (HHK target)} \\\\\n"
+    "            \\cmidrule(lr){4-5}\\cmidrule(lr){6-7}\\cmidrule(lr){8-9}\n"
+    "            $c$  & $\\gamma_c$ & price\\,\\footnotesize$\\pm$CI "
+    "& $V^{\\mathrm{DP}}$ & $\\Delta\\%$ \\footnotesize[95\\% CI] "
+    "& price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] "
+    "& price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] \\\\\n"
+    "            \\midrule"
+)
+COLSPEC = "cc r r l r l r l"
+
+
+def main() -> None:
+    text = TEX.read_text()
+    m = re.search(r"(\\label\{tab:results\}.*?\\begin\{tabular\}\{)([^}]*)(\}\s*\n)"
+                  r"(.*?)(\n\s*\\bottomrule)", text, re.S)
     if not m:
         raise SystemExit("tab:results tabular not found")
-    colspec, body = m.group(2), m.group(3)
-
-    # Column spec: cc r r l r l  ->  cc r r r l r l (one extra r after the key pair).
-    if colspec.strip() == "cc r r l r l":
-        new_colspec = "cc r r r l r l"
-    elif colspec.strip() == "cc r r r l r l":
-        new_colspec = colspec  # already injected
-    else:
-        raise SystemExit(f"unexpected tab:results colspec: {colspec!r}")
-
-    new_body = body
-    # Header rows: extend the group header and the column-name row.
-    new_body = new_body.replace(
-        "&            & LSM-D ($M\\!=\\!5$) & \\multicolumn{2}{c}{AC-sample (model-agnostic)} & \\multicolumn{2}{c}{AC-kernel (HHK target)} \\\\",
-        "&            & DP reference & LSM-D ($M\\!=\\!5$) & \\multicolumn{2}{c}{AC-sample (model-agnostic)} & \\multicolumn{2}{c}{AC-kernel (HHK target)} \\\\",
-        1)
-    new_body = new_body.replace(
-        "\\cmidrule(lr){4-5}\\cmidrule(lr){6-7}",
-        "\\cmidrule(lr){5-6}\\cmidrule(lr){7-8}", 1)
-    new_body = new_body.replace(
-        "$c$  & $\\gamma_c$ & price\\,\\footnotesize$\\pm$CI & price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] & price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] \\\\",
-        "$c$  & $\\gamma_c$ & $V^{\\mathrm{DP}}$ & price\\,\\footnotesize$\\pm$CI & price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] & price\\,\\footnotesize$\\pm$CI & $\\Delta\\%$ \\footnotesize[95\\% CI] \\\\",
-        1)
-
-    # Body rows: "  0.04 & 2 & \pmci{...}" (optionally with an existing \dpv cell to replace).
-    row_pat = re.compile(
-        r"^(\s*)([0-9.]+) & ([0-9.]+) & (?:\\dpv\{[^{}]*\} & )?(\\pmci)",
-        re.M)
-    n = 0
-
-    def repl(mo: re.Match) -> str:
-        nonlocal n
-        c, g = float(mo.group(2)), float(mo.group(3))
-        v = dp.get((c, g))
-        if v is None:
-            raise SystemExit(f"no DP value for cell ({c}, {g})")
-        n += 1
-        return f"{mo.group(1)}{mo.group(2)} & {mo.group(3)} & \\dpv{{{v:.4f}}} & {mo.group(4)}"
-
-    new_body = row_pat.sub(repl, new_body)
-    if n != 29:
-        raise SystemExit(f"expected 29 rows, rewrote {n}")
-
-    text = text[:m.start(2)] + new_colspec + new_body + "\\end{tabular}" + text[m.end():]
-
-    # Ensure the \dpv macro exists (plain value; band documented in caption/subsection).
-    if "\\newcommand{\\dpv}" not in text:
-        text = text.replace("\\newcommand{\\pmci}[2]",
-                            "\\newcommand{\\dpv}[1]{$#1$}\n\\newcommand{\\pmci}[2]", 1)
-
-    TEX.write_text(text)
-    print(f"injected DP column into {n} rows of tab:results")
+    new = (text[:m.start()]
+           + m.group(1) + COLSPEC + m.group(3)
+           + HEADER + "\n" + build_body()
+           + m.group(5) + text[m.end():])
+    TEX.write_text(new)
+    print(f"rebuilt tab:results body ({len(ROWS)} rows), colspec -> {COLSPEC!r}")
 
 
 if __name__ == "__main__":
